@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <assert.h>
 
@@ -8,10 +9,8 @@
 
 #define BUILTIN_TOKS(X)   \
 X(TOK_VOID   , "void")    \
-X(TOK_CHAR   , "char")    \
 X(TOK_INT    , "int")     \
 X(TOK_RETURN , "return")  \
-
 
 
 enum {
@@ -86,6 +85,39 @@ static void UnGetChar(void)
     --InBuf;
 }
 
+static char* TokenTypeString(int type)
+{
+    switch (type) {
+    case TOK_EOF:       return "eof";
+    case TOK_NUM:       return "number";
+    case TOK_LPAREN:    return "("; 
+    case TOK_RPAREN:    return ")";
+    case TOK_LBRACE:    return "{";
+    case TOK_RBRACE:    return "}";
+    case TOK_COMMA:     return ",";
+    case TOK_SEMICOLON: return ";";
+    case TOK_EQ:        return "=";
+    case TOK_PLUS:      return "+";
+#define CASE_TOKEN(V, N) case V: return N;
+    BUILTIN_TOKS(CASE_TOKEN)
+#undef CASE_TOKEN
+    }
+    static char buf[64];
+    snprintf(buf, sizeof(buf), "TOK(%d)", type);
+    return buf;
+}
+
+static void PrintToken(void)
+{
+    if (TokenType == TOK_NUM) {
+        printf("%"PRIuMAX, TokenNumVal);
+    } else if (TokenType > TOK_LAST) {
+        printf("%s", Ids[TokenType-TOK_LAST-1]);
+    } else {
+        printf("%s", TokenText);
+    }
+}
+
 static void GetToken(void)
 {
     char ch;
@@ -148,15 +180,138 @@ static void GetToken(void)
 Out:
     TokenText[TokenLen] = '\0';
 
-    printf("%d \"%s\" ", TokenType, TokenText);
-    if (TokenType == TOK_NUM) {
-        printf("%u", (unsigned)TokenNumVal);
-    } else if (TokenType >= TOK_ID) {
-        printf("ID");
-    }
+    printf("%s \"%s\" ", TokenTypeString(TokenType), TokenText);
+    PrintToken();
     puts("");
 }
 
+void __declspec(noreturn) Unexpected(void)
+{
+    PrintToken();
+    Fatal("\nUnexpected token");
+}
+
+int Accept(int type)
+{
+    if (TokenType == type) {
+        GetToken();
+        return 1;
+    }
+    return 0;
+}
+
+void Expect(int type)
+{
+    if (!Accept(type)) {
+        printf("%s expected got ", TokenTypeString(type));
+        Unexpected();
+    }
+}
+
+int ExpectId(void)
+{
+    const int id = TokenType;
+    if (id >= TOK_ID) {
+        GetToken();
+        return id - TOK_LAST - 1;
+    }
+    printf("Expected identifier got ");
+    Unexpected();
+}
+
+int IsTypeStart(void)
+{
+    return TokenType == TOK_VOID || TokenType == TOK_INT;
+}
+
+void ParseExpression(void);
+
+void ParseUnaryExpression(void)
+{
+    if (TokenType == TOK_NUM) {
+        printf("TODO: Number %" PRIuMAX "\n", TokenNumVal);
+        GetToken();
+        return;
+    }
+    int id = ExpectId();
+    printf("TODO: Id %s\n", Ids[id]);
+    if (!Accept(TOK_LPAREN)) {
+        return;
+    }
+    // Function call
+    while (TokenType != TOK_RPAREN) {
+        ParseExpression();
+        if (!Accept(TOK_COMMA)) {
+            break;
+        }
+    }
+    Expect(TOK_RPAREN);
+}
+
+void ParseExpression(void)
+{
+    ParseUnaryExpression();
+    for (;;) {
+        if (TokenType != TOK_PLUS) {
+            break;
+        }
+        GetToken();
+        ParseUnaryExpression();
+    }
+}
+
+void ParseDeclSpecs(void)
+{
+    assert(IsTypeStart());
+    if (TokenType == TOK_VOID || TokenType == TOK_INT) {
+        printf("Ignoring "); PrintToken(); printf(" in %s\n", __func__);
+        GetToken();
+        return;
+
+    }
+    Unexpected();
+}
+
+void ParseCompoundStatement(void)
+{
+    Expect(TOK_LBRACE);
+    while (!Accept(TOK_RBRACE)) {
+        if (IsTypeStart()) {
+            ParseDeclSpecs();
+            ExpectId();
+            if (Accept(TOK_EQ)) {
+                ParseExpression();
+            }
+        } else if (Accept(TOK_RETURN)) {
+            if (TokenType != TOK_SEMICOLON) {
+                ParseExpression();
+            }
+        } else {
+            Unexpected();
+        }
+        Expect(TOK_SEMICOLON);
+    }
+}
+
+void ParseExternalDefition(void)
+{
+    ParseDeclSpecs();
+    const int NameId = ExpectId();
+    printf("Name: %s\n", Ids[NameId]);
+    Expect(TOK_LPAREN);
+    while (TokenType != TOK_RPAREN) {
+        if (Accept(TOK_VOID)) {
+            break;
+        }
+        ParseDeclSpecs();
+        /*const int VarId = */ ExpectId();
+        if (!Accept(TOK_COMMA)) {
+            break;
+        }
+    }
+    Expect(TOK_RPAREN);
+    ParseCompoundStatement();
+}
 
 int main(void)
 {
@@ -165,12 +320,10 @@ int main(void)
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
 
-    printf("TOK_INT = %d\n", TOK_INT);
-    do {
-        GetToken();
-    } while (TokenType != TOK_EOF);
-    for (int id = 0; id < IdsCount; ++id) {
-        printf("%d: \"%s\" %s\n", TOK_LAST+1+id, Ids[id], id + TOK_LAST + 1 >= TOK_ID ? "Id" : "Builtin");
+    GetToken();
+    while (TokenType != TOK_EOF) {
+        ParseExternalDefition();
     }
+
     return 0;
 }
