@@ -7,6 +7,12 @@
 
 #define TOKEN_MAX 64
 
+#define VT_VOID     0
+#define VT_CHAR     1
+#define VT_INT      2
+#define VT_BASEMASK 0xff
+#define VT_LVAL     0x100
+
 #define BUILTIN_TOKS(X)   \
 X(TOK_VOID   , "void")    \
 X(TOK_INT    , "int")     \
@@ -26,13 +32,33 @@ enum {
     TOK_SEMICOLON,
     TOK_EQ,
     TOK_PLUS,
+    TOK_MINUS,
+    TOK_STAR,
+    TOK_SLASH,
 
-    TOK_LAST = TOK_PLUS,
+    TOK_LAST = TOK_SLASH,
 #define DEF_BULTIN(N, _) N,
     BUILTIN_TOKS(DEF_BULTIN)
 #undef DEF_BUILTIN
     TOK_ID
 };
+
+struct VarDecl {
+    int             Id;
+    int             Type;
+    int             Offset;
+    struct VarDecl* Next;
+};
+
+struct Scope {
+    struct VarDecl* Decls;
+    struct Scope*   Next;
+};
+
+struct Value {
+    int Type;
+    int Val;
+ };
 
 static const char* InBuf;
 static char TokenText[TOKEN_MAX];
@@ -40,6 +66,9 @@ static int TokenType;
 static uintptr_t TokenNumVal;
 static char** Ids;
 static int IdsCount, IdsCapacity;
+static struct Scope* CurrentScope;
+static int LocalOffset;
+static int CurrentType;
 
 static int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
 static int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
@@ -50,13 +79,19 @@ static __declspec(noreturn) void Fatal(const char* Msg)
     abort();
 }
 
-static char* DupString(const char* Name)
+static void* Malloc(size_t Bytes)
 {
-    const size_t cnt = strlen(Name) + 1;
-    char* Buf = malloc(cnt);
+    void* Buf = malloc(Bytes);
     if (!Buf) {
         Fatal("malloc failed");
     }
+    return Buf;
+}
+
+static char* DupString(const char* Name)
+{
+    const size_t cnt = strlen(Name) + 1;
+    char* Buf = Malloc(cnt);
     memcpy(Buf, Name, cnt);
     return Buf;
 }
@@ -98,6 +133,9 @@ static char* TokenTypeString(int type)
     case TOK_SEMICOLON: return ";";
     case TOK_EQ:        return "=";
     case TOK_PLUS:      return "+";
+    case TOK_MINUS:     return "-";
+    case TOK_STAR:      return "*";
+    case TOK_SLASH:     return "/";
 #define CASE_TOKEN(V, N) case V: return N;
     BUILTIN_TOKS(CASE_TOKEN)
 #undef CASE_TOKEN
@@ -105,6 +143,18 @@ static char* TokenTypeString(int type)
     static char buf[64];
     snprintf(buf, sizeof(buf), "TOK(%d)", type);
     return buf;
+}
+
+static char* TypeString(int Type)
+{
+    switch (Type & VT_BASEMASK) {
+    case VT_VOID: return "void";
+    case VT_CHAR: return "char";
+    case VT_INT:  return "int";
+    default:
+        printf("Unknown type 0x%X\n", Type);
+        Fatal("Invalid type");
+    }
 }
 
 static void PrintToken(void)
@@ -172,6 +222,9 @@ static void GetToken(void)
         case ';': TokenType = TOK_SEMICOLON; break;
         case '=': TokenType = TOK_EQ;        break;
         case '+': TokenType = TOK_PLUS;      break;
+        case '-': TokenType = TOK_MINUS;     break;
+        case '*': TokenType = TOK_STAR;      break;
+        case '/': TokenType = TOK_SLASH;     break;
         default:
             printf("Unknown token start '%c' (0x%02X)\n", ch, ch);
             TokenType = TOK_EOF;
@@ -180,9 +233,29 @@ static void GetToken(void)
 Out:
     TokenText[TokenLen] = '\0';
 
+#if 0
     printf("%s \"%s\" ", TokenTypeString(TokenType), TokenText);
     PrintToken();
     puts("");
+#endif
+}
+
+int OperatorPrecedence(int tok)
+{
+    switch (tok) {
+    case TOK_STAR:
+    case TOK_SLASH:
+        return 5;
+    case TOK_PLUS:
+    case TOK_MINUS:
+        return 6;
+    case TOK_EQ:
+        return 16;
+    case TOK_COMMA:
+        return 17;
+    default:
+        return 100;
+    }
 }
 
 void __declspec(noreturn) Unexpected(void)
@@ -224,106 +297,278 @@ int IsTypeStart(void)
     return TokenType == TOK_VOID || TokenType == TOK_INT;
 }
 
+struct VarDecl* Lookup(int id)
+{
+    for (struct Scope* s = CurrentScope; s; s = s->Next) {
+        for (struct VarDecl* d = s->Decls; d; d = d->Next) {
+            if (d->Id == id) {
+                return d;
+            }
+        }
+    }
+    printf("%s not found\n", Ids[id]);
+    Fatal("Lookup failed");
+}
+
 void ParseExpression(void);
+void ParseAssignmentExpression(void);
 
 void ParseUnaryExpression(void)
 {
     if (TokenType == TOK_NUM) {
-        printf("TODO: Number %" PRIuMAX "\n", TokenNumVal);
+        printf("\tMOV\tAX, 0x%04X\n", (unsigned short)TokenNumVal);
+        CurrentType = VT_INT;
         GetToken();
         return;
     }
-    int id = ExpectId();
-    printf("TODO: Id %s\n", Ids[id]);
+    const int id = ExpectId();
+    const struct VarDecl* d = Lookup(id);
     if (!Accept(TOK_LPAREN)) {
+        printf("\tLEA\tAX, [BP%+d]\t; %s\n", d->Offset, Ids[d->Id]);
+        CurrentType = d->Type | VT_LVAL;
         return;
     }
     // Function call
+    int NumArgs = 0;
     while (TokenType != TOK_RPAREN) {
-        ParseExpression();
+        ++NumArgs;
+        ParseAssignmentExpression();
+        printf("\tPUSH\tAX\n"); // TODO: Check if we need to reorder stack...
         if (!Accept(TOK_COMMA)) {
             break;
         }
     }
     Expect(TOK_RPAREN);
+    printf("\tCALL\t_%s\n", Ids[id]);
+    printf("\tADD\tSP, %d\n", NumArgs*2);
+}
+
+void ParseCastExpression(void)
+{
+    ParseUnaryExpression();
+}
+
+void ParseExpression1(int OuterPrecedence)
+{
+    for (;;) {
+        const int Op   = TokenType;
+        const int Prec = OperatorPrecedence(Op);
+        if (Prec > OuterPrecedence) {
+            break;
+        }
+        GetToken();
+        printf("\tPUSH\tAX\n");
+        const int LhsType = CurrentType;
+        // TODO: Question, ?:
+        /*rhs = */ ParseCastExpression();
+        for (;;) {
+            const int LookAheadOp         = TokenType;
+            const int LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
+            if (LookAheadPrecedence > Prec /* || (LookAheadPrecedence == Prec && !IsRightAssociative(LookAheadOp)) */) {
+                break;
+            }
+            ParseExpression1(/*rhs, */LookAheadPrecedence);
+        }
+        const int IsAssign = Op == TOK_EQ;
+        assert(CurrentType == VT_INT);
+        if (LhsType & VT_LVAL) {
+            assert((LhsType & ~VT_LVAL) == VT_INT);
+            printf("\tPOP\tBX\n");
+            if (IsAssign) {
+                printf("\tMOV\t[BX], AX\n");
+            } else {
+                printf("\tMOV\tCX, AX\n");
+                printf("\tMOV\tAX, [BX]\n");
+                switch (Op) {
+                case TOK_PLUS: printf("\tADD\tAX, CX\n"); break;
+                default:
+                    printf("TODO: BinOp %s\n", TokenTypeString(Op));
+                    Fatal("Not implemented");
+                }
+            }
+        } else {
+            assert(!IsAssign && "Lvalue expected");
+            printf("TODO: BinOp %s\n", TokenTypeString(Op));
+            assert(!"Not implemented");
+        }
+    }
+}
+
+void ParseExpression0(int OuterPrecedence)
+{
+    ParseCastExpression();
+    ParseExpression1(OuterPrecedence);
 }
 
 void ParseExpression(void)
 {
-    ParseUnaryExpression();
-    for (;;) {
-        if (TokenType != TOK_PLUS) {
-            break;
-        }
-        GetToken();
-        ParseUnaryExpression();
+    ParseExpression0(OperatorPrecedence(TOK_COMMA));
+}
+
+void ParseAssignmentExpression(void)
+{
+    ParseExpression0(OperatorPrecedence(TOK_EQ));
+}
+
+int ParseDeclSpecs(void)
+{
+    assert(IsTypeStart());
+    int t;
+    switch (TokenType) {
+    case TOK_VOID: t = VT_VOID; break;
+    case TOK_INT:  t = VT_INT;  break;
+    default: Unexpected();
+    }
+    GetToken();
+    return t;
+}
+
+static struct VarDecl* AddVarDecl(int Type, int Id)
+{
+    assert(CurrentScope);
+    struct VarDecl* d = Malloc(sizeof(*d));
+    d->Next   = CurrentScope->Decls;
+    d->Type   = Type;
+    d->Offset = 0;
+    d->Id     = Id;
+    CurrentScope->Decls = d;
+    return d;
+}
+
+struct VarDecl* ParseDecl(void)
+{
+    const int Type = ParseDeclSpecs();
+    const int Id   = ExpectId();
+    return AddVarDecl(Type, Id);
+}
+
+void FreeVarDecls(struct VarDecl* d)
+{
+    struct VarDecl* temp;
+    while (d) {
+        temp = d->Next;
+        free(d);
+        d = temp;
     }
 }
 
-void ParseDeclSpecs(void)
+static void PushScope(void)
 {
-    assert(IsTypeStart());
-    if (TokenType == TOK_VOID || TokenType == TOK_INT) {
-        printf("Ignoring "); PrintToken(); printf(" in %s\n", __func__);
-        GetToken();
-        return;
+    struct Scope* s = Malloc(sizeof(*s));
+    s->Decls = NULL;
+    s->Next  = CurrentScope;
+    CurrentScope = s;
+}
 
-    }
-    Unexpected();
+static void PopScope(void)
+{
+    assert(CurrentScope);
+    struct Scope* s = CurrentScope;
+    CurrentScope = CurrentScope->Next;
+    FreeVarDecls(s->Decls);
+    free(s);
 }
 
 void ParseCompoundStatement(void)
 {
+    PushScope();
     Expect(TOK_LBRACE);
     while (!Accept(TOK_RBRACE)) {
         if (IsTypeStart()) {
-            ParseDeclSpecs();
-            ExpectId();
-            if (Accept(TOK_EQ)) {
-                ParseExpression();
-            }
+            struct VarDecl* d = ParseDecl();
+            LocalOffset -= 2;
+            d->Offset = LocalOffset;
+            printf("\tSUB\tSP, 2 ; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
         } else if (Accept(TOK_RETURN)) {
             if (TokenType != TOK_SEMICOLON) {
                 ParseExpression();
             }
+            printf("\tJMP\t.RET\n");
         } else {
-            Unexpected();
+            // Expression statement
+            ParseExpression();
         }
         Expect(TOK_SEMICOLON);
     }
+    PopScope();
 }
+
+// Arg 2              BP + 6
+// Arg 1              BP + 4
+// Return Address     BP + 2
+// Old BP             BP      <-- BP
+// Local 1            BP - 2
+// Local 2            BP - 4  <-- SP
 
 void ParseExternalDefition(void)
 {
-    ParseDeclSpecs();
-    const int NameId = ExpectId();
-    printf("Name: %s\n", Ids[NameId]);
+    struct VarDecl* fd = ParseDecl();
+    int ArgOffset = 4;
+    printf("\t; Starting function definition of %s, return value %s\n", Ids[fd->Id], TypeString(fd->Type));
+    printf("_%s:\n", Ids[fd->Id]);
+    printf("\tPUSH\tBP\n");
+    printf("\tMOV\tBP, SP\n");
+    LocalOffset = 0;
     Expect(TOK_LPAREN);
     while (TokenType != TOK_RPAREN) {
         if (Accept(TOK_VOID)) {
             break;
         }
-        ParseDeclSpecs();
-        /*const int VarId = */ ExpectId();
+        struct VarDecl* d = ParseDecl();
+        d->Offset = ArgOffset;
+        ArgOffset += 2;
+        printf("\t; Arg %s %s [BP+%d]\n", TypeString(d->Type), Ids[d->Id], d->Offset);
         if (!Accept(TOK_COMMA)) {
             break;
         }
     }
     Expect(TOK_RPAREN);
     ParseCompoundStatement();
+    printf(".RET:\n");
+    printf("\tMOV\tSP, BP\n");
+    printf("\tPOP\tBP\n");
+    printf("\tRET\n");
 }
+
+static const char* const Prelude =
+"\tcpu 8086\n"
+"\torg 0x100\n"
+"Start:\n"
+"\tXOR\tBP, BP\n"
+"\tCALL\t_main\n"
+"\tMOV\tAH, 0x4C\n"
+"\tINT\t0x21\n"
+"\n"
+"_putchar:\n"
+"\tPUSH\tBP\n"
+"\tMOV\tBP, SP\n"
+"\tMOV\tDL, [BP+4]\n"
+"\tMOV\tAH, 0x02\n"
+"\tINT\t0x21\n"
+"\tMOV\tSP, BP\n"
+"\POP\tBP\n"
+"\tRET\n"
+;
 
 int main(void)
 {
-    InBuf = "int foo(int a, int b) { int c = a + b; return c; }\nint main(void) { return foo(42, 2); }\n";
+    //InBuf = "int foo(int a, int b) { int c; c = a + b * 3; return c; }\nint main(void) { return foo(42, 2); }\n";
+    InBuf = "int add2(int x) { return x + 2; } void main() { putchar(add2(40)); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
 
+    puts(Prelude);
+
+    PushScope();
     GetToken();
+
+    /*struct VarDecl* putchar_decl = */AddVarDecl(VT_INT, AddId("putchar"));
+
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
     }
+    PopScope();
 
     return 0;
 }
