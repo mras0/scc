@@ -17,6 +17,7 @@
 X(TOK_VOID   , "void")    \
 X(TOK_INT    , "int")     \
 X(TOK_RETURN , "return")  \
+X(TOK_WHILE  , "while")   \
 
 
 enum {
@@ -70,6 +71,7 @@ static int IdsCount, IdsCapacity;
 static struct Scope* CurrentScope;
 static int LocalOffset;
 static int CurrentType;
+static int LocalLabelCounter;
 
 static int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
 static int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
@@ -227,6 +229,7 @@ static void GetToken(void)
         case '-': TokenType = TOK_MINUS;     break;
         case '*': TokenType = TOK_STAR;      break;
         case '/': TokenType = TOK_SLASH;     break;
+        case '%': TokenType = TOK_MOD;       break;
         default:
             printf("Unknown token start '%c' (0x%02X)\n", ch, ch);
             TokenType = TOK_EOF;
@@ -247,6 +250,7 @@ int OperatorPrecedence(int tok)
     switch (tok) {
     case TOK_STAR:
     case TOK_SLASH:
+    case TOK_MOD:
         return 5;
     case TOK_PLUS:
     case TOK_MINUS:
@@ -312,6 +316,16 @@ struct VarDecl* Lookup(int id)
     Fatal("Lookup failed");
 }
 
+static void LvalToRval(void)
+{
+    if (CurrentType & VT_LVAL) {
+        CurrentType &= ~VT_LVAL;
+        assert(CurrentType == VT_INT);
+        printf("\tMOV\tBX, AX\n");
+        printf("\tMOV\tAX, [BX]\n");
+    }
+}
+
 void ParseExpression(void);
 void ParseAssignmentExpression(void);
 
@@ -335,8 +349,12 @@ void ParseUnaryExpression(void)
     while (TokenType != TOK_RPAREN) {
         ++NumArgs;
         ParseAssignmentExpression();
-        printf("\tPUSH\tAX\n"); // TODO: Check if we need to reorder stack...
-                                //       Possible work-around: Reserve fixed amount of space for arguments
+        // TODO: Check if we need to reorder stack...
+        //       Possible work-around: Reserve fixed amount of space for arguments
+        LvalToRval();
+        assert(CurrentType == VT_INT);
+        printf("\tPUSH\tAX\n");
+
         if (!Accept(TOK_COMMA)) {
             break;
         }
@@ -392,7 +410,7 @@ void ParseExpression1(int OuterPrecedence)
             ParseExpression1(/*rhs, */LookAheadPrecedence);
         }
         const int IsAssign = Op == TOK_EQ;
-        assert(CurrentType == VT_INT);
+        LvalToRval();
         if (LhsType & VT_LVAL) {
             assert((LhsType & ~VT_LVAL) == VT_INT);
             printf("\tPOP\tBX\n");
@@ -487,26 +505,54 @@ static void PopScope(void)
     free(s);
 }
 
+void ParseCompoundStatement(void);
+
+void ParseStatement(void)
+{
+    if (TokenType == TOK_LBRACE) {
+        ParseCompoundStatement();
+    } else if (IsTypeStart()) {
+        struct VarDecl* d = ParseDecl();
+        LocalOffset -= 2;
+        d->Offset = LocalOffset;
+        printf("\tSUB\tSP, 2 ; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
+        Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_RETURN)) {
+        if (TokenType != TOK_SEMICOLON) {
+            ParseExpression();
+        }
+        printf("\tJMP\t.RET\n");
+    } else if (Accept(TOK_WHILE)) {
+        Expect(TOK_LPAREN);
+        const int StartLabel = LocalLabelCounter++;
+        const int BodyLabel  = LocalLabelCounter++;
+        const int EndLabel   = LocalLabelCounter++;
+        printf(".L%d:\t; Start of while\n", StartLabel);
+        ParseExpression();
+
+        LvalToRval();
+        assert(CurrentType == VT_INT);
+        printf("\tAND\tAX, AX\n");
+        printf("\tJNZ\t.L%d\n", BodyLabel);
+        printf("\tJMP\t.L%d\n", EndLabel);
+        Expect(TOK_RPAREN);
+        printf(".L%d:\t; Body of while\n", BodyLabel);
+        ParseStatement();
+        printf("\tJMP\t.L%d\n", StartLabel);
+        printf(".L%d:\t; End of while\n", EndLabel);
+    } else {
+        // Expression statement
+        ParseExpression();
+        Expect(TOK_SEMICOLON);
+    }
+}
+
 void ParseCompoundStatement(void)
 {
     PushScope();
     Expect(TOK_LBRACE);
     while (!Accept(TOK_RBRACE)) {
-        if (IsTypeStart()) {
-            struct VarDecl* d = ParseDecl();
-            LocalOffset -= 2;
-            d->Offset = LocalOffset;
-            printf("\tSUB\tSP, 2 ; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
-        } else if (Accept(TOK_RETURN)) {
-            if (TokenType != TOK_SEMICOLON) {
-                ParseExpression();
-            }
-            printf("\tJMP\t.RET\n");
-        } else {
-            // Expression statement
-            ParseExpression();
-        }
-        Expect(TOK_SEMICOLON);
+        ParseStatement();
     }
     PopScope();
 }
@@ -527,6 +573,7 @@ void ParseExternalDefition(void)
     printf("\tPUSH\tBP\n");
     printf("\tMOV\tBP, SP\n");
     LocalOffset = 0;
+    LocalLabelCounter = 0;
     Expect(TOK_LPAREN);
     while (TokenType != TOK_RPAREN) {
         if (Accept(TOK_VOID)) {
@@ -570,10 +617,7 @@ static const char* const Prelude =
 
 int main(void)
 {
-    //InBuf = "int foo(int a, int b) { int c; c = a + b * 3; return c; }\nint main(void) { return foo(42, 2); }\n";
-    //InBuf = "int add2(int x) { return x + 2; } void main() { putchar(add2(40)); }";
-    //InBuf = "void main() { putchar(40+1+1); }";
-    InBuf = "void main() { putchar(21*4/2); }";
+    InBuf = "void main() { int x; x = 42; while (x) { putchar(48 + x % 10); x = x / 10; } }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
