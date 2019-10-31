@@ -35,8 +35,9 @@ enum {
     TOK_MINUS,
     TOK_STAR,
     TOK_SLASH,
+    TOK_MOD,
 
-    TOK_LAST = TOK_SLASH,
+    TOK_LAST = TOK_MOD,
 #define DEF_BULTIN(N, _) N,
     BUILTIN_TOKS(DEF_BULTIN)
 #undef DEF_BUILTIN
@@ -136,6 +137,7 @@ static char* TokenTypeString(int type)
     case TOK_MINUS:     return "-";
     case TOK_STAR:      return "*";
     case TOK_SLASH:     return "/";
+    case TOK_MOD:       return "%";
 #define CASE_TOKEN(V, N) case V: return N;
     BUILTIN_TOKS(CASE_TOKEN)
 #undef CASE_TOKEN
@@ -334,10 +336,12 @@ void ParseUnaryExpression(void)
         ++NumArgs;
         ParseAssignmentExpression();
         printf("\tPUSH\tAX\n"); // TODO: Check if we need to reorder stack...
+                                //       Possible work-around: Reserve fixed amount of space for arguments
         if (!Accept(TOK_COMMA)) {
             break;
         }
     }
+    assert(NumArgs <= 1); // TODO: Swap args to match expected stack layoutu
     Expect(TOK_RPAREN);
     printf("\tCALL\t_%s\n", Ids[id]);
     printf("\tADD\tSP, %d\n", NumArgs*2);
@@ -346,6 +350,24 @@ void ParseUnaryExpression(void)
 void ParseCastExpression(void)
 {
     ParseUnaryExpression();
+}
+
+void DoBinOp(int Op)
+{
+    switch (Op) {
+    case TOK_PLUS:  printf("\tADD\tAX, CX\n"); break;
+    case TOK_MINUS: printf("\tSUB\tAX, CX\n"); break;
+    case TOK_STAR:  printf("\tMUL\tCX\n"); break;
+    case TOK_SLASH:
+    case TOK_MOD:
+        printf("\tXOR\tDX, DX\n");
+        printf("\tIDIV\tCX\n");
+        if (Op == TOK_MOD) printf("\tMOV\tAX, DX\n");
+        break;
+    default:
+        printf("TODO: BinOp %s\n", TokenTypeString(Op));
+        Fatal("Not implemented");
+    }
 }
 
 void ParseExpression1(int OuterPrecedence)
@@ -379,17 +401,13 @@ void ParseExpression1(int OuterPrecedence)
             } else {
                 printf("\tMOV\tCX, AX\n");
                 printf("\tMOV\tAX, [BX]\n");
-                switch (Op) {
-                case TOK_PLUS: printf("\tADD\tAX, CX\n"); break;
-                default:
-                    printf("TODO: BinOp %s\n", TokenTypeString(Op));
-                    Fatal("Not implemented");
-                }
+                DoBinOp(Op);
             }
         } else {
             assert(!IsAssign && "Lvalue expected");
-            printf("TODO: BinOp %s\n", TokenTypeString(Op));
-            assert(!"Not implemented");
+            printf("\tPOP\tCX\n");
+            printf("\tXCHG\tAX, CX\n");
+            DoBinOp(Op);
         }
     }
 }
@@ -546,14 +564,16 @@ static const char* const Prelude =
 "\tMOV\tAH, 0x02\n"
 "\tINT\t0x21\n"
 "\tMOV\tSP, BP\n"
-"\POP\tBP\n"
+"\tPOP\tBP\n"
 "\tRET\n"
 ;
 
 int main(void)
 {
     //InBuf = "int foo(int a, int b) { int c; c = a + b * 3; return c; }\nint main(void) { return foo(42, 2); }\n";
-    InBuf = "int add2(int x) { return x + 2; } void main() { putchar(add2(40)); }";
+    //InBuf = "int add2(int x) { return x + 2; } void main() { putchar(add2(40)); }";
+    //InBuf = "void main() { putchar(40+1+1); }";
+    InBuf = "void main() { putchar(21*4/2); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
