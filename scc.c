@@ -16,10 +16,12 @@
 #define VT_FUN      0x400
 
 #define BUILTIN_TOKS(X)   \
-X(TOK_VOID   , "void")    \
 X(TOK_CHAR   , "char")    \
+X(TOK_ELSE   , "else")    \
+X(TOK_IF     , "if")      \
 X(TOK_INT    , "int")     \
 X(TOK_RETURN , "return")  \
+X(TOK_VOID   , "void")    \
 X(TOK_WHILE  , "while")   \
 
 
@@ -605,19 +607,39 @@ void ParseStatement(void)
         d->Offset = LocalOffset;
         printf("\tSUB\tSP, 2\t; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
         Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_IF)) {
+        const int IfLabel    = LocalLabelCounter++;
+        const int ElseLabel  = LocalLabelCounter++;
+        const int EndLabel   = LocalLabelCounter++;
+        printf("\t; Start of if\n");
+        Accept(TOK_LPAREN);
+        ParseExpression();
+        LvalToRval();
+        assert(CurrentType == VT_INT);
+        printf("\tAND\tAX, AX\n");
+        printf("\tJNZ\t.L%d\n", IfLabel);
+        printf("\tJMP\t.L%d\n", ElseLabel);
+        Accept(TOK_RPAREN);
+        printf(".L%d:\t; If\n", IfLabel);
+        ParseStatement();
+        printf("\tJMP\t.L%d\n", EndLabel);
+        printf(".L%d:\t; Else\n", ElseLabel);
+        if (Accept(TOK_ELSE)) {
+            ParseStatement();
+        }
+        printf(".L%d:\t; End if\n", EndLabel);
     } else if (Accept(TOK_RETURN)) {
         if (TokenType != TOK_SEMICOLON) {
             ParseExpression();
         }
         printf("\tJMP\t.RET\n");
     } else if (Accept(TOK_WHILE)) {
-        Expect(TOK_LPAREN);
         const int StartLabel = LocalLabelCounter++;
         const int BodyLabel  = LocalLabelCounter++;
         const int EndLabel   = LocalLabelCounter++;
         printf(".L%d:\t; Start of while\n", StartLabel);
+        Expect(TOK_LPAREN);
         ParseExpression();
-
         LvalToRval();
         assert(CurrentType == VT_INT);
         printf("\tAND\tAX, AX\n");
@@ -726,7 +748,8 @@ static const char* const Postlude =
 int main(void)
 {
     //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { char* s; s = malloc(3); s[0] = 65; s[1] = 48+6; s[2] = 0; puts(s); }";
-    InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
+    //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
+    InBuf = "void main() { if (1) putchar(42); else putchar(49); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
