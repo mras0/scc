@@ -392,28 +392,31 @@ void ParseUnaryExpression(void)
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
             }
-            printf("\tPUSH\tAX\n");
+            printf("\tPUSH\tSI\n");
+            printf("\tPUSH\tDI\n");
+            printf("\tMOV\tSI, AX\n");
             const int RetType = CurrentType & ~VT_FUN;
+            const int MaxArgs = 4; // TODO: Handle this better...
+            printf("\tSUB\tSP, %d\n", MaxArgs*2);
+            printf("\tMOV\tDI, SP\n");
             int NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
-                ++NumArgs;
+                assert(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
-                // TODO: Check if we need to reorder stack...
-                //       Possible work-around: Reserve fixed amount of space for arguments
                 LvalToRval();
                 assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                printf("\tPUSH\tAX\n");
+                printf("\tMOV\t[DI%+d], AX\n", NumArgs*2);
+                ++NumArgs;
 
                 if (!Accept(TOK_COMMA)) {
                     break;
                 }
             }
-            assert(NumArgs <= 1); // TODO: Swap args to match expected stack layoutu
             Expect(TOK_RPAREN);
-            printf("\tMOV\tBX, SP\n");
-            printf("\tMOV\tBX, [BX%+d]\n", NumArgs*2);
-            printf("\tCALL\tBX\n");
-            printf("\tADD\tSP, %d\n", NumArgs*2+2); // +2 for the function pointer
+            printf("\tCALL\tSI\n");
+            printf("\tADD\tSP, %d\n", MaxArgs*2);
+            printf("\tPOP\tDI\n");
+            printf("\tPOP\tSI\n");
             CurrentType = RetType;
         } else if (Accept(TOK_LBRACKET)) {
             LvalToRval();
@@ -633,6 +636,7 @@ void ParseStatement(void)
             ParseExpression();
         }
         printf("\tJMP\t.RET\n");
+        Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
         const int StartLabel = LocalLabelCounter++;
         const int BodyLabel  = LocalLabelCounter++;
@@ -749,7 +753,7 @@ int main(void)
 {
     //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { char* s; s = malloc(3); s[0] = 65; s[1] = 48+6; s[2] = 0; puts(s); }";
     //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
-    InBuf = "void main() { if (1) putchar(42); else putchar(49); }";
+    InBuf = "int div(int a, int b) { return a/b; }  void main() { putchar(48 + div(4,2)); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
