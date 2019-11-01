@@ -17,6 +17,7 @@
 
 #define BUILTIN_TOKS(X)   \
 X(TOK_VOID   , "void")    \
+X(TOK_CHAR   , "char")    \
 X(TOK_INT    , "int")     \
 X(TOK_RETURN , "return")  \
 X(TOK_WHILE  , "while")   \
@@ -308,7 +309,7 @@ int ExpectId(void)
 
 int IsTypeStart(void)
 {
-    return TokenType == TOK_VOID || TokenType == TOK_INT;
+    return TokenType == TOK_VOID || TokenType == TOK_CHAR || TokenType == TOK_INT;
 }
 
 struct VarDecl* Lookup(int id)
@@ -328,9 +329,15 @@ static void LvalToRval(void)
 {
     if (CurrentType & VT_LVAL) {
         CurrentType &= ~VT_LVAL;
-        assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
         printf("\tMOV\tBX, AX\n");
-        printf("\tMOV\tAX, [BX]\n");
+        if (CurrentType == VT_CHAR) {
+            printf("\tMOV\tAL, [BX]\n");
+            printf("\tCBW\n");
+            CurrentType = VT_INT;
+        } else {
+            assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
+            printf("\tMOV\tAX, [BX]\n");
+        }
     }
 }
 
@@ -399,9 +406,13 @@ void ParseUnaryExpression(void)
             const int AType = CurrentType & ~VT_PTR;
             printf("\tPUSH\tAX\n");
             ParseExpression();
-            assert(AType == VT_INT);
-            printf("\tADD\tAX, AX\n");
             Expect(TOK_RBRACKET);
+            LvalToRval();
+            assert(CurrentType == VT_INT);
+            if (AType != VT_CHAR) {
+                assert(AType == VT_INT);
+                printf("\tADD\tAX, AX\n");
+            }
             printf("\tPOP\tCX\n");
             printf("\tADD\tAX, CX\n");
             CurrentType = AType | VT_LVAL;
@@ -461,9 +472,14 @@ void ParseExpression1(int OuterPrecedence)
             LhsType &= ~VT_LVAL;
             printf("\tPOP\tBX\n");
             if (IsAssign) {
-                assert(LhsType == VT_INT || (LhsType & VT_PTR));
-                assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                printf("\tMOV\t[BX], AX\n");
+                if (LhsType == VT_CHAR) {
+                    assert(CurrentType == VT_INT);
+                    printf("\tMOV\t[BX], AL\n");
+                } else {
+                    assert(LhsType == VT_INT || (LhsType & VT_PTR));
+                    assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
+                    printf("\tMOV\t[BX], AX\n");
+                }
             } else {
                 assert(LhsType == VT_INT);
                 assert(CurrentType == VT_INT);
@@ -504,6 +520,7 @@ int ParseDeclSpecs(void)
     int t;
     switch (TokenType) {
     case TOK_VOID: t = VT_VOID; break;
+    case TOK_CHAR: t = VT_CHAR; break;
     case TOK_INT:  t = VT_INT;  break;
     default: Unexpected();
     }
@@ -691,7 +708,9 @@ static const char* const Postlude =
 int main(void)
 {
     //InBuf = "void main() { int x; x = 42; while (x) { putchar(48 + x % 10); x = x / 10; } }";
-    InBuf = "void main() { int *a; a = malloc(2); a[0] = 42; putchar(a[0]); }";
+    //InBuf = "void main() { int *a; a = malloc(2); a[0] = 42; putchar(a[0]); }";
+    //InBuf = "void main() { char x; x = 42; putchar(x); }";
+    InBuf = "void main() { char* s; int i; s = malloc(3); s[0] = 65; s[1] = 48+6; s[2] = 0; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
