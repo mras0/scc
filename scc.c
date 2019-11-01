@@ -27,6 +27,7 @@ enum {
     TOK_EOF,
 
     TOK_NUM,
+    TOK_STRLIT,
 
     TOK_LPAREN,
     TOK_RPAREN,
@@ -61,11 +62,6 @@ struct Scope {
     struct VarDecl* Decls;
     struct Scope*   Next;
 };
-
-struct Value {
-    int Type;
-    int Val;
- };
 
 static const char* InBuf;
 static char TokenText[TOKEN_MAX];
@@ -133,6 +129,7 @@ static char* TokenTypeString(int type)
     switch (type) {
     case TOK_EOF:       return "eof";
     case TOK_NUM:       return "number";
+    case TOK_STRLIT:    return "strlit";
     case TOK_LPAREN:    return "("; 
     case TOK_RPAREN:    return ")";
     case TOK_LBRACE:    return "{";
@@ -223,6 +220,14 @@ static void GetToken(void)
             }
         }
         TokenType = TOK_LAST + 1 + (id < IdsCount ? id : AddId(TokenText));
+    } else if (ch == '"') {
+        --TokenLen;
+        while ((ch = GetChar()) != '"') {
+            if (!ch) Fatal("Unterminated string literal");
+            assert(TokenLen < TOKEN_MAX-1);
+            TokenText[TokenLen++] = ch;
+        }
+        TokenType = TOK_STRLIT;
     } else {
         switch (ch) {
         case '(': TokenType = TOK_LPAREN;    break;
@@ -276,7 +281,8 @@ int OperatorPrecedence(int tok)
 void __declspec(noreturn) Unexpected(void)
 {
     PrintToken();
-    Fatal("\nUnexpected token");
+    printf(" (%s)\n", TokenTypeString(TokenType));
+    Fatal("Unexpected token");
 }
 
 int Accept(int type)
@@ -350,17 +356,26 @@ void ParsePrimaryExpression(void)
         printf("\tMOV\tAX, 0x%04X\n", (unsigned short)TokenNumVal);
         CurrentType = VT_INT;
         GetToken();
-        return;
-    }
-    const int id = ExpectId();
-    const struct VarDecl* d = Lookup(id);
-    CurrentType = d->Type | VT_LVAL;
-    if (d->Offset) {
-        printf("\tLEA\tAX, [BP%+d]\t; %s\n", d->Offset, Ids[d->Id]);
+    } else if (TokenType == TOK_STRLIT) {
+        const int SL = LocalLabelCounter++;
+        const int JL = LocalLabelCounter++;
+        printf("\tJMP\t.L%d\n", JL);
+        printf(".L%d:\tDB '%s', 0\n", SL, TokenText);
+        printf(".L%d:\n", JL);
+        printf("\tMOV\tAX, .L%d\n", SL);
+        CurrentType = VT_PTR | VT_CHAR;
+        GetToken();
     } else {
-        printf("\tMOV\tAX, _%s\n", Ids[d->Id]);
-        if (CurrentType & VT_FUN) {
-            CurrentType &= ~VT_LVAL;
+        const int id = ExpectId();
+        const struct VarDecl* d = Lookup(id);
+        CurrentType = d->Type | VT_LVAL;
+        if (d->Offset) {
+            printf("\tLEA\tAX, [BP%+d]\t; %s\n", d->Offset, Ids[d->Id]);
+        } else {
+            printf("\tMOV\tAX, _%s\n", Ids[d->Id]);
+            if (CurrentType & VT_FUN) {
+                CurrentType &= ~VT_LVAL;
+            }
         }
     }
 }
@@ -384,7 +399,7 @@ void ParseUnaryExpression(void)
                 // TODO: Check if we need to reorder stack...
                 //       Possible work-around: Reserve fixed amount of space for arguments
                 LvalToRval();
-                assert(CurrentType == VT_INT);
+                assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
                 printf("\tPUSH\tAX\n");
 
                 if (!Accept(TOK_COMMA)) {
@@ -645,6 +660,7 @@ void ParseExternalDefition(void)
     printf("_%s:\n", Ids[fd->Id]);
     printf("\tPUSH\tBP\n");
     printf("\tMOV\tBP, SP\n");
+    fd->Type |= VT_FUN;
     LocalOffset = 0;
     LocalLabelCounter = 0;
     Expect(TOK_LPAREN);
@@ -686,6 +702,7 @@ static const char* const Prelude =
 "\tMOV\tSP, BP\n"
 "\tPOP\tBP\n"
 "\tRET\n"
+"\n"
 "_malloc:\n"
 "\tPUSH\tBP\n"
 "\tMOV\tBP, SP\n"
@@ -701,16 +718,15 @@ static const char* const Prelude =
 ;
 
 static const char* const Postlude =
+"\n"
 "HeapPtr:\tdw HeapStart\n"
 "HeapStart:\n"
 ;
 
 int main(void)
 {
-    //InBuf = "void main() { int x; x = 42; while (x) { putchar(48 + x % 10); x = x / 10; } }";
-    //InBuf = "void main() { int *a; a = malloc(2); a[0] = 42; putchar(a[0]); }";
-    //InBuf = "void main() { char x; x = 42; putchar(x); }";
-    InBuf = "void main() { char* s; int i; s = malloc(3); s[0] = 65; s[1] = 48+6; s[2] = 0; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } }";
+    //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { char* s; s = malloc(3); s[0] = 65; s[1] = 48+6; s[2] = 0; puts(s); }";
+    InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
