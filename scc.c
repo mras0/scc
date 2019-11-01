@@ -12,6 +12,8 @@
 #define VT_INT      2
 #define VT_BASEMASK 0xff
 #define VT_LVAL     0x100
+#define VT_PTR      0x200
+#define VT_FUN      0x400
 
 #define BUILTIN_TOKS(X)   \
 X(TOK_VOID   , "void")    \
@@ -29,6 +31,8 @@ enum {
     TOK_RPAREN,
     TOK_LBRACE,
     TOK_RBRACE,
+    TOK_LBRACKET,
+    TOK_RBRACKET,
     TOK_COMMA,
     TOK_SEMICOLON,
     TOK_EQ,
@@ -132,6 +136,8 @@ static char* TokenTypeString(int type)
     case TOK_RPAREN:    return ")";
     case TOK_LBRACE:    return "{";
     case TOK_RBRACE:    return "}";
+    case TOK_LBRACKET:  return "[";
+    case TOK_RBRACKET:  return "]";
     case TOK_COMMA:     return ",";
     case TOK_SEMICOLON: return ";";
     case TOK_EQ:        return "=";
@@ -152,9 +158,9 @@ static char* TokenTypeString(int type)
 static char* TypeString(int Type)
 {
     switch (Type & VT_BASEMASK) {
-    case VT_VOID: return "void";
-    case VT_CHAR: return "char";
-    case VT_INT:  return "int";
+    case VT_VOID: return Type & VT_PTR ? "void*" : "void";
+    case VT_CHAR: return Type & VT_PTR ? "char*" : "char";
+    case VT_INT:  return Type & VT_PTR ? "int*"  : "int";
     default:
         printf("Unknown type 0x%X\n", Type);
         Fatal("Invalid type");
@@ -222,6 +228,8 @@ static void GetToken(void)
         case ')': TokenType = TOK_RPAREN;    break;
         case '{': TokenType = TOK_LBRACE;    break;
         case '}': TokenType = TOK_RBRACE;    break;
+        case '[': TokenType = TOK_LBRACKET;  break;
+        case ']': TokenType = TOK_RBRACKET;  break;
         case ',': TokenType = TOK_COMMA;     break;
         case ';': TokenType = TOK_SEMICOLON; break;
         case '=': TokenType = TOK_EQ;        break;
@@ -320,7 +328,7 @@ static void LvalToRval(void)
 {
     if (CurrentType & VT_LVAL) {
         CurrentType &= ~VT_LVAL;
-        assert(CurrentType == VT_INT);
+        assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
         printf("\tMOV\tBX, AX\n");
         printf("\tMOV\tAX, [BX]\n");
     }
@@ -329,7 +337,7 @@ static void LvalToRval(void)
 void ParseExpression(void);
 void ParseAssignmentExpression(void);
 
-void ParseUnaryExpression(void)
+void ParsePrimaryExpression(void)
 {
     if (TokenType == TOK_NUM) {
         printf("\tMOV\tAX, 0x%04X\n", (unsigned short)TokenNumVal);
@@ -339,30 +347,68 @@ void ParseUnaryExpression(void)
     }
     const int id = ExpectId();
     const struct VarDecl* d = Lookup(id);
-    if (!Accept(TOK_LPAREN)) {
+    CurrentType = d->Type | VT_LVAL;
+    if (d->Offset) {
         printf("\tLEA\tAX, [BP%+d]\t; %s\n", d->Offset, Ids[d->Id]);
-        CurrentType = d->Type | VT_LVAL;
-        return;
+    } else {
+        printf("\tMOV\tAX, _%s\n", Ids[d->Id]);
+        if (CurrentType & VT_FUN) {
+            CurrentType &= ~VT_LVAL;
+        }
     }
-    // Function call
-    int NumArgs = 0;
-    while (TokenType != TOK_RPAREN) {
-        ++NumArgs;
-        ParseAssignmentExpression();
-        // TODO: Check if we need to reorder stack...
-        //       Possible work-around: Reserve fixed amount of space for arguments
-        LvalToRval();
-        assert(CurrentType == VT_INT);
-        printf("\tPUSH\tAX\n");
+}
 
-        if (!Accept(TOK_COMMA)) {
+void ParseUnaryExpression(void)
+{
+    ParsePrimaryExpression();
+    // Post-fix expression
+    for (;;) {
+        if (Accept(TOK_LPAREN)) {
+            // Function call
+            if (!(CurrentType & VT_FUN)) {
+                Fatal("Not a function");
+            }
+            printf("\tPUSH\tAX\n");
+            const int RetType = CurrentType & ~VT_FUN;
+            int NumArgs = 0;
+            while (TokenType != TOK_RPAREN) {
+                ++NumArgs;
+                ParseAssignmentExpression();
+                // TODO: Check if we need to reorder stack...
+                //       Possible work-around: Reserve fixed amount of space for arguments
+                LvalToRval();
+                assert(CurrentType == VT_INT);
+                printf("\tPUSH\tAX\n");
+
+                if (!Accept(TOK_COMMA)) {
+                    break;
+                }
+            }
+            assert(NumArgs <= 1); // TODO: Swap args to match expected stack layoutu
+            Expect(TOK_RPAREN);
+            printf("\tMOV\tBX, SP\n");
+            printf("\tMOV\tBX, [BX%+d]\n", NumArgs*2);
+            printf("\tCALL\tBX\n");
+            printf("\tADD\tSP, %d\n", NumArgs*2+2); // +2 for the function pointer
+            CurrentType = RetType;
+        } else if (Accept(TOK_LBRACKET)) {
+            LvalToRval();
+            if (!(CurrentType & VT_PTR)) {
+                Fatal("Expected pointer");
+            }
+            const int AType = CurrentType & ~VT_PTR;
+            printf("\tPUSH\tAX\n");
+            ParseExpression();
+            assert(AType == VT_INT);
+            printf("\tADD\tAX, AX\n");
+            Expect(TOK_RBRACKET);
+            printf("\tPOP\tCX\n");
+            printf("\tADD\tAX, CX\n");
+            CurrentType = AType | VT_LVAL;
+        } else {
             break;
         }
     }
-    assert(NumArgs <= 1); // TODO: Swap args to match expected stack layoutu
-    Expect(TOK_RPAREN);
-    printf("\tCALL\t_%s\n", Ids[id]);
-    printf("\tADD\tSP, %d\n", NumArgs*2);
 }
 
 void ParseCastExpression(void)
@@ -398,7 +444,7 @@ void ParseExpression1(int OuterPrecedence)
         }
         GetToken();
         printf("\tPUSH\tAX\n");
-        const int LhsType = CurrentType;
+        int LhsType = CurrentType;
         // TODO: Question, ?:
         /*rhs = */ ParseCastExpression();
         for (;;) {
@@ -412,17 +458,23 @@ void ParseExpression1(int OuterPrecedence)
         const int IsAssign = Op == TOK_EQ;
         LvalToRval();
         if (LhsType & VT_LVAL) {
-            assert((LhsType & ~VT_LVAL) == VT_INT);
+            LhsType &= ~VT_LVAL;
             printf("\tPOP\tBX\n");
             if (IsAssign) {
+                assert(LhsType == VT_INT || (LhsType & VT_PTR));
+                assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
                 printf("\tMOV\t[BX], AX\n");
             } else {
+                assert(LhsType == VT_INT);
+                assert(CurrentType == VT_INT);
                 printf("\tMOV\tCX, AX\n");
                 printf("\tMOV\tAX, [BX]\n");
                 DoBinOp(Op);
             }
         } else {
             assert(!IsAssign && "Lvalue expected");
+            assert(LhsType == VT_INT);
+            assert(CurrentType == VT_INT);
             printf("\tPOP\tCX\n");
             printf("\tXCHG\tAX, CX\n");
             DoBinOp(Op);
@@ -456,6 +508,10 @@ int ParseDeclSpecs(void)
     default: Unexpected();
     }
     GetToken();
+    if (TokenType == TOK_STAR) {
+        t |= VT_PTR;
+        GetToken();
+    }
     return t;
 }
 
@@ -515,7 +571,7 @@ void ParseStatement(void)
         struct VarDecl* d = ParseDecl();
         LocalOffset -= 2;
         d->Offset = LocalOffset;
-        printf("\tSUB\tSP, 2 ; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
+        printf("\tSUB\tSP, 2\t; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_RETURN)) {
         if (TokenType != TOK_SEMICOLON) {
@@ -613,11 +669,29 @@ static const char* const Prelude =
 "\tMOV\tSP, BP\n"
 "\tPOP\tBP\n"
 "\tRET\n"
+"_malloc:\n"
+"\tPUSH\tBP\n"
+"\tMOV\tBP, SP\n"
+"\tMOV\tAX, [HeapPtr]\n"
+"\tMOV\tCX, [BP+4]\n"
+"\tINC\tCX\n"
+"\tAND\tCL, 0xFE\n"
+"\tADD\tCX, AX\n"
+"\tMOV\t[HeapPtr], CX\n"
+"\tMOV\tSP, BP\n"
+"\tPOP\tBP\n"
+"\tRET\n"
+;
+
+static const char* const Postlude =
+"HeapPtr:\tdw HeapStart\n"
+"HeapStart:\n"
 ;
 
 int main(void)
 {
-    InBuf = "void main() { int x; x = 42; while (x) { putchar(48 + x % 10); x = x / 10; } }";
+    //InBuf = "void main() { int x; x = 42; while (x) { putchar(48 + x % 10); x = x / 10; } }";
+    InBuf = "void main() { int *a; a = malloc(2); a[0] = 42; putchar(a[0]); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
@@ -627,12 +701,15 @@ int main(void)
     PushScope();
     GetToken();
 
-    /*struct VarDecl* putchar_decl = */AddVarDecl(VT_INT, AddId("putchar"));
+    /*struct VarDecl* putchar_decl = */AddVarDecl(VT_FUN|VT_VOID, AddId("putchar"));
+    AddVarDecl(VT_FUN|VT_VOID|VT_PTR, AddId("malloc"));
 
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
     }
     PopScope();
+
+    puts(Postlude);
 
     return 0;
 }
