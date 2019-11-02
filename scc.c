@@ -24,19 +24,6 @@ enum {
     VT_ENUM = 2048
 };
 
-#define BUILTIN_TOKS(X)      \
-X(TOK_BREAK    , "break")    \
-X(TOK_CHAR     , "char")     \
-X(TOK_CONTINUE , "continue") \
-X(TOK_ELSE     , "else")     \
-X(TOK_ENUM     , "enum")     \
-X(TOK_FOR      , "for")      \
-X(TOK_IF       , "if")       \
-X(TOK_INT      , "int")      \
-X(TOK_RETURN   , "return")   \
-X(TOK_VOID     , "void")     \
-X(TOK_WHILE    , "while")    \
-
 enum {
     TOK_EOF,
 
@@ -366,7 +353,7 @@ int OperatorPrecedence(int tok)
 
 void __declspec(noreturn) Unexpected(void)
 {
-    printf("(%d) \"%s\"\n", TokenType, TokenText);
+    printf("%d \"%s\"\n", TokenType, TokenText);
     Fatal("Unexpected token");
 }
 
@@ -382,7 +369,7 @@ int Accept(int type)
 void Expect(int type)
 {
     if (!Accept(type)) {
-        printf("Ttoken type %d expected\n", type);
+        printf("Token type %d expected got ", type);
         Unexpected();
     }
 }
@@ -401,18 +388,6 @@ int ExpectId(void)
 int IsTypeStart(void)
 {
     return TokenType == TOK_VOID || TokenType == TOK_CHAR || TokenType == TOK_INT;
-}
-
-int Lookup(int id)
-{
-    assert(ScopesCount);
-    for (int i = Scopes[ScopesCount-1]; i >= 0; i--) {
-        if (VarDeclId[i] == id) {
-            return i;
-        }
-    }
-    printf("%s not found\n", IdText(id));
-    Fatal("Lookup failed");
 }
 
 static void LvalToRval(void)
@@ -502,19 +477,33 @@ void ParsePrimaryExpression(void)
         GetToken();
     } else {
         const int id = ExpectId();
-        const int vd = Lookup(id);
-        if (VarDeclType[vd] & VT_ENUM) {
-            printf("\tMOV\tAX, %d\n", VarDeclOffset[vd]);
-            CurrentType = VT_INT;
-            return;
+        int vd;
+
+        // Lookup
+        assert(ScopesCount);
+        for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
+            if (VarDeclId[vd] == id) {
+                break;
+            }
         }
-        CurrentType = VarDeclType[vd] | VT_LVAL;
-        if (VarDeclOffset[vd]) {
-            printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], IdText(id));
-        } else {
+        if (vd < 0) {
+            // Lookup failed. Assume function returning int.
+            CurrentType = VT_FUN|VT_INT;
             printf("\tMOV\tAX, _%s\n", IdText(id));
-            if (CurrentType & VT_FUN) {
-                CurrentType &= ~VT_LVAL;
+        } else {
+            if (VarDeclType[vd] & VT_ENUM) {
+                printf("\tMOV\tAX, %d\n", VarDeclOffset[vd]);
+                CurrentType = VT_INT;
+                return;
+            }
+            CurrentType = VarDeclType[vd] | VT_LVAL;
+            if (VarDeclOffset[vd]) {
+                printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], IdText(id));
+            } else {
+                printf("\tMOV\tAX, _%s\n", IdText(id));
+                if (CurrentType & VT_FUN) {
+                    CurrentType &= ~VT_LVAL;
+                }
             }
         }
     }
@@ -990,9 +979,12 @@ void ParseExternalDefition(void)
     }
 
     const int fd = ParseDecl();
-    printf("_%s:\n", IdText(VarDeclId[fd]));
+
+    // Note: We don't actually care that we might end up
+    // with multiple VarDecl's for functions with prototypes.
     Expect(TOK_LPAREN);
     VarDeclType[fd] |= VT_FUN;
+    PushScope();
     int ArgOffset = 4;
     while (TokenType != TOK_RPAREN) {
         if (Accept(TOK_VOID)) {
@@ -1006,62 +998,27 @@ void ParseExternalDefition(void)
         }
     }
     Expect(TOK_RPAREN);
-    LocalOffset = 0;
-    LocalLabelCounter = 0;
-    ReturnLabel = LocalLabelCounter++;
-    BreakLabel = ContinueLabel = -1;
-    printf("\tPUSH\tBP\n");
-    printf("\tMOV\tBP, SP\n");
-    ParseCompoundStatement();
-    printf(".L%d:\n", ReturnLabel);
-    printf("\tMOV\tSP, BP\n");
-    printf("\tPOP\tBP\n");
-    printf("\tRET\n");
+    if (!Accept(TOK_SEMICOLON)) {
+        LocalOffset = 0;
+        LocalLabelCounter = 0;
+        ReturnLabel = LocalLabelCounter++;
+        BreakLabel = ContinueLabel = -1;
+        printf("_%s:\n", IdText(VarDeclId[fd]));
+        printf("\tPUSH\tBP\n");
+        printf("\tMOV\tBP, SP\n");
+        ParseCompoundStatement();
+        printf(".L%d:\n", ReturnLabel);
+        printf("\tMOV\tSP, BP\n");
+        printf("\tPOP\tBP\n");
+        printf("\tRET\n");
+    }
+    PopScope();
 }
-
-static const char* const Prelude =
-"\tcpu 8086\n"
-"\torg 0x100\n"
-"Start:\n"
-"\tXOR\tBP, BP\n"
-"\tCALL\t_main\n"
-"\tMOV\tAH, 0x4C\n"
-"\tINT\t0x21\n"
-"\n"
-"_putchar:\n"
-"\tPUSH\tBP\n"
-"\tMOV\tBP, SP\n"
-"\tMOV\tDL, [BP+4]\n"
-"\tMOV\tAH, 0x02\n"
-"\tINT\t0x21\n"
-"\tMOV\tSP, BP\n"
-"\tPOP\tBP\n"
-"\tRET\n"
-"\n"
-"_malloc:\n"
-"\tPUSH\tBP\n"
-"\tMOV\tBP, SP\n"
-"\tMOV\tAX, [HeapPtr]\n"
-"\tMOV\tCX, [BP+4]\n"
-"\tINC\tCX\n"
-"\tAND\tCL, 0xFE\n"
-"\tADD\tCX, AX\n"
-"\tMOV\t[HeapPtr], CX\n"
-"\tMOV\tSP, BP\n"
-"\tPOP\tBP\n"
-"\tRET\n"
-;
-
-static const char* const Postlude =
-"\n"
-"HeapPtr:\tdw HeapStart\n"
-"HeapStart:\n"
-;
 
 int main(void)
 {
-    //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
-    //InBuf = "int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
+    //InBuf = "void putchar(char c); void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
+    //InBuf = "void putchar(char c); int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
     //InBuf = "void main() { int i; for (i = 0; ;++i) { if (!(i&1)) continue; if(i>=10)break; putchar('0'+i); } }";
     //InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
     //InBuf = "enum { A, B, X=8, Y }; void main() { putchar('0'+A); putchar('0'+B); putchar('0'+X); putchar('0'+Y); }";
@@ -1080,20 +1037,53 @@ int main(void)
     AddId("while");
     assert(IdCount+TOK_LAST == TOK_WHILE);
 
-    puts(Prelude);
+    // Prelude
+    puts(
+    "\tcpu 8086\n"
+    "\torg 0x100\n"
+    "Start:\n"
+    "\tXOR\tBP, BP\n"
+    "\tCALL\t_main\n"
+    "\tMOV\tAH, 0x4C\n"
+    "\tINT\t0x21\n"
+    "\n"
+    "_putchar:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tMOV\tDL, [BP+4]\n"
+    "\tMOV\tAH, 0x02\n"
+    "\tINT\t0x21\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+    "\n"
+    "_malloc:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tMOV\tAX, [HeapPtr]\n"
+    "\tMOV\tCX, [BP+4]\n"
+    "\tINC\tCX\n"
+    "\tAND\tCL, 0xFE\n"
+    "\tADD\tCX, AX\n"
+    "\tMOV\t[HeapPtr], CX\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+);
 
     PushScope();
     GetToken();
-
-    AddVarDecl(VT_FUN|VT_VOID, AddId("putchar"));
-    AddVarDecl(VT_FUN|VT_VOID|VT_PTR, AddId("malloc"));
-
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
     }
     PopScope();
 
-    puts(Postlude);
+    // Postlude
+    puts(
+    "\n"
+    "HeapPtr:\tdw HeapStart\n"
+    "HeapStart:\n"
+    );
 
     return 0;
 }
