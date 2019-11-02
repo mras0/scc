@@ -72,9 +72,8 @@ enum {
     TOK_OREQ,
     TOK_TILDE,
 
-    TOK_LAST = TOK_TILDE,
-
     // NOTE: Must match order of registration in main
+    //       TOK_BREAK must be first
     TOK_BREAK,
     TOK_CHAR,
     TOK_CONTINUE,
@@ -90,49 +89,51 @@ enum {
     TOK_ID
 };
 
-static const char* InBuf;
+char* InBuf;
+int Line;
 
-static char TokenText[TOKEN_MAX];
-static int TokenLen;
-static int TokenType;
-static int TokenNumVal;
+char* TokenText;
+int TokenLen;
+int TokenType;
+int TokenNumVal;
 
-static char IdBuffer[IDBUFFER_MAX];
-static int IdBufferIndex;
+char* IdBuffer;
+int IdBufferIndex;
 
-static int IdOffset[ID_MAX];
-static int IdCount;
+int* IdOffset;
+int IdCount;
 
-static int VarDeclId[VARDECL_MAX];
-static int VarDeclType[VARDECL_MAX];
-static int VarDeclOffset[VARDECL_MAX];
+int* VarDeclId;
+int* VarDeclType;
+int* VarDeclOffset;
 
-static int Scopes[SCOPE_MAX]; // VarDecl index
-static int ScopesCount;
+int* Scopes; // VarDecl index
+int ScopesCount;
 
-static int LocalOffset;
-static int CurrentType;
-static int LocalLabelCounter;
-static int ReturnLabel;
-static int BreakLabel;
-static int ContinueLabel;
+int LocalOffset;
+int CurrentType;
+int LocalLabelCounter;
+int ReturnLabel;
+int BreakLabel;
+int ContinueLabel;
 
-static int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
-static int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
+int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
+int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
 
-static __declspec(noreturn) void Fatal(const char* Msg)
+void Fatal(const char* Msg)
 {
     puts(Msg);
+    printf("In line %d\n", Line);
     abort();
 }
 
-static const char* IdText(int id)
+const char* IdText(int id)
 {
     assert(id >= 0 && id < IdCount);
     return IdBuffer + IdOffset[id];
 }
 
-static int AddId(const char* Name)
+int AddId(const char* Name)
 {
     assert(IdCount < ID_MAX);
     const int cnt = (int)strlen(Name) + 1;
@@ -144,17 +145,17 @@ static int AddId(const char* Name)
     return IdCount - 1;
 }
 
-static char GetChar(void)
+char GetChar(void)
 {
     return *InBuf ? *InBuf++ : 0;
 }
 
-static void UnGetChar(void)
+void UnGetChar(void)
 {
     --InBuf;
 }
 
-static int TryGetChar(char ch)
+int TryGetChar(char ch)
 {
     if (*InBuf != ch) {
         return 0;
@@ -164,22 +165,36 @@ static int TryGetChar(char ch)
     return 1;
 }
 
-static void GetToken(void)
+void SkipLine(void)
+{
+    int ch;
+    while ((ch = GetChar()) != '\n' && ch)
+        ;
+    ++Line;
+}
+
+void GetToken(void)
 {
     char ch;
-    TokenLen = 0;
 
+    TokenLen = 0;
     ch = GetChar();
     while (ch <= ' ') {
         if (!ch) {
             TokenType = TOK_EOF;
             return;
+        } else if (ch == '\n') {
+            ++Line;
         }
         ch = GetChar();
     }
     TokenText[TokenLen++] = ch;
 
-    if (ch >= '0' && ch <= '9') {
+    if (ch == '#') {
+        SkipLine();
+        GetToken();
+        return;
+    } else if (ch >= '0' && ch <= '9') {
         TokenNumVal = 0;
         for (;;) {
             TokenNumVal = TokenNumVal*10 + ch - '0';
@@ -207,7 +222,7 @@ static void GetToken(void)
                 break;
             }
         }
-        TokenType = TOK_LAST + 1 + (id < IdCount ? id : AddId(TokenText));
+        TokenType = TOK_BREAK + (id < IdCount ? id : AddId(TokenText));
     } else if (ch == '\'') {
         --TokenLen;
         TokenText[TokenLen++] = GetChar();
@@ -303,6 +318,11 @@ static void GetToken(void)
                 TokenType = TOK_STAREQ;
             }
         } else if (ch == '/') {
+            if (TryGetChar('/')) {
+                SkipLine();
+                GetToken();
+                return;
+            }
             TokenType = TOK_SLASH;
             if (TryGetChar('=')) {
                 TokenType = TOK_SLASHEQ;
@@ -379,7 +399,7 @@ int ExpectId(void)
     const int id = TokenType;
     if (id >= TOK_ID) {
         GetToken();
-        return id - TOK_LAST - 1;
+        return id - TOK_BREAK;
     }
     printf("Expected identifier got ");
     Unexpected();
@@ -390,7 +410,7 @@ int IsTypeStart(void)
     return TokenType == TOK_VOID || TokenType == TOK_CHAR || TokenType == TOK_INT;
 }
 
-static void LvalToRval(void)
+void LvalToRval(void)
 {
     if (CurrentType & VT_LVAL) {
         CurrentType &= ~VT_LVAL;
@@ -406,7 +426,7 @@ static void LvalToRval(void)
     }
 }
 
-static void DoIncDec(int Op)
+void DoIncDec(int Op)
 {
     int Amm;
     if (CurrentType == VT_CHAR || CurrentType == VT_INT || CurrentType == (VT_CHAR|VT_PTR)) {
@@ -430,7 +450,7 @@ static void DoIncDec(int Op)
     }
 }
 
-static void DoIncDecOp(int Op, int Post)
+void DoIncDecOp(int Op, int Post)
 {
     assert(CurrentType & VT_LVAL);
     CurrentType &= ~VT_LVAL;
@@ -786,7 +806,7 @@ int ParseDeclSpecs(void)
     return t;
 }
 
-static int AddVarDecl(int Type, int Id)
+int AddVarDecl(int Type, int Id)
 {
     assert(ScopesCount);
     assert(Scopes[ScopesCount-1] < VARDECL_MAX);
@@ -804,14 +824,14 @@ int ParseDecl(void)
     return AddVarDecl(Type, Id);
 }
 
-static void PushScope(void)
+void PushScope(void)
 {
     assert(ScopesCount < SCOPE_MAX);
     const int End = ScopesCount ? Scopes[ScopesCount-1] : 0;
     Scopes[ScopesCount++] = End;
 }
 
-static void PopScope(void)
+void PopScope(void)
 {
     assert(ScopesCount);
     --ScopesCount;
@@ -980,6 +1000,12 @@ void ParseExternalDefition(void)
 
     const int fd = ParseDecl();
 
+    if (Accept(TOK_SEMICOLON)) {
+        printf("_%s:\n", IdText(VarDeclId[fd]));
+        printf("\tDW\t0\n");
+        return;
+    }
+
     // Note: We don't actually care that we might end up
     // with multiple VarDecl's for functions with prototypes.
     Expect(TOK_LPAREN);
@@ -1015,6 +1041,13 @@ void ParseExternalDefition(void)
     PopScope();
 }
 
+void* Malloc(int size)
+{
+    void* ptr = malloc(size);
+    if (!ptr) Fatal("Out of memory");
+    return ptr;
+}
+
 int main(void)
 {
     //InBuf = "void putchar(char c); void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
@@ -1022,7 +1055,27 @@ int main(void)
     //InBuf = "void main() { int i; for (i = 0; ;++i) { if (!(i&1)) continue; if(i>=10)break; putchar('0'+i); } }";
     //InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
     //InBuf = "enum { A, B, X=8, Y }; void main() { putchar('0'+A); putchar('0'+B); putchar('0'+X); putchar('0'+Y); }";
-    InBuf = "void main() { putchar('0' + 1+2*3); }";
+    //InBuf = "void main() { putchar('0' + 1+2*3); }";
+
+    InBuf = "int a; void main() { a=42; putchar(a); }";
+#if 0
+    FILE* fp = fopen("../scc.c", "rb");
+    if (!fp) Fatal("Error opening input");
+    fseek(fp, 0L, SEEK_END);
+    int size = (int)ftell(fp);
+    fseek(fp, 0L, SEEK_SET);
+    InBuf = Malloc(size+1);
+    fread(InBuf, size, 1, fp);
+    InBuf[size] = 0;
+#endif
+
+    TokenText     = Malloc(TOKEN_MAX);
+    IdBuffer      = Malloc(IDBUFFER_MAX);
+    IdOffset      = Malloc(sizeof(int)*ID_MAX);
+    VarDeclId     = Malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclType   = Malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclOffset = Malloc(sizeof(int)*VARDECL_MAX);
+    Scopes        = Malloc(sizeof(int)*SCOPE_MAX);
 
     AddId("break");
     AddId("char");
@@ -1035,7 +1088,7 @@ int main(void)
     AddId("return");
     AddId("void");
     AddId("while");
-    assert(IdCount+TOK_LAST == TOK_WHILE);
+    assert(IdCount+TOK_BREAK-1 == TOK_WHILE);
 
     // Prelude
     puts(
@@ -1072,6 +1125,7 @@ int main(void)
 );
 
     PushScope();
+    Line = 1;
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
