@@ -3,18 +3,26 @@
 #include <string.h>
 #include <assert.h>
 
-#define TOKEN_MAX 64
-#define SCOPE_MAX 10
-#define VARDECL_MAX 100
+enum {
+    TOKEN_MAX = 64,
+    SCOPE_MAX = 10,
+    VARDECL_MAX = 100,
+    ID_MAX = 100,
+    IDBUFFER_MAX = 4096,
+};
 
-#define VT_VOID     0
-#define VT_CHAR     1
-#define VT_INT      2
-#define VT_BASEMASK 0xff
-#define VT_LVAL     0x100
-#define VT_PTR      0x200
-#define VT_FUN      0x400
-#define VT_ENUM     0x800
+enum {
+    VT_VOID,
+    VT_CHAR,
+    VT_INT,
+
+    VT_BASEMASK = 15,
+
+    VT_LVAL = 256,
+    VT_PTR  = 512,
+    VT_FUN  = 1024,
+    VT_ENUM = 2048
+};
 
 #define BUILTIN_TOKS(X)      \
 X(TOK_BREAK    , "break")    \
@@ -78,19 +86,35 @@ enum {
     TOK_TILDE,
 
     TOK_LAST = TOK_TILDE,
-#define DEF_BULTIN(N, _) N,
-    BUILTIN_TOKS(DEF_BULTIN)
-#undef DEF_BUILTIN
+
+    // NOTE: Must match order of registration in main
+    TOK_BREAK,
+    TOK_CHAR,
+    TOK_CONTINUE,
+    TOK_ELSE,
+    TOK_ENUM,
+    TOK_FOR,
+    TOK_IF,
+    TOK_INT,
+    TOK_RETURN,
+    TOK_VOID,
+    TOK_WHILE,
+
     TOK_ID
 };
 
 static const char* InBuf;
+
 static char TokenText[TOKEN_MAX];
 static int TokenLen;
 static int TokenType;
 static int TokenNumVal;
-static char** Ids;
-static int IdsCount, IdsCapacity;
+
+static char IdBuffer[IDBUFFER_MAX];
+static int IdBufferIndex;
+
+static int IdOffset[ID_MAX];
+static int IdCount;
 
 static int VarDeclId[VARDECL_MAX];
 static int VarDeclType[VARDECL_MAX];
@@ -111,39 +135,26 @@ static int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && c
 
 static __declspec(noreturn) void Fatal(const char* Msg)
 {
-    fputs(Msg, stderr);
+    puts(Msg);
     abort();
 }
 
-static void* Malloc(size_t Bytes)
+static const char* IdText(int id)
 {
-    void* Buf = malloc(Bytes);
-    if (!Buf) {
-        Fatal("malloc failed");
-    }
-    return Buf;
-}
-
-static char* DupString(const char* Name)
-{
-    const size_t cnt = strlen(Name) + 1;
-    char* Buf = Malloc(cnt);
-    memcpy(Buf, Name, cnt);
-    return Buf;
+    assert(id >= 0 && id < IdCount);
+    return IdBuffer + IdOffset[id];
 }
 
 static int AddId(const char* Name)
 {
-    if (IdsCount == IdsCapacity) {
-        IdsCapacity = IdsCapacity ? IdsCapacity*2 : 32;
-        char** NewIds = realloc(Ids, sizeof(char*)*IdsCapacity);
-        if (!NewIds) {
-            Fatal("realloc failed");
-        }
-        Ids = NewIds;
-    }
-    Ids[IdsCount++] = DupString(Name);
-    return IdsCount - 1;
+    assert(IdCount < ID_MAX);
+    const int cnt = (int)strlen(Name) + 1;
+    const int ofs = IdBufferIndex;
+    IdBufferIndex += cnt;
+    assert(IdBufferIndex <= IDBUFFER_MAX);
+    memcpy(IdBuffer + ofs, Name, cnt);
+    IdOffset[IdCount++] = ofs;
+    return IdCount - 1;
 }
 
 static char GetChar(void)
@@ -164,85 +175,6 @@ static int TryGetChar(char ch)
     TokenText[TokenLen++] = ch;
     ++InBuf;
     return 1;
-}
-
-static char* TokenTypeString(int type)
-{
-    switch (type) {
-    case TOK_EOF:        return "eof";
-    case TOK_NUM:        return "number";
-    case TOK_STRLIT:     return "strlit";
-    case TOK_LPAREN:     return "("; 
-    case TOK_RPAREN:     return ")";
-    case TOK_LBRACE:     return "{";
-    case TOK_RBRACE:     return "}";
-    case TOK_LBRACKET:   return "[";
-    case TOK_RBRACKET:   return "]";
-    case TOK_COMMA:      return ",";
-    case TOK_SEMICOLON:  return ";";
-    case TOK_EQ:         return "=";
-    case TOK_EQEQ:       return "==";
-    case TOK_NOT:        return "!";
-    case TOK_NOTEQ:      return "!=";
-    case TOK_LT:         return "<";
-    case TOK_LTEQ:       return "<=";
-    case TOK_GT:         return ">";
-    case TOK_GTEQ:       return ">=";
-    case TOK_PLUS:       return "+";
-    case TOK_PLUSPLUS:   return "++";
-    case TOK_MINUS:      return "-";
-    case TOK_MINUSMINUS: return "--";
-    case TOK_STAR:       return "*";
-    case TOK_SLASH:      return "/";
-    case TOK_MOD:        return "%";
-    case TOK_AND:        return "&";
-    case TOK_XOR:        return "^";
-    case TOK_OR:         return "|";
-    case TOK_ANDAND:     return "&&";
-    case TOK_OROR:       return "||";
-    case TOK_LSH:        return "<<";
-    case TOK_RSH:        return ">>";
-    case TOK_PLUSEQ:     return "+=";
-    case TOK_MINUSEQ:    return "-=";
-    case TOK_STAREQ:     return "*=";
-    case TOK_SLASHEQ:    return "/=";
-    case TOK_MODEQ:      return "%=";
-    case TOK_LSHEQ:      return "<<=";
-    case TOK_RSHEQ:      return ">>=";
-    case TOK_ANDEQ:      return "&=";
-    case TOK_XOREQ:      return "^=";
-    case TOK_OREQ:       return "|=";
-    case TOK_TILDE:      return "~";
-#define CASE_TOKEN(V, N) case V: return N;
-    BUILTIN_TOKS(CASE_TOKEN)
-#undef CASE_TOKEN
-    }
-    static char buf[64];
-    snprintf(buf, sizeof(buf), "TOK(%d)", type);
-    return buf;
-}
-
-static char* TypeString(int Type)
-{
-    switch (Type & VT_BASEMASK) {
-    case VT_VOID: return Type & VT_PTR ? "void*" : "void";
-    case VT_CHAR: return Type & VT_PTR ? "char*" : "char";
-    case VT_INT:  return Type & VT_PTR ? "int*"  : "int";
-    default:
-        printf("Unknown type 0x%X\n", Type);
-        Fatal("Invalid type");
-    }
-}
-
-static void PrintToken(void)
-{
-    if (TokenType == TOK_NUM) {
-        printf("%d", TokenNumVal);
-    } else if (TokenType > TOK_LAST) {
-        printf("%s", Ids[TokenType-TOK_LAST-1]);
-    } else {
-        printf("%s", TokenText);
-    }
 }
 
 static void GetToken(void)
@@ -283,12 +215,12 @@ static void GetToken(void)
         TokenText[TokenLen] = '\0';
         UnGetChar();
         int id;
-        for (id = 0; id < IdsCount; ++id) {
-            if (!strcmp(Ids[id], TokenText)) {
+        for (id = 0; id < IdCount; ++id) {
+            if (!strcmp(IdText(id), TokenText)) {
                 break;
             }
         }
-        TokenType = TOK_LAST + 1 + (id < IdsCount ? id : AddId(TokenText));
+        TokenType = TOK_LAST + 1 + (id < IdCount ? id : AddId(TokenText));
     } else if (ch == '\'') {
         --TokenLen;
         TokenText[TokenLen++] = GetChar();
@@ -306,29 +238,26 @@ static void GetToken(void)
         }
         TokenType = TOK_STRLIT;
     } else {
-        switch (ch) {
-        case '(': TokenType = TOK_LPAREN;    break;
-        case ')': TokenType = TOK_RPAREN;    break;
-        case '{': TokenType = TOK_LBRACE;    break;
-        case '}': TokenType = TOK_RBRACE;    break;
-        case '[': TokenType = TOK_LBRACKET;  break;
-        case ']': TokenType = TOK_RBRACKET;  break;
-        case ',': TokenType = TOK_COMMA;     break;
-        case ';': TokenType = TOK_SEMICOLON; break;
-        case '~': TokenType = TOK_TILDE;     break;
-        case '=':
+        if (ch == '(') { TokenType = TOK_LPAREN;    }
+        else if (ch == ')') { TokenType = TOK_RPAREN;    }
+        else if (ch == '{') { TokenType = TOK_LBRACE;    }
+        else if (ch == '}') { TokenType = TOK_RBRACE;    }
+        else if (ch == '[') { TokenType = TOK_LBRACKET;  }
+        else if (ch == ']') { TokenType = TOK_RBRACKET;  }
+        else if (ch == ',') { TokenType = TOK_COMMA;     }
+        else if (ch == ';') { TokenType = TOK_SEMICOLON; }
+        else if (ch == '~') { TokenType = TOK_TILDE;     }
+        else if (ch == '=') {
             TokenType = TOK_EQ;
             if (TryGetChar('=')) {
                 TokenType = TOK_EQEQ;
             }
-            break;
-        case '!':
+        } else if (ch == '!') {
             TokenType = TOK_NOT;
             if (TryGetChar('=')) {
                 TokenType = TOK_NOTEQ;
             }
-            break;
-        case '<':
+        } else if (ch == '<') {
             TokenType = TOK_LT;
             if (TryGetChar('<')) {
                 TokenType = TOK_LSH;
@@ -338,8 +267,7 @@ static void GetToken(void)
             } else if (TryGetChar('=')) {
                 TokenType = TOK_LTEQ;
             }
-            break;
-        case '>':
+        } else if (ch ==  '>') {
             TokenType = TOK_GT;
             if (TryGetChar('>')) {
                 TokenType = TOK_RSH;
@@ -349,66 +277,57 @@ static void GetToken(void)
             } else if (TryGetChar('=')) {
                 TokenType = TOK_GTEQ;
             }
-            break;
-        case '&':
+        } else if (ch == '&') {
             TokenType = TOK_AND;
             if (TryGetChar('&')) {
                 TokenType = TOK_ANDAND;
             } else if (TryGetChar('=')) {
                 TokenType = TOK_ANDEQ;
             }
-            break;
-        case '|':
+        } else if (ch == '|') {
             TokenType = TOK_OR;
             if (TryGetChar('|')) {
                 TokenType = TOK_OROR;
             } else if (TryGetChar('=')) {
                 TokenType = TOK_OREQ;
             }
-            break;
-        case '^':
+        } else if (ch == '^') {
             TokenType = TOK_XOR;
             if (TryGetChar('=')) {
                 TokenType = TOK_XOREQ;
             }
-            break;
-        case '+':
+        } else if (ch == '+') {
             TokenType = TOK_PLUS;
             if (TryGetChar('+')) {
                 TokenType = TOK_PLUSPLUS;
             } else if (TryGetChar('=')) {
                 TokenType = TOK_PLUSEQ;
             }
-            break;
-        case '-':
+        } else if (ch == '-') {
             TokenType = TOK_MINUS;
             if (TryGetChar('-')) {
                 TokenType = TOK_MINUSMINUS;
             } else if (TryGetChar('=')) {
                 TokenType = TOK_MINUSEQ;
             }
-            break;
-        case '*':
+        } else if (ch == '*') {
             TokenType = TOK_STAR;
             if (TryGetChar('=')) {
                 TokenType = TOK_STAREQ;
             }
-            break;
-        case '/':
+        } else if (ch == '/') {
             TokenType = TOK_SLASH;
             if (TryGetChar('=')) {
                 TokenType = TOK_SLASHEQ;
             }
-            break;
-        case '%':
+        } else if (ch == '%') {
             TokenType = TOK_MOD;
             if (TryGetChar('=')) {
                 TokenType = TOK_MODEQ;
             }
-            break;
-        default:
+        } else {
             printf("Unknown token start '%c' (0x%02X)\n", ch, ch);
-            TokenType = TOK_EOF;
+            Fatal("Unknown token encountered");
         }
     }
     TokenText[TokenLen] = '\0';
@@ -416,58 +335,38 @@ static void GetToken(void)
 
 int OperatorPrecedence(int tok)
 {
-    switch (tok) {
-    case TOK_STAR:
-    case TOK_SLASH:
-    case TOK_MOD:
+    if (tok == TOK_STAR || tok == TOK_SLASH || tok == TOK_MOD) {
         return 3;
-    case TOK_PLUS:
-    case TOK_MINUS:
+    } else if (tok == TOK_PLUS || tok == TOK_MINUS) {
         return 4;
-    case TOK_LSH:
-    case TOK_RSH:
+    } else if (tok == TOK_LSH || tok == TOK_RSH) {
         return 5;
-    case TOK_LT:
-    case TOK_LTEQ:
-    case TOK_GT:
-    case TOK_GTEQ:
+    } else if (tok == TOK_LT || tok == TOK_LTEQ || tok == TOK_GT || tok == TOK_GTEQ) {
         return 6;
-    case TOK_EQEQ:
-    case TOK_NOTEQ:
+    } else if (tok == TOK_EQEQ || tok == TOK_NOTEQ) {
         return 7;
-    case TOK_AND:
+    } else if (tok == TOK_AND) {
         return 8;
-    case TOK_XOR:
+    } else if (tok == TOK_XOR) {
         return 9;
-    case TOK_OR:
+    } else if (tok == TOK_OR) {
         return 10;
-    case TOK_ANDAND:
+    } else if (tok == TOK_ANDAND) {
         return 11;
-    case TOK_OROR:
+    } else if (tok == TOK_OROR) {
         return 12;
-    case TOK_EQ:
-    case TOK_PLUSEQ:
-    case TOK_MINUSEQ:
-    case TOK_STAREQ:
-    case TOK_SLASHEQ:
-    case TOK_MODEQ:
-    case TOK_LSHEQ:
-    case TOK_RSHEQ:
-    case TOK_ANDEQ:
-    case TOK_XOREQ:
-    case TOK_OREQ:
+    } else if (tok == TOK_EQ || tok == TOK_PLUSEQ || tok == TOK_MINUSEQ || tok == TOK_STAREQ || tok == TOK_SLASHEQ || tok == TOK_MODEQ || tok == TOK_LSHEQ || tok == TOK_RSHEQ || tok == TOK_ANDEQ || tok == TOK_XOREQ || tok == TOK_OREQ) {
         return 14;
-    case TOK_COMMA:
+    } else if (tok == TOK_COMMA) {
         return 15;
-    default:
+    } else {
         return 100;
     }
 }
 
 void __declspec(noreturn) Unexpected(void)
 {
-    PrintToken();
-    printf(" (%s)\n", TokenTypeString(TokenType));
+    printf("(%d) \"%s\"\n", TokenType, TokenText);
     Fatal("Unexpected token");
 }
 
@@ -483,7 +382,7 @@ int Accept(int type)
 void Expect(int type)
 {
     if (!Accept(type)) {
-        printf("%s expected got ", TokenTypeString(type));
+        printf("Ttoken type %d expected\n", type);
         Unexpected();
     }
 }
@@ -512,7 +411,7 @@ int Lookup(int id)
             return i;
         }
     }
-    printf("%s not found\n", Ids[id]);
+    printf("%s not found\n", IdText(id));
     Fatal("Lookup failed");
 }
 
@@ -611,9 +510,9 @@ void ParsePrimaryExpression(void)
         }
         CurrentType = VarDeclType[vd] | VT_LVAL;
         if (VarDeclOffset[vd]) {
-            printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], Ids[id]);
+            printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], IdText(id));
         } else {
-            printf("\tMOV\tAX, _%s\n", Ids[id]);
+            printf("\tMOV\tAX, _%s\n", IdText(id));
             if (CurrentType & VT_FUN) {
                 CurrentType &= ~VT_LVAL;
             }
@@ -697,44 +596,34 @@ void ParseUnaryExpression(void)
         if (Op != TOK_AND) {
             LvalToRval();
         }
-        switch (Op) {
-        case TOK_AND:
+        if (Op == TOK_AND) {
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("Lvalue required for address-of operator");
             }
             CurrentType = (CurrentType&~VT_LVAL) | VT_PTR;
-            break;
-        case TOK_STAR:
+        } else if (Op == TOK_STAR) {
             if (!(CurrentType & VT_PTR)) {
                 Fatal("Pointer required for dereference");
             }
             CurrentType = (CurrentType&~VT_PTR) | VT_LVAL;
-            break;
-        case TOK_PLUS:
+        } else if (Op == TOK_PLUS) {
             assert(CurrentType == VT_INT);
-            break;
-        case TOK_MINUS:
+        } else if (Op == TOK_MINUS) {
             assert(CurrentType == VT_INT);
             printf("\tNEG\tAX\n");
-            break;
-        case TOK_TILDE:
+        } else if (Op == TOK_TILDE) {
             assert(CurrentType == VT_INT);
             printf("\tNOT\tAX\n");
-            break;
-        case TOK_NOT:
-            {
-                const int Lab = LocalLabelCounter++;
-                assert(CurrentType == VT_INT);
-                printf("\tAND\tAX, AX\n");
-                printf("\tMOV\tAX, 0\n");
-                printf("\tJNZ\t.L%d\n", Lab);
-                printf("\tINC\tAL\n");
-                printf(".L%d:\n", Lab);
-                break;
-            }
-        default:
-            printf("TODO: Unary op %s. CurrentType = %s%s\n", TokenTypeString(Op), TypeString(CurrentType), CurrentType&VT_LVAL?"|VT_LVAL":"");
-            Fatal("Not implemented");
+        } else if (Op == TOK_NOT) {
+            const int Lab = LocalLabelCounter++;
+            assert(CurrentType == VT_INT);
+            printf("\tAND\tAX, AX\n");
+            printf("\tMOV\tAX, 0\n");
+            printf("\tJNZ\t.L%d\n", Lab);
+            printf("\tINC\tAL\n");
+            printf(".L%d:\n", Lab);
+        } else {
+            Unexpected();
         }
     } else {
         ParsePrimaryExpression();
@@ -755,7 +644,6 @@ const char* RelOp(int Op)
     else if (Op == TOK_GTEQ)  return "NL";
     else if (Op == TOK_EQEQ)  return "E";
     else if (Op == TOK_NOTEQ) return "NE";
-    printf("TODO: RelOp %s\n", TokenTypeString(Op));
     Fatal("Not implemented");
 }
 
@@ -773,34 +661,28 @@ void DoBinOp(int Op)
         return;
     }
 
-    switch (Op) {
-    case TOK_PLUSEQ:
-    case TOK_PLUS:  printf("\tADD\tAX, CX\n"); break;
-    case TOK_MINUSEQ:
-    case TOK_MINUS: printf("\tSUB\tAX, CX\n"); break;
-    case TOK_STAREQ:
-    case TOK_STAR:  printf("\tMUL\tCX\n"); break;
-    case TOK_SLASHEQ:
-    case TOK_SLASH:
-    case TOK_MODEQ:
-    case TOK_MOD:
+    if (Op == TOK_PLUS || Op == TOK_PLUSEQ) {
+        printf("\tADD\tAX, CX\n");
+    } else if (Op == TOK_MINUS || Op == TOK_MINUSEQ) {
+        printf("\tSUB\tAX, CX\n");
+    } else if (Op == TOK_STAR || Op == TOK_STAREQ) {
+        printf("\tMUL\tCX\n");
+    } else if (Op == TOK_SLASH || Op == TOK_SLASHEQ || Op == TOK_MOD || Op == TOK_MODEQ) {
         printf("\tXOR\tDX, DX\n");
         printf("\tIDIV\tCX\n");
-        if (Op == TOK_MOD) printf("\tMOV\tAX, DX\n");
-        break;
-    case TOK_ANDEQ:
-    case TOK_AND:   printf("\tAND\tAX, CX\n"); break;
-    case TOK_XOREQ:
-    case TOK_XOR:   printf("\tXOR\tAX, CX\n"); break;
-    case TOK_OREQ:
-    case TOK_OR:    printf("\tOR\tAX, CX\n"); break;
-    case TOK_LSHEQ:
-    case TOK_LSH:   printf("\tSHL\tAX, CL\n"); break;
-    case TOK_RSHEQ:
-    case TOK_RSH:   printf("\tSAR\tAX, CL\n"); break;
-    default:
-        printf("TODO: DoBinOp %s\n", TokenTypeString(Op));
-        Fatal("Not implemented");
+        if (Op == TOK_MOD || Op == TOK_MODEQ) {
+            printf("\tMOV\tAX, DX\n");
+        }
+    } else if (Op == TOK_AND || Op == TOK_ANDEQ) {
+        printf("\tAND\tAX, CX\n");
+    } else if (Op == TOK_XOR || Op == TOK_XOREQ) {
+        printf("\tXOR\tAX, CX\n");
+    } else if (Op == TOK_OR || Op == TOK_OREQ) {
+        printf("\tOR\tAX, CX\n");
+    } else if (Op == TOK_LSH || Op == TOK_LSHEQ) {
+        printf("\tSHL\tAX, CL\n");
+    } else if (Op == TOK_RSH || Op == TOK_RSHEQ) {
+        printf("\tSAR\tAX, CL\n");
     }
 }
 
@@ -898,11 +780,14 @@ int ParseDeclSpecs(void)
 {
     assert(IsTypeStart());
     int t;
-    switch (TokenType) {
-    case TOK_VOID: t = VT_VOID; break;
-    case TOK_CHAR: t = VT_CHAR; break;
-    case TOK_INT:  t = VT_INT;  break;
-    default: Unexpected();
+    if (TokenType == TOK_VOID) {
+        t = VT_VOID;
+    } else if (TokenType == TOK_CHAR) {
+        t = VT_CHAR;
+    } else if (TokenType == TOK_INT) {
+        t = VT_INT;
+    } else {
+        Unexpected();
     }
     GetToken();
     if (TokenType == TOK_STAR) {
@@ -956,7 +841,7 @@ void ParseStatement(void)
         const int vd = ParseDecl();
         LocalOffset -= 2;
         VarDeclOffset[vd] = LocalOffset;
-        printf("\tSUB\tSP, 2\t; [BP%+d] %s %s\n", LocalOffset, TypeString(VarDeclType[vd]), Ids[VarDeclId[vd]]);
+        printf("\tSUB\tSP, 2\n");
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
         const int CondLabel  = LocalLabelCounter++;
@@ -1105,17 +990,10 @@ void ParseExternalDefition(void)
     }
 
     const int fd = ParseDecl();
-    int ArgOffset = 4;
-    printf("\t; Starting function definition of %s, return value %s\n", Ids[VarDeclId[fd]], TypeString(VarDeclType[fd]));
-    printf("_%s:\n", Ids[VarDeclId[fd]]);
-    printf("\tPUSH\tBP\n");
-    printf("\tMOV\tBP, SP\n");
-    VarDeclType[fd] |= VT_FUN;
-    LocalOffset = 0;
-    LocalLabelCounter = 0;
-    ReturnLabel = LocalLabelCounter++;
-    BreakLabel = ContinueLabel = -1;
+    printf("_%s:\n", IdText(VarDeclId[fd]));
     Expect(TOK_LPAREN);
+    VarDeclType[fd] |= VT_FUN;
+    int ArgOffset = 4;
     while (TokenType != TOK_RPAREN) {
         if (Accept(TOK_VOID)) {
             break;
@@ -1123,12 +1001,17 @@ void ParseExternalDefition(void)
         const int vd = ParseDecl();
         VarDeclOffset[vd] = ArgOffset;
         ArgOffset += 2;
-        printf("\t; Arg %s %s [BP+%d]\n", TypeString(VarDeclType[vd]), Ids[VarDeclId[vd]], VarDeclOffset[vd]);
         if (!Accept(TOK_COMMA)) {
             break;
         }
     }
     Expect(TOK_RPAREN);
+    LocalOffset = 0;
+    LocalLabelCounter = 0;
+    ReturnLabel = LocalLabelCounter++;
+    BreakLabel = ContinueLabel = -1;
+    printf("\tPUSH\tBP\n");
+    printf("\tMOV\tBP, SP\n");
     ParseCompoundStatement();
     printf(".L%d:\n", ReturnLabel);
     printf("\tMOV\tSP, BP\n");
@@ -1181,10 +1064,21 @@ int main(void)
     //InBuf = "int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
     //InBuf = "void main() { int i; for (i = 0; ;++i) { if (!(i&1)) continue; if(i>=10)break; putchar('0'+i); } }";
     //InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
-    InBuf = "enum { A, B, X=8, Y }; void main() { putchar('0'+A); putchar('0'+B); putchar('0'+X); putchar('0'+Y); }";
-#define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
-    BUILTIN_TOKS(DEF_TOKEN)
-#undef DEF_TOKEN
+    //InBuf = "enum { A, B, X=8, Y }; void main() { putchar('0'+A); putchar('0'+B); putchar('0'+X); putchar('0'+Y); }";
+    InBuf = "void main() { putchar('0' + 1+2*3); }";
+
+    AddId("break");
+    AddId("char");
+    AddId("continue");
+    AddId("else");
+    AddId("enum");
+    AddId("for");
+    AddId("if");
+    AddId("int");
+    AddId("return");
+    AddId("void");
+    AddId("while");
+    assert(IdCount+TOK_LAST == TOK_WHILE);
 
     puts(Prelude);
 
