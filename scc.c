@@ -5,7 +5,10 @@
 #include <string.h>
 #include <assert.h>
 
+#define INVALID_IDX -1
 #define TOKEN_MAX 64
+#define SCOPE_MAX 10
+#define VARDECL_MAX 100
 
 #define VT_VOID     0
 #define VT_CHAR     1
@@ -82,18 +85,6 @@ enum {
     TOK_ID
 };
 
-struct VarDecl {
-    int             Id;
-    int             Type;
-    int             Offset;
-    struct VarDecl* Next;
-};
-
-struct Scope {
-    struct VarDecl* Decls;
-    struct Scope*   Next;
-};
-
 static const char* InBuf;
 static char TokenText[TOKEN_MAX];
 static int TokenLen;
@@ -101,10 +92,18 @@ static int TokenType;
 static uintptr_t TokenNumVal;
 static char** Ids;
 static int IdsCount, IdsCapacity;
-static struct Scope* CurrentScope;
+
+static int VarDeclId[VARDECL_MAX];
+static int VarDeclType[VARDECL_MAX];
+static int VarDeclOffset[VARDECL_MAX];
+
+static int Scopes[SCOPE_MAX]; // VarDecl index
+static int ScopesCount;
+
 static int LocalOffset;
 static int CurrentType;
 static int LocalLabelCounter;
+static int ReturnLabel;
 static int BreakLabel;
 static int ContinueLabel;
 
@@ -507,13 +506,12 @@ int IsTypeStart(void)
     return TokenType == TOK_VOID || TokenType == TOK_CHAR || TokenType == TOK_INT;
 }
 
-struct VarDecl* Lookup(int id)
+int Lookup(int id)
 {
-    for (struct Scope* s = CurrentScope; s; s = s->Next) {
-        for (struct VarDecl* d = s->Decls; d; d = d->Next) {
-            if (d->Id == id) {
-                return d;
-            }
+    assert(ScopesCount);
+    for (int i = Scopes[ScopesCount-1]; i >= 0; i--) {
+        if (VarDeclId[i] == id) {
+            return i;
         }
     }
     printf("%s not found\n", Ids[id]);
@@ -607,12 +605,12 @@ void ParsePrimaryExpression(void)
         GetToken();
     } else {
         const int id = ExpectId();
-        const struct VarDecl* d = Lookup(id);
-        CurrentType = d->Type | VT_LVAL;
-        if (d->Offset) {
-            printf("\tLEA\tAX, [BP%+d]\t; %s\n", d->Offset, Ids[d->Id]);
+        const int vd = Lookup(id);
+        CurrentType = VarDeclType[vd] | VT_LVAL;
+        if (VarDeclOffset[vd]) {
+            printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], Ids[id]);
         } else {
-            printf("\tMOV\tAX, _%s\n", Ids[d->Id]);
+            printf("\tMOV\tAX, _%s\n", Ids[id]);
             if (CurrentType & VT_FUN) {
                 CurrentType &= ~VT_LVAL;
             }
@@ -911,50 +909,35 @@ int ParseDeclSpecs(void)
     return t;
 }
 
-static struct VarDecl* AddVarDecl(int Type, int Id)
+static int AddVarDecl(int Type, int Id)
 {
-    assert(CurrentScope);
-    struct VarDecl* d = Malloc(sizeof(*d));
-    d->Next   = CurrentScope->Decls;
-    d->Type   = Type;
-    d->Offset = 0;
-    d->Id     = Id;
-    CurrentScope->Decls = d;
-    return d;
+    assert(ScopesCount);
+    assert(Scopes[ScopesCount-1] < VARDECL_MAX);
+    const int vd = Scopes[ScopesCount-1]++;
+    VarDeclType[vd]   = Type;
+    VarDeclOffset[vd] = 0;
+    VarDeclId[vd]     = Id;
+    return vd;
 }
 
-struct VarDecl* ParseDecl(void)
+int ParseDecl(void)
 {
     const int Type = ParseDeclSpecs();
     const int Id   = ExpectId();
     return AddVarDecl(Type, Id);
 }
 
-void FreeVarDecls(struct VarDecl* d)
-{
-    struct VarDecl* temp;
-    while (d) {
-        temp = d->Next;
-        free(d);
-        d = temp;
-    }
-}
-
 static void PushScope(void)
 {
-    struct Scope* s = Malloc(sizeof(*s));
-    s->Decls = NULL;
-    s->Next  = CurrentScope;
-    CurrentScope = s;
+    assert(ScopesCount < SCOPE_MAX);
+    const int End = ScopesCount ? Scopes[ScopesCount-1] : 0;
+    Scopes[ScopesCount++] = End;
 }
 
 static void PopScope(void)
 {
-    assert(CurrentScope);
-    struct Scope* s = CurrentScope;
-    CurrentScope = CurrentScope->Next;
-    FreeVarDecls(s->Decls);
-    free(s);
+    assert(ScopesCount);
+    --ScopesCount;
 }
 
 void ParseCompoundStatement(void);
@@ -967,10 +950,10 @@ void ParseStatement(void)
     if (TokenType == TOK_LBRACE) {
         ParseCompoundStatement();
     } else if (IsTypeStart()) {
-        struct VarDecl* d = ParseDecl();
+        const int vd = ParseDecl();
         LocalOffset -= 2;
-        d->Offset = LocalOffset;
-        printf("\tSUB\tSP, 2\t; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
+        VarDeclOffset[vd] = LocalOffset;
+        printf("\tSUB\tSP, 2\t; [BP%+d] %s %s\n", LocalOffset, TypeString(VarDeclType[vd]), Ids[VarDeclId[vd]]);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
         const int CondLabel  = LocalLabelCounter++;
@@ -1039,7 +1022,7 @@ void ParseStatement(void)
         if (TokenType != TOK_SEMICOLON) {
             ParseExpression();
         }
-        printf("\tJMP\t.RET\n");
+        printf("\tJMP\t.L%d\n", ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
         const int StartLabel = LocalLabelCounter++;
@@ -1097,32 +1080,33 @@ void ParseCompoundStatement(void)
 
 void ParseExternalDefition(void)
 {
-    struct VarDecl* fd = ParseDecl();
+    const int fd = ParseDecl();
     int ArgOffset = 4;
-    printf("\t; Starting function definition of %s, return value %s\n", Ids[fd->Id], TypeString(fd->Type));
-    printf("_%s:\n", Ids[fd->Id]);
+    printf("\t; Starting function definition of %s, return value %s\n", Ids[VarDeclId[fd]], TypeString(VarDeclType[fd]));
+    printf("_%s:\n", Ids[VarDeclId[fd]]);
     printf("\tPUSH\tBP\n");
     printf("\tMOV\tBP, SP\n");
-    fd->Type |= VT_FUN;
+    VarDeclType[fd] |= VT_FUN;
     LocalOffset = 0;
     LocalLabelCounter = 0;
+    ReturnLabel = LocalLabelCounter++;
     BreakLabel = ContinueLabel = -1;
     Expect(TOK_LPAREN);
     while (TokenType != TOK_RPAREN) {
         if (Accept(TOK_VOID)) {
             break;
         }
-        struct VarDecl* d = ParseDecl();
-        d->Offset = ArgOffset;
+        const int vd = ParseDecl();
+        VarDeclOffset[vd] = ArgOffset;
         ArgOffset += 2;
-        printf("\t; Arg %s %s [BP+%d]\n", TypeString(d->Type), Ids[d->Id], d->Offset);
+        printf("\t; Arg %s %s [BP+%d]\n", TypeString(VarDeclType[vd]), Ids[VarDeclId[vd]], VarDeclOffset[vd]);
         if (!Accept(TOK_COMMA)) {
             break;
         }
     }
     Expect(TOK_RPAREN);
     ParseCompoundStatement();
-    printf(".RET:\n");
+    printf(".L%d:\n", ReturnLabel);
     printf("\tMOV\tSP, BP\n");
     printf("\tPOP\tBP\n");
     printf("\tRET\n");
@@ -1182,7 +1166,7 @@ int main(void)
     PushScope();
     GetToken();
 
-    /*struct VarDecl* putchar_decl = */AddVarDecl(VT_FUN|VT_VOID, AddId("putchar"));
+    AddVarDecl(VT_FUN|VT_VOID, AddId("putchar"));
     AddVarDecl(VT_FUN|VT_VOID|VT_PTR, AddId("malloc"));
 
     while (TokenType != TOK_EOF) {
