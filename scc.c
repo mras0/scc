@@ -1,11 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <inttypes.h>
 #include <string.h>
 #include <assert.h>
 
-#define INVALID_IDX -1
 #define TOKEN_MAX 64
 #define SCOPE_MAX 10
 #define VARDECL_MAX 100
@@ -17,12 +14,14 @@
 #define VT_LVAL     0x100
 #define VT_PTR      0x200
 #define VT_FUN      0x400
+#define VT_ENUM     0x800
 
 #define BUILTIN_TOKS(X)      \
 X(TOK_BREAK    , "break")    \
 X(TOK_CHAR     , "char")     \
 X(TOK_CONTINUE , "continue") \
 X(TOK_ELSE     , "else")     \
+X(TOK_ENUM     , "enum")     \
 X(TOK_FOR      , "for")      \
 X(TOK_IF       , "if")       \
 X(TOK_INT      , "int")      \
@@ -89,7 +88,7 @@ static const char* InBuf;
 static char TokenText[TOKEN_MAX];
 static int TokenLen;
 static int TokenType;
-static uintptr_t TokenNumVal;
+static int TokenNumVal;
 static char** Ids;
 static int IdsCount, IdsCapacity;
 
@@ -238,7 +237,7 @@ static char* TypeString(int Type)
 static void PrintToken(void)
 {
     if (TokenType == TOK_NUM) {
-        printf("%"PRIuMAX, TokenNumVal);
+        printf("%d", TokenNumVal);
     } else if (TokenType > TOK_LAST) {
         printf("%s", Ids[TokenType-TOK_LAST-1]);
     } else {
@@ -255,7 +254,7 @@ static void GetToken(void)
     while (ch <= ' ') {
         if (!ch) {
             TokenType = TOK_EOF;
-            goto Out;
+            return;
         }
         ch = GetChar();
     }
@@ -412,7 +411,6 @@ static void GetToken(void)
             TokenType = TOK_EOF;
         }
     }
-Out:
     TokenText[TokenLen] = '\0';
 }
 
@@ -606,6 +604,11 @@ void ParsePrimaryExpression(void)
     } else {
         const int id = ExpectId();
         const int vd = Lookup(id);
+        if (VarDeclType[vd] & VT_ENUM) {
+            printf("\tMOV\tAX, %d\n", VarDeclOffset[vd]);
+            CurrentType = VT_INT;
+            return;
+        }
         CurrentType = VarDeclType[vd] | VT_LVAL;
         if (VarDeclOffset[vd]) {
             printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], Ids[id]);
@@ -1080,6 +1083,27 @@ void ParseCompoundStatement(void)
 
 void ParseExternalDefition(void)
 {
+    if (Accept(TOK_ENUM)) {
+        Expect(TOK_LBRACE);
+        int EnumVal = 0;
+        while (TokenType != TOK_RBRACE) {
+            const int id = ExpectId();
+            if (Accept(TOK_EQ)) {
+                EnumVal = TokenNumVal;
+                Expect(TOK_NUM);
+            }
+            const int vd = AddVarDecl(VT_INT|VT_ENUM, id);
+            VarDeclOffset[vd] = EnumVal;
+            if (!Accept(TOK_COMMA)) {
+                break;
+            }
+            ++EnumVal;
+        }
+        Expect(TOK_RBRACE);
+        Expect(TOK_SEMICOLON);
+        return;
+    }
+
     const int fd = ParseDecl();
     int ArgOffset = 4;
     printf("\t; Starting function definition of %s, return value %s\n", Ids[VarDeclId[fd]], TypeString(VarDeclType[fd]));
@@ -1156,7 +1180,8 @@ int main(void)
     //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
     //InBuf = "int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
     //InBuf = "void main() { int i; for (i = 0; ;++i) { if (!(i&1)) continue; if(i>=10)break; putchar('0'+i); } }";
-    InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
+    //InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
+    InBuf = "enum { A, B, X=8, Y }; void main() { putchar('0'+A); putchar('0'+B); putchar('0'+X); putchar('0'+Y); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
