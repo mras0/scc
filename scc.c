@@ -15,15 +15,17 @@
 #define VT_PTR      0x200
 #define VT_FUN      0x400
 
-#define BUILTIN_TOKS(X)   \
-X(TOK_CHAR   , "char")    \
-X(TOK_ELSE   , "else")    \
-X(TOK_IF     , "if")      \
-X(TOK_INT    , "int")     \
-X(TOK_RETURN , "return")  \
-X(TOK_VOID   , "void")    \
-X(TOK_WHILE  , "while")   \
-
+#define BUILTIN_TOKS(X)      \
+X(TOK_BREAK    , "break")    \
+X(TOK_CHAR     , "char")     \
+X(TOK_CONTINUE , "continue") \
+X(TOK_ELSE     , "else")     \
+X(TOK_FOR      , "for")      \
+X(TOK_IF       , "if")       \
+X(TOK_INT      , "int")      \
+X(TOK_RETURN   , "return")   \
+X(TOK_VOID     , "void")     \
+X(TOK_WHILE    , "while")    \
 
 enum {
     TOK_EOF,
@@ -103,6 +105,8 @@ static struct Scope* CurrentScope;
 static int LocalOffset;
 static int CurrentType;
 static int LocalLabelCounter;
+static int BreakLabel;
+static int ContinueLabel;
 
 static int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
 static int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
@@ -957,6 +961,9 @@ void ParseCompoundStatement(void);
 
 void ParseStatement(void)
 {
+    const int OldBreak    = BreakLabel;
+    const int OldContinue = ContinueLabel;
+
     if (TokenType == TOK_LBRACE) {
         ParseCompoundStatement();
     } else if (IsTypeStart()) {
@@ -965,6 +972,48 @@ void ParseStatement(void)
         d->Offset = LocalOffset;
         printf("\tSUB\tSP, 2\t; [BP%+d] %s %s\n", d->Offset, TypeString(d->Type), Ids[d->Id]);
         Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_FOR)) {
+        const int CondLabel  = LocalLabelCounter++;
+        const int BodyLabel  = LocalLabelCounter++;
+        const int EndLabel   = LocalLabelCounter++;
+        int IterLabel = CondLabel;
+        Expect(TOK_LPAREN);
+
+        // Init
+        if (TokenType != TOK_SEMICOLON) {
+            ParseExpression();
+        }
+        Expect(TOK_SEMICOLON);
+
+        // Cond
+        printf(".L%d:\t; Cond for\n", CondLabel);
+        if (TokenType != TOK_SEMICOLON) {
+            ParseExpression();
+            LvalToRval();
+            assert(CurrentType == VT_INT);
+            printf("\tAND\tAX, AX\n");
+            printf("\tJNZ\t.L%d\n", BodyLabel); // TODO: Need far jump?
+            printf("\tJMP\t.L%d\n", EndLabel);
+        } else {
+            printf("\tJMP\t.L%d\n", BodyLabel);
+        }
+        Expect(TOK_SEMICOLON);
+
+        // Iter
+        if (TokenType != TOK_RPAREN) {
+            IterLabel  = LocalLabelCounter++;
+            printf(".L%d:\t; Iter for\n", IterLabel);
+            ParseExpression();
+            printf("\tJMP\t.L%d\n", CondLabel);
+        }
+        Expect(TOK_RPAREN);
+
+        printf(".L%d:\t; Body for\n", BodyLabel);
+        BreakLabel    = EndLabel;
+        ContinueLabel = IterLabel;
+        ParseStatement();
+        printf("\tJMP\t.L%d\n", IterLabel);
+        printf(".L%d:\t; End for\n", EndLabel);
     } else if (Accept(TOK_IF)) {
         const int IfLabel    = LocalLabelCounter++;
         const int ElseLabel  = LocalLabelCounter++;
@@ -1006,14 +1055,27 @@ void ParseStatement(void)
         printf("\tJMP\t.L%d\n", EndLabel);
         Expect(TOK_RPAREN);
         printf(".L%d:\t; Body of while\n", BodyLabel);
+        BreakLabel = EndLabel;
+        ContinueLabel = StartLabel;
         ParseStatement();
         printf("\tJMP\t.L%d\n", StartLabel);
         printf(".L%d:\t; End of while\n", EndLabel);
+    } else if (Accept(TOK_BREAK)) {
+        assert(BreakLabel >= 0);
+        printf("\tJMP\t.L%d\n", BreakLabel);
+        Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_CONTINUE)) {
+        assert(ContinueLabel >= 0);
+        printf("\tJMP\t.L%d\n", ContinueLabel);
+        Expect(TOK_SEMICOLON);
     } else {
         // Expression statement
         ParseExpression();
         Expect(TOK_SEMICOLON);
     }
+
+    BreakLabel    = OldBreak;
+    ContinueLabel = OldContinue;
 }
 
 void ParseCompoundStatement(void)
@@ -1044,6 +1106,7 @@ void ParseExternalDefition(void)
     fd->Type |= VT_FUN;
     LocalOffset = 0;
     LocalLabelCounter = 0;
+    BreakLabel = ContinueLabel = -1;
     Expect(TOK_LPAREN);
     while (TokenType != TOK_RPAREN) {
         if (Accept(TOK_VOID)) {
@@ -1108,7 +1171,8 @@ int main(void)
 {
     //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
     //InBuf = "int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
-    InBuf = "void main() { putchar(48+1+2*3); }";
+    //InBuf = "void main() { int i; for (i = 0; ;++i) { if (!(i&1)) continue; if(i>=10)break; putchar('0'+i); } }";
+    InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
