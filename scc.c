@@ -71,8 +71,9 @@ enum {
     TOK_ANDEQ,
     TOK_XOREQ,
     TOK_OREQ,
+    TOK_TILDE,
 
-    TOK_LAST = TOK_OREQ,
+    TOK_LAST = TOK_TILDE,
 #define DEF_BULTIN(N, _) N,
     BUILTIN_TOKS(DEF_BULTIN)
 #undef DEF_BUILTIN
@@ -209,6 +210,7 @@ static char* TokenTypeString(int type)
     case TOK_ANDEQ:      return "&=";
     case TOK_XOREQ:      return "^=";
     case TOK_OREQ:       return "|=";
+    case TOK_TILDE:      return "~";
 #define CASE_TOKEN(V, N) case V: return N;
     BUILTIN_TOKS(CASE_TOKEN)
 #undef CASE_TOKEN
@@ -311,6 +313,7 @@ static void GetToken(void)
         case ']': TokenType = TOK_RBRACKET;  break;
         case ',': TokenType = TOK_COMMA;     break;
         case ';': TokenType = TOK_SEMICOLON; break;
+        case '~': TokenType = TOK_TILDE;     break;
         case '=':
             TokenType = TOK_EQ;
             if (TryGetChar('=')) {
@@ -576,6 +579,7 @@ static void DoIncDecOp(int Op, int Post)
 }
 
 void ParseExpression(void);
+void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
 
 void ParsePrimaryExpression(void)
@@ -682,6 +686,51 @@ void ParseUnaryExpression(void)
         GetToken();
         ParseUnaryExpression();
         DoIncDecOp(Op, 0);
+    } else if (Op == TOK_AND || Op == TOK_STAR || Op == TOK_PLUS || Op == TOK_MINUS || Op == TOK_TILDE || Op == TOK_NOT) {
+        GetToken();
+        ParseCastExpression();
+        if (Op != TOK_AND) {
+            LvalToRval();
+        }
+        switch (Op) {
+        case TOK_AND:
+            if (!(CurrentType & VT_LVAL)) {
+                Fatal("Lvalue required for address-of operator");
+            }
+            CurrentType = (CurrentType&~VT_LVAL) | VT_PTR;
+            break;
+        case TOK_STAR:
+            if (!(CurrentType & VT_PTR)) {
+                Fatal("Pointer required for dereference");
+            }
+            CurrentType = (CurrentType&~VT_PTR) | VT_LVAL;
+            break;
+        case TOK_PLUS:
+            assert(CurrentType == VT_INT);
+            break;
+        case TOK_MINUS:
+            assert(CurrentType == VT_INT);
+            printf("\tNEG\tAX\n");
+            break;
+        case TOK_TILDE:
+            assert(CurrentType == VT_INT);
+            printf("\tNOT\tAX\n");
+            break;
+        case TOK_NOT:
+            {
+                const int Lab = LocalLabelCounter++;
+                assert(CurrentType == VT_INT);
+                printf("\tAND\tAX, AX\n");
+                printf("\tMOV\tAX, 0\n");
+                printf("\tJNZ\t.L%d\n", Lab);
+                printf("\tINC\tAL\n");
+                printf(".L%d:\n", Lab);
+                break;
+            }
+        default:
+            printf("TODO: Unary op %s. CurrentType = %s%s\n", TokenTypeString(Op), TypeString(CurrentType), CurrentType&VT_LVAL?"|VT_LVAL":"");
+            Fatal("Not implemented");
+        }
     } else {
         ParsePrimaryExpression();
         ParsePostfixExpression();
@@ -760,9 +809,20 @@ void ParseExpression1(int OuterPrecedence)
             break;
         }
         GetToken();
+
+        const int IsAssign = Prec == OperatorPrecedence(TOK_EQ);
+
+        if (IsAssign) {
+            if (!(CurrentType & VT_LVAL)) {
+                Fatal("L-value required");
+            }
+        } else {
+            LvalToRval();
+        }
+        int LhsType = CurrentType;
+
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
             LEnd = LocalLabelCounter++;
-            LvalToRval();
             assert(CurrentType == VT_INT);
             printf("\tAND\tAX, AX\n");
             printf("\tJ%s\t.L%d\n", Op == TOK_ANDAND ? "Z" : "NZ", LEnd);
@@ -771,7 +831,6 @@ void ParseExpression1(int OuterPrecedence)
             printf("\tPUSH\tAX\n");
         }
 
-        int LhsType = CurrentType;
         // TODO: Question, ?:
         /*rhs = */ ParseCastExpression();
         for (;;) {
@@ -782,39 +841,34 @@ void ParseExpression1(int OuterPrecedence)
             }
             ParseExpression1(/*rhs, */LookAheadPrecedence);
         }
-        const int IsAssign = Prec == OperatorPrecedence(TOK_EQ);
         LvalToRval();
         if (LEnd >= 0) {
             printf(".L%d:\n", LEnd);
-        } else {
-            if (LhsType & VT_LVAL) {
-                LhsType &= ~VT_LVAL;
-                printf("\tPOP\tBX\n");
-                if (Op != TOK_EQ) {
-                    assert(LhsType == VT_INT);
-                    assert(CurrentType == VT_INT);
-                    printf("\tMOV\tCX, AX\n");
-                    printf("\tMOV\tAX, [BX]\n");
-                    DoBinOp(Op);
-                }
-                if (IsAssign) {
-                    if (LhsType == VT_CHAR) {
-                        assert(CurrentType == VT_INT);
-                        printf("\tMOV\t[BX], AL\n");
-                    } else {
-                        assert(LhsType == VT_INT || (LhsType & VT_PTR));
-                        assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                        printf("\tMOV\t[BX], AX\n");
-                    }
-                }
-            } else {
-                assert(!IsAssign && "Lvalue expected");
+        } else if (IsAssign) {
+            assert(LhsType & VT_LVAL);
+            LhsType &= ~VT_LVAL;
+            printf("\tPOP\tBX\n");
+            if (Op != TOK_EQ) {
                 assert(LhsType == VT_INT);
                 assert(CurrentType == VT_INT);
-                printf("\tPOP\tCX\n");
-                printf("\tXCHG\tAX, CX\n");
+                printf("\tMOV\tCX, AX\n");
+                printf("\tMOV\tAX, [BX]\n");
                 DoBinOp(Op);
             }
+            if (LhsType == VT_CHAR) {
+                assert(CurrentType == VT_INT);
+                printf("\tMOV\t[BX], AL\n");
+            } else {
+                assert(LhsType == VT_INT || (LhsType & VT_PTR));
+                assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
+                printf("\tMOV\t[BX], AX\n");
+            }
+        } else {
+            assert(LhsType == VT_INT);
+            assert(CurrentType == VT_INT);
+            printf("\tPOP\tCX\n");
+            printf("\tXCHG\tAX, CX\n");
+            DoBinOp(Op);
         }
     }
 }
@@ -1052,9 +1106,9 @@ static const char* const Postlude =
 
 int main(void)
 {
-    //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { char* s; s = malloc(3); s[0] = 65; s[1] = 48+6; s[2] = 0; puts(s); }";
     //InBuf = "void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
-    InBuf = "void main() { int i; i = 1; putchar(48+(++i)); putchar(48+(i--)); putchar(48+i); }";
+    //InBuf = "int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
+    InBuf = "void main() { putchar(48+1+2*3); }";
 #define DEF_TOKEN(V, N) do { int val = AddId(N); assert(TOK_LAST+1+val == V); } while (0);
     BUILTIN_TOKS(DEF_TOKEN)
 #undef DEF_TOKEN
