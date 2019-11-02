@@ -1,13 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
+#include <stdarg.h>
+#include <io.h>
+#include <fcntl.h>
+#ifdef _MSC_VER
+#define open _open
+#define read _read
+#endif
 
 enum {
+    TMPBUF_MAX = 10,
+    INBUF_MAX = 1024,
     TOKEN_MAX = 64,
     SCOPE_MAX = 10,
-    VARDECL_MAX = 100,
-    ID_MAX = 100,
+    VARDECL_MAX = 200,
+    ID_MAX = 300,
     IDBUFFER_MAX = 4096,
 };
 
@@ -71,11 +79,14 @@ enum {
     TOK_XOREQ,
     TOK_OREQ,
     TOK_TILDE,
+    TOK_DOT,
+    TOK_ELLIPSIS,
 
     // NOTE: Must match order of registration in main
     //       TOK_BREAK must be first
     TOK_BREAK,
     TOK_CHAR,
+    TOK_CONST,
     TOK_CONTINUE,
     TOK_ELSE,
     TOK_ENUM,
@@ -83,13 +94,26 @@ enum {
     TOK_IF,
     TOK_INT,
     TOK_RETURN,
+    TOK_SIZEOF,
     TOK_VOID,
     TOK_WHILE,
+
+    TOK_VA_LIST,
+    TOK_VA_START,
+    TOK_VA_END,
+    TOK_VA_ARG,
 
     TOK_ID
 };
 
+char* TempBuf;
+
+int InFile;
 char* InBuf;
+int InBufCnt;
+int InBufSize;
+char UngottenChar;
+
 int Line;
 
 char* TokenText;
@@ -120,26 +144,101 @@ int ContinueLabel;
 int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
 int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
 
+void PutStr(const char* s)
+{
+    while (*s)
+        putchar(*s++);
+}
+
+void Printf(const char* format, ...)
+{
+    va_list vl;
+    char ch;
+    va_start(vl, format);
+    while (ch = *format++) {
+        if (ch != '%') {
+            putchar(ch);
+            continue;
+        }
+        ch = *format++;
+        if (ch == 's') {
+            PutStr(va_arg(vl, char*));
+        } else if(ch == 'c') {
+            putchar(va_arg(vl, char));
+        } else if ((ch == '+' && *format++ == 'd') || ch == 'd') {
+            char* buf;
+            int n;
+            int s;
+            int always;
+            if (ch == '+') {
+                always = 1;
+            } else {
+                always = 0;
+            }
+            n = va_arg(vl, int);
+            s = 0;
+            if (n < 0) {
+                s = 1;
+                n = -n;
+            }
+            buf = TempBuf + TMPBUF_MAX;
+            *--buf = 0;
+            for (;;) {
+                *--buf = '0' + n % 10;
+                n/=10;
+                if (!n) break;
+            }
+            if (s) *--buf = '-';
+            else if (always) *--buf = '+';
+            PutStr(buf);
+        } else {
+            putchar(ch);
+            putchar('!');putchar('!');putchar('!');
+            exit(1);
+        }
+    }
+    va_end(vl);
+}
+
+int StrEqual(const char* a, const char* b)
+{
+    while (*a && *b && *a == *b) {
+        ++a;
+        ++b;
+    }
+    return !*a && !*b;
+}
+
 void Fatal(const char* Msg)
 {
-    puts(Msg);
-    printf("In line %d\n", Line);
-    abort();
+    Printf("In line %d: %s\n", Line, Msg);
+    exit(1);
+}
+
+void Check(int ok)
+{
+    if (!ok) {
+        Fatal("Check failed");
+    }
 }
 
 const char* IdText(int id)
 {
-    assert(id >= 0 && id < IdCount);
+    Check(id >= 0 && id < IdCount);
     return IdBuffer + IdOffset[id];
 }
 
 int AddId(const char* Name)
 {
-    assert(IdCount < ID_MAX);
-    const int cnt = (int)strlen(Name) + 1;
-    const int ofs = IdBufferIndex;
+    int cnt;
+    int ofs;
+    Check(IdCount < ID_MAX);
+    for (cnt = 0; Name[cnt]; ++cnt)
+        ;
+    ++cnt;
+    ofs = IdBufferIndex;
     IdBufferIndex += cnt;
-    assert(IdBufferIndex <= IDBUFFER_MAX);
+    Check(IdBufferIndex <= IDBUFFER_MAX);
     memcpy(IdBuffer + ofs, Name, cnt);
     IdOffset[IdCount++] = ofs;
     return IdCount - 1;
@@ -147,21 +246,35 @@ int AddId(const char* Name)
 
 char GetChar(void)
 {
-    return *InBuf ? *InBuf++ : 0;
+    if (UngottenChar) {
+        char ch;
+        ch = UngottenChar;
+        UngottenChar = 0;
+        return ch;
+    }
+    if (InBufCnt == InBufSize) {
+        InBufCnt = 0;
+        InBufSize = read(InFile, InBuf, INBUF_MAX);
+        if (!InBufSize) {
+            return 0;
+        }
+    }
+    return InBuf[InBufCnt++];
 }
 
-void UnGetChar(void)
+void UnGetChar(char ch)
 {
-    --InBuf;
+    UngottenChar = ch;
 }
 
 int TryGetChar(char ch)
 {
-    if (*InBuf != ch) {
+    char ch2;
+    if ((ch2 = GetChar()) != ch) {
+        UnGetChar(ch2);
         return 0;
     }
-    TokenText[TokenLen++] = ch;
-    ++InBuf;
+    TokenText[TokenLen++] = ch2;
     return 1;
 }
 
@@ -173,21 +286,99 @@ void SkipLine(void)
     ++Line;
 }
 
+void SkipWhitespace(void)
+{
+    char ch;
+    while ((ch = GetChar()) <= ' ') {
+        if (!ch) {
+            return;
+        }
+        if (ch == '\n') {
+            ++Line;
+        }
+    }
+    UnGetChar(ch);
+}
+
+char Unescape(void)
+{
+    char ch;
+    ch = GetChar();
+    if (ch == 'n') {
+        return '\n';
+    } else if (ch == 't') {
+        return '\t';
+    } else if (ch == '\'') {
+        return '\'';
+    } else if (ch == '"') {
+        return '"';
+    } else if (ch == '\\') {
+        return '\\';
+    } else {
+        Printf("TODO: Escaped character literal \\%c\n", ch);
+        Fatal("Unsupported character literal");
+    }
+}
+
+void GetStringLiteral(void)
+{
+    int JL;
+    int open;
+    char ch;
+
+    TokenNumVal = LocalLabelCounter++;
+    JL = LocalLabelCounter++;
+    Printf("\tJMP\t.L%d\n", JL);
+    Printf(".L%d:\tDB ", TokenNumVal);
+
+    open = 0;
+    for (;;) {
+        while ((ch = GetChar()) != '"') {
+            if (ch == '\\') {
+                ch = Unescape();
+            }
+            if (!ch) {
+                Fatal("Unterminated string literal");
+            }
+            if (ch < ' ' || ch == '\'') {
+                if (open) {
+                    Printf("', ");
+                    open = 0;
+                }
+                Printf("%d, ", ch);
+            } else {
+                if (!open) {
+                    open = 1;
+                    Printf("'");
+                }
+                putchar(ch);
+            }
+        }
+        SkipWhitespace();
+        ch = GetChar();
+        if (ch != '"') {
+            UnGetChar(ch);
+            break;
+        }
+    }
+    if (open) Printf("', ");
+    Printf("0\n");
+    Printf(".L%d:\n", JL);
+}
+
 void GetToken(void)
 {
     char ch;
 
-    TokenLen = 0;
+    SkipWhitespace();
     ch = GetChar();
-    while (ch <= ' ') {
-        if (!ch) {
-            TokenType = TOK_EOF;
-            return;
-        } else if (ch == '\n') {
-            ++Line;
-        }
-        ch = GetChar();
+    TokenLen = 0;
+
+    if (!ch) {
+        TokenType = TOK_EOF;
+        return;
     }
+
     TokenText[TokenLen++] = ch;
 
     if (ch == '#') {
@@ -204,9 +395,10 @@ void GetToken(void)
             }
             TokenText[TokenLen++] = ch;
         }
-        UnGetChar();
+        UnGetChar(ch);
         TokenType = TOK_NUM;
     } else if (IsAlpha(ch) || ch == '_') {
+        int id;
         for (;;) {
             ch = GetChar();
             if (ch != '_' && !IsDigit(ch) && !IsAlpha(ch)) {
@@ -214,30 +406,32 @@ void GetToken(void)
             }
             TokenText[TokenLen++] = ch;
         }
-        TokenText[TokenLen] = '\0';
-        UnGetChar();
-        int id;
+        TokenText[TokenLen] = 0;
+        UnGetChar(ch);
+        TokenType = -1;
         for (id = 0; id < IdCount; ++id) {
-            if (!strcmp(IdText(id), TokenText)) {
+            if (StrEqual(IdText(id), TokenText)) {
+                TokenType = id;
                 break;
             }
         }
-        TokenType = TOK_BREAK + (id < IdCount ? id : AddId(TokenText));
+        if (TokenType < 0) {
+            TokenType = AddId(TokenText);
+        }
+        TokenType += TOK_BREAK;
     } else if (ch == '\'') {
-        --TokenLen;
-        TokenText[TokenLen++] = GetChar();
+        ch = GetChar();
+        if (ch == '\\') {
+            TokenNumVal = Unescape();
+        } else {
+            TokenNumVal = ch;
+        }
         if (GetChar() != '\'') {
             Fatal("Invalid character literal");
         }
         TokenType = TOK_NUM;
-        TokenNumVal = TokenText[0];
     } else if (ch == '"') {
-        --TokenLen;
-        while ((ch = GetChar()) != '"') {
-            if (!ch) Fatal("Unterminated string literal");
-            assert(TokenLen < TOKEN_MAX-1);
-            TokenText[TokenLen++] = ch;
-        }
+        GetStringLiteral();
         TokenType = TOK_STRLIT;
     } else {
         if (ch == '(') { TokenType = TOK_LPAREN;    }
@@ -332,12 +526,20 @@ void GetToken(void)
             if (TryGetChar('=')) {
                 TokenType = TOK_MODEQ;
             }
+        } else if (ch == '.') {
+            TokenType = TOK_DOT;
+            if (TryGetChar('.')) {
+                if (!TryGetChar('.')) {
+                    Fatal("Invalid token ..");
+                }
+                TokenType = TOK_ELLIPSIS;
+            }
         } else {
-            printf("Unknown token start '%c' (0x%02X)\n", ch, ch);
+            Printf("Unknown token start '%c' (%d)\n", ch, ch);
             Fatal("Unknown token encountered");
         }
     }
-    TokenText[TokenLen] = '\0';
+    TokenText[TokenLen] = 0;
 }
 
 int OperatorPrecedence(int tok)
@@ -371,9 +573,9 @@ int OperatorPrecedence(int tok)
     }
 }
 
-void __declspec(noreturn) Unexpected(void)
+void Unexpected(void)
 {
-    printf("%d \"%s\"\n", TokenType, TokenText);
+    Printf("%d \"%s\"\n", TokenType, TokenText);
     Fatal("Unexpected token");
 }
 
@@ -389,39 +591,44 @@ int Accept(int type)
 void Expect(int type)
 {
     if (!Accept(type)) {
-        printf("Token type %d expected got ", type);
+        Printf("Token type %d expected got ", type);
         Unexpected();
     }
 }
 
 int ExpectId(void)
 {
-    const int id = TokenType;
+    int id;
+    id = TokenType;
     if (id >= TOK_ID) {
         GetToken();
         return id - TOK_BREAK;
     }
-    printf("Expected identifier got ");
+    Printf("Expected identifier got ");
     Unexpected();
 }
 
 int IsTypeStart(void)
 {
-    return TokenType == TOK_VOID || TokenType == TOK_CHAR || TokenType == TOK_INT;
+    return TokenType == TOK_CONST
+        || TokenType == TOK_VOID
+        || TokenType == TOK_CHAR
+        || TokenType == TOK_INT
+        || TokenType == TOK_VA_LIST;
 }
 
 void LvalToRval(void)
 {
     if (CurrentType & VT_LVAL) {
         CurrentType &= ~VT_LVAL;
-        printf("\tMOV\tBX, AX\n");
+        Printf("\tMOV\tBX, AX\n");
         if (CurrentType == VT_CHAR) {
-            printf("\tMOV\tAL, [BX]\n");
-            printf("\tCBW\n");
+            Printf("\tMOV\tAL, [BX]\n");
+            Printf("\tCBW\n");
             CurrentType = VT_INT;
         } else {
-            assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-            printf("\tMOV\tAX, [BX]\n");
+            Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+            Printf("\tMOV\tAX, [BX]\n");
         }
     }
 }
@@ -436,91 +643,125 @@ void DoIncDec(int Op)
     }
     if (Op == TOK_PLUSPLUS) {
         if (Amm == 1) {
-            printf("\tINC\tAX\n");
+            Printf("\tINC\tAX\n");
         } else {
-            printf("\tADD\tAX, %d\n", Amm);
+            Printf("\tADD\tAX, %d\n", Amm);
         }
     } else {
-        assert(Op == TOK_MINUSMINUS);
+        Check(Op == TOK_MINUSMINUS);
         if (Amm == 1) {
-            printf("\tDEC\tAX\n");
+            Printf("\tDEC\tAX\n");
         } else {
-            printf("\tSUB\tAX, %d\n", Amm);
+            Printf("\tSUB\tAX, %d\n", Amm);
         }
     }
 }
 
 void DoIncDecOp(int Op, int Post)
 {
-    assert(CurrentType & VT_LVAL);
+    Check(CurrentType & VT_LVAL);
     CurrentType &= ~VT_LVAL;
-    printf("\tMOV\tBX, AX\n");
+    Printf("\tMOV\tBX, AX\n");
     if (CurrentType == VT_CHAR) {
-        printf("\tMOV\tAL, [BX]\n");
-        printf("\tCBW\n");
-        if (Post) printf("\tPUSH\tAX\n");
+        Printf("\tMOV\tAL, [BX]\n");
+        Printf("\tCBW\n");
+        if (Post) Printf("\tPUSH\tAX\n");
         DoIncDec(Op);
-        printf("\tMOV\t[BX], AL\n");
+        Printf("\tMOV\t[BX], AL\n");
         CurrentType = VT_INT;
     } else {
-        assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-        printf("\tMOV\tAX, [BX]\n");
-        if (Post) printf("\tPUSH\tAX\n");
+        Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+        Printf("\tMOV\tAX, [BX]\n");
+        if (Post) Printf("\tPUSH\tAX\n");
         DoIncDec(Op);
-        printf("\tMOV\t[BX], AX\n");
+        Printf("\tMOV\t[BX], AX\n");
     }
-    if (Post) printf("\tPOP\tAX\n");
+    if (Post) Printf("\tPOP\tAX\n");
 }
 
-void ParseExpression(void);
+void ParseExpr(void);
 void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
 
+int Lookup(int id)
+{
+    int vd;
+    Check(ScopesCount);
+    for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
+        if (VarDeclId[vd] == id) {
+            break;
+        }
+    }
+    return vd;
+}
+
 void ParsePrimaryExpression(void)
 {
+    int id;
+    int vd;
     if (TokenType == TOK_LPAREN) {
         GetToken();
-        ParseExpression();
+        ParseExpr();
         Expect(TOK_RPAREN);
     } else if (TokenType == TOK_NUM) {
-        printf("\tMOV\tAX, 0x%04X\n", (unsigned short)TokenNumVal);
+        Printf("\tMOV\tAX, %d\n", TokenNumVal);
         CurrentType = VT_INT;
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
-        const int SL = LocalLabelCounter++;
-        const int JL = LocalLabelCounter++;
-        printf("\tJMP\t.L%d\n", JL);
-        printf(".L%d:\tDB '%s', 0\n", SL, TokenText);
-        printf(".L%d:\n", JL);
-        printf("\tMOV\tAX, .L%d\n", SL);
+        Printf("\tMOV\tAX, .L%d\n", TokenNumVal);
         CurrentType = VT_PTR | VT_CHAR;
         GetToken();
-    } else {
-        const int id = ExpectId();
-        int vd;
-
-        // Lookup
-        assert(ScopesCount);
-        for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
-            if (VarDeclId[vd] == id) {
-                break;
-            }
+    } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
+        // Handle var arg builtins
+        int offset;
+        int func;
+        func = TokenType;
+        GetToken();
+        Expect(TOK_LPAREN);
+        id = ExpectId();
+        vd = Lookup(id);
+        if (vd < 0 || VarDeclType[vd] != (VT_CHAR|VT_PTR)) {
+            Fatal("Invalid va_list");
         }
+        offset = VarDeclOffset[vd];
+        if (func == TOK_VA_START) {
+            Expect(TOK_COMMA);
+            id = ExpectId();
+            vd = Lookup(id);
+            if (vd < 0 || !VarDeclOffset[vd]) {
+                Fatal("Invalid argument to va_start");
+            }
+            Printf("\tLEA\tAX, [BP%+d]\n", VarDeclOffset[vd]);
+            Printf("\tMOV\t[BP%+d], AX\n", offset);
+            CurrentType = VT_VOID;
+        } else if (func == TOK_VA_END) {
+            CurrentType = VT_VOID;
+        } else if (func == TOK_VA_ARG) {
+            Expect(TOK_COMMA);
+            Printf("\tMOV\tAX, [BP%+d]\n", offset);
+            Printf("\tADD\tAX, 2\n");
+            Printf("\tMOV\t[BP%+d], AX\n", offset);
+            CurrentType = VT_LVAL | ParseDeclSpecs();
+        }
+        Expect(TOK_RPAREN);
+    } else {
+        id = ExpectId();
+        vd = Lookup(id);
         if (vd < 0) {
             // Lookup failed. Assume function returning int.
             CurrentType = VT_FUN|VT_INT;
-            printf("\tMOV\tAX, _%s\n", IdText(id));
+            Printf("\tMOV\tAX, _%s\n", IdText(id));
         } else {
             if (VarDeclType[vd] & VT_ENUM) {
-                printf("\tMOV\tAX, %d\n", VarDeclOffset[vd]);
+                Printf("\tMOV\tAX, %d\n", VarDeclOffset[vd]);
                 CurrentType = VT_INT;
                 return;
             }
             CurrentType = VarDeclType[vd] | VT_LVAL;
             if (VarDeclOffset[vd]) {
-                printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], IdText(id));
+                Printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], IdText(VarDeclId[vd]));
             } else {
-                printf("\tMOV\tAX, _%s\n", IdText(id));
+                Printf("\tMOV\tAX, _%s\n", IdText(id));
                 if (CurrentType & VT_FUN) {
                     CurrentType &= ~VT_LVAL;
                 }
@@ -533,24 +774,28 @@ void ParsePostfixExpression(void)
 {
     for (;;) {
         if (Accept(TOK_LPAREN)) {
+            int RetType;
+            int NumArgs;
+            int MaxArgs;
+            MaxArgs = 4; // TODO: Handle this better...
+
             // Function call
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
             }
-            printf("\tPUSH\tSI\n");
-            printf("\tPUSH\tDI\n");
-            printf("\tMOV\tSI, AX\n");
-            const int RetType = CurrentType & ~VT_FUN;
-            const int MaxArgs = 4; // TODO: Handle this better...
-            printf("\tSUB\tSP, %d\n", MaxArgs*2);
-            printf("\tMOV\tDI, SP\n");
-            int NumArgs = 0;
+            Printf("\tPUSH\tSI\n");
+            Printf("\tPUSH\tDI\n");
+            Printf("\tMOV\tSI, AX\n");
+            Printf("\tSUB\tSP, %d\n", MaxArgs*2);
+            Printf("\tMOV\tDI, SP\n");
+            RetType = CurrentType & ~VT_FUN;
+            NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
-                assert(NumArgs < MaxArgs);
+                Check(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
                 LvalToRval();
-                assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                printf("\tMOV\t[DI%+d], AX\n", NumArgs*2);
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+                Printf("\tMOV\t[DI+%d], AX\n", NumArgs*2);
                 ++NumArgs;
 
                 if (!Accept(TOK_COMMA)) {
@@ -558,31 +803,36 @@ void ParsePostfixExpression(void)
                 }
             }
             Expect(TOK_RPAREN);
-            printf("\tCALL\tSI\n");
-            printf("\tADD\tSP, %d\n", MaxArgs*2);
-            printf("\tPOP\tDI\n");
-            printf("\tPOP\tSI\n");
+            Printf("\tCALL\tSI\n");
+            Printf("\tADD\tSP, %d\n", MaxArgs*2);
+            Printf("\tPOP\tDI\n");
+            Printf("\tPOP\tSI\n");
             CurrentType = RetType;
+            if (CurrentType == VT_CHAR) {
+                CurrentType = VT_INT;
+            }
         } else if (Accept(TOK_LBRACKET)) {
+            int AType;
             LvalToRval();
             if (!(CurrentType & VT_PTR)) {
                 Fatal("Expected pointer");
             }
-            const int AType = CurrentType & ~VT_PTR;
-            printf("\tPUSH\tAX\n");
-            ParseExpression();
+            AType = CurrentType & ~VT_PTR;
+            Printf("\tPUSH\tAX\n");
+            ParseExpr();
             Expect(TOK_RBRACKET);
             LvalToRval();
-            assert(CurrentType == VT_INT);
+            Check(CurrentType == VT_INT);
             if (AType != VT_CHAR) {
-                assert(AType == VT_INT);
-                printf("\tADD\tAX, AX\n");
+                Check(AType == VT_INT);
+                Printf("\tADD\tAX, AX\n");
             }
-            printf("\tPOP\tCX\n");
-            printf("\tADD\tAX, CX\n");
+            Printf("\tPOP\tCX\n");
+            Printf("\tADD\tAX, CX\n");
             CurrentType = AType | VT_LVAL;
         } else {
-            const int Op = TokenType;
+            int Op;
+            Op = TokenType;
             if (Op != TOK_PLUSPLUS && Op != TOK_MINUSMINUS) {
                 break;
             }
@@ -594,7 +844,8 @@ void ParsePostfixExpression(void)
 
 void ParseUnaryExpression(void)
 {
-    const int Op = TokenType;
+    int Op;
+    Op = TokenType;
     if (Op == TOK_PLUSPLUS || Op == TOK_MINUSMINUS) {
         GetToken();
         ParseUnaryExpression();
@@ -616,24 +867,39 @@ void ParseUnaryExpression(void)
             }
             CurrentType = (CurrentType&~VT_PTR) | VT_LVAL;
         } else if (Op == TOK_PLUS) {
-            assert(CurrentType == VT_INT);
+            Check(CurrentType == VT_INT);
         } else if (Op == TOK_MINUS) {
-            assert(CurrentType == VT_INT);
-            printf("\tNEG\tAX\n");
+            Check(CurrentType == VT_INT);
+            Printf("\tNEG\tAX\n");
         } else if (Op == TOK_TILDE) {
-            assert(CurrentType == VT_INT);
-            printf("\tNOT\tAX\n");
+            Check(CurrentType == VT_INT);
+            Printf("\tNOT\tAX\n");
         } else if (Op == TOK_NOT) {
-            const int Lab = LocalLabelCounter++;
-            assert(CurrentType == VT_INT);
-            printf("\tAND\tAX, AX\n");
-            printf("\tMOV\tAX, 0\n");
-            printf("\tJNZ\t.L%d\n", Lab);
-            printf("\tINC\tAL\n");
-            printf(".L%d:\n", Lab);
+            int Lab;
+            Lab = LocalLabelCounter++;
+            Check(CurrentType == VT_INT);
+            Printf("\tAND\tAX, AX\n");
+            Printf("\tMOV\tAX, 0\n");
+            Printf("\tJNZ\t.L%d\n", Lab);
+            Printf("\tINC\tAL\n");
+            Printf(".L%d:\n", Lab);
         } else {
             Unexpected();
         }
+    } else if (Op == TOK_SIZEOF) {
+        int Size;
+        GetToken();
+        Expect(TOK_LPAREN);
+        if (Accept(TOK_CHAR)) {
+            Size = 1;
+        } else if (Accept(TOK_INT)) {
+            Size = 2;
+        } else {
+            Fatal("sizeof not implemented for this type");
+        }
+        Expect(TOK_RPAREN);
+        Printf("\tMOV\tAX, %d\n", Size);
+        CurrentType = VT_INT;
     } else {
         ParsePrimaryExpression();
         ParsePostfixExpression();
@@ -660,53 +926,59 @@ const char* RelOp(int Op)
 void DoBinOp(int Op)
 {
     if (Op == TOK_LT || Op == TOK_LTEQ || Op == TOK_GT || Op == TOK_GTEQ || Op == TOK_EQEQ || Op == TOK_NOTEQ) {
-        const int Lab = LocalLabelCounter++;
-        printf("\tCMP\tAX, CX\n");
-        printf("\tMOV\tAX, 1\n");
+        int Lab;
+        Lab = LocalLabelCounter++;
+        Printf("\tCMP\tAX, CX\n");
+        Printf("\tMOV\tAX, 1\n");
         RelOp(Op);
-        printf("\tJ%s\t.L%d\n", RelOp(Op), Lab);
-        printf("\tDEC\tAL\n");
-        printf(".L%d:\n", Lab);
+        Printf("\tJ%s\t.L%d\n", RelOp(Op), Lab);
+        Printf("\tDEC\tAL\n");
+        Printf(".L%d:\n", Lab);
         return;
     }
 
     if (Op == TOK_PLUS || Op == TOK_PLUSEQ) {
-        printf("\tADD\tAX, CX\n");
+        Printf("\tADD\tAX, CX\n");
     } else if (Op == TOK_MINUS || Op == TOK_MINUSEQ) {
-        printf("\tSUB\tAX, CX\n");
+        Printf("\tSUB\tAX, CX\n");
     } else if (Op == TOK_STAR || Op == TOK_STAREQ) {
-        printf("\tMUL\tCX\n");
+        Printf("\tIMUL\tCX\n");
     } else if (Op == TOK_SLASH || Op == TOK_SLASHEQ || Op == TOK_MOD || Op == TOK_MODEQ) {
-        printf("\tXOR\tDX, DX\n");
-        printf("\tIDIV\tCX\n");
+        Printf("\tXOR\tDX, DX\n");
+        Printf("\tIDIV\tCX\n");
         if (Op == TOK_MOD || Op == TOK_MODEQ) {
-            printf("\tMOV\tAX, DX\n");
+            Printf("\tMOV\tAX, DX\n");
         }
     } else if (Op == TOK_AND || Op == TOK_ANDEQ) {
-        printf("\tAND\tAX, CX\n");
+        Printf("\tAND\tAX, CX\n");
     } else if (Op == TOK_XOR || Op == TOK_XOREQ) {
-        printf("\tXOR\tAX, CX\n");
+        Printf("\tXOR\tAX, CX\n");
     } else if (Op == TOK_OR || Op == TOK_OREQ) {
-        printf("\tOR\tAX, CX\n");
+        Printf("\tOR\tAX, CX\n");
     } else if (Op == TOK_LSH || Op == TOK_LSHEQ) {
-        printf("\tSHL\tAX, CL\n");
+        Printf("\tSHL\tAX, CL\n");
     } else if (Op == TOK_RSH || Op == TOK_RSHEQ) {
-        printf("\tSAR\tAX, CL\n");
+        Printf("\tSAR\tAX, CL\n");
     }
 }
 
-void ParseExpression1(int OuterPrecedence)
+void ParseExpr1(int OuterPrecedence)
 {
     int LEnd;
+    int LTemp;
+    int Op;
+    int Prec;
+    int IsAssign;
+    int LhsType;
     for (;;) {
-        const int Op   = TokenType;
-        const int Prec = OperatorPrecedence(Op);
+        Op   = TokenType;
+        Prec = OperatorPrecedence(Op);
         if (Prec > OuterPrecedence) {
             break;
         }
         GetToken();
 
-        const int IsAssign = Prec == OperatorPrecedence(TOK_EQ);
+        IsAssign = Prec == OperatorPrecedence(TOK_EQ);
 
         if (IsAssign) {
             if (!(CurrentType & VT_LVAL)) {
@@ -715,79 +987,96 @@ void ParseExpression1(int OuterPrecedence)
         } else {
             LvalToRval();
         }
-        int LhsType = CurrentType;
+        LhsType = CurrentType;
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
+            const char* JText;
+            LTemp = LocalLabelCounter++;
             LEnd = LocalLabelCounter++;
-            assert(CurrentType == VT_INT);
-            printf("\tAND\tAX, AX\n");
-            printf("\tJ%s\t.L%d\n", Op == TOK_ANDAND ? "Z" : "NZ", LEnd);
+            Check(CurrentType == VT_INT);
+            Printf("\tAND\tAX, AX\n");
+            if (Op == TOK_ANDAND)
+                JText = "JNZ";
+            else
+                JText = "JZ";
+            Printf("\t%s\t.L%d\t\n", JText, LTemp);
+            Printf("\tJMP\t.L%d\n", LEnd);
+            Printf(".L%d:\n", LTemp);
         } else {
             LEnd = -1;
-            printf("\tPUSH\tAX\n");
+            Printf("\tPUSH\tAX\n");
         }
 
         // TODO: Question, ?:
-        /*rhs = */ ParseCastExpression();
+        ParseCastExpression(); // RHS
         for (;;) {
-            const int LookAheadOp         = TokenType;
-            const int LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
-            if (LookAheadPrecedence > Prec /* || (LookAheadPrecedence == Prec && !IsRightAssociative(LookAheadOp)) */) {
+            int LookAheadOp;
+            int LookAheadPrecedence;
+            LookAheadOp         = TokenType;
+            LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
+            if (LookAheadPrecedence > Prec) // || (LookAheadPrecedence == Prec && !IsRightAssociative(LookAheadOp))
                 break;
-            }
-            ParseExpression1(/*rhs, */LookAheadPrecedence);
+            ParseExpr1(LookAheadPrecedence);
         }
         LvalToRval();
         if (LEnd >= 0) {
-            printf(".L%d:\n", LEnd);
+            Printf(".L%d:\n", LEnd);
         } else if (IsAssign) {
-            assert(LhsType & VT_LVAL);
+            Check(LhsType & VT_LVAL);
             LhsType &= ~VT_LVAL;
-            printf("\tPOP\tBX\n");
+            Printf("\tPOP\tBX\n");
             if (Op != TOK_EQ) {
-                assert(LhsType == VT_INT);
-                assert(CurrentType == VT_INT);
-                printf("\tMOV\tCX, AX\n");
-                printf("\tMOV\tAX, [BX]\n");
+                Check(LhsType == VT_INT);
+                Check(CurrentType == VT_INT);
+                Printf("\tMOV\tCX, AX\n");
+                Printf("\tMOV\tAX, [BX]\n");
                 DoBinOp(Op);
             }
             if (LhsType == VT_CHAR) {
-                assert(CurrentType == VT_INT);
-                printf("\tMOV\t[BX], AL\n");
+                Check(CurrentType == VT_INT);
+                Printf("\tMOV\t[BX], AL\n");
             } else {
-                assert(LhsType == VT_INT || (LhsType & VT_PTR));
-                assert(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                printf("\tMOV\t[BX], AX\n");
+                Check(LhsType == VT_INT || (LhsType & VT_PTR));
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+                Printf("\tMOV\t[BX], AX\n");
             }
         } else {
-            assert(LhsType == VT_INT);
-            assert(CurrentType == VT_INT);
-            printf("\tPOP\tCX\n");
-            printf("\tXCHG\tAX, CX\n");
+            Check(LhsType == VT_INT || (LhsType & VT_PTR));
+            Check(CurrentType == VT_INT);
+            if (LhsType == (VT_INT|VT_PTR)) {
+                Printf("\tADD\tAX, AX\n");
+            }
+            Printf("\tPOP\tCX\n");
+            Printf("\tXCHG\tAX, CX\n");
             DoBinOp(Op);
         }
     }
 }
 
-void ParseExpression0(int OuterPrecedence)
+void ParseExpr0(int OuterPrecedence)
 {
     ParseCastExpression();
-    ParseExpression1(OuterPrecedence);
+    ParseExpr1(OuterPrecedence);
 }
 
-void ParseExpression(void)
+void ParseExpr(void)
 {
-    ParseExpression0(OperatorPrecedence(TOK_COMMA));
+    ParseExpr0(OperatorPrecedence(TOK_COMMA));
 }
 
 void ParseAssignmentExpression(void)
 {
-    ParseExpression0(OperatorPrecedence(TOK_EQ));
+    ParseExpr0(OperatorPrecedence(TOK_EQ));
 }
 
 int ParseDeclSpecs(void)
 {
-    assert(IsTypeStart());
+    Check(IsTypeStart());
+    if (TokenType == TOK_CONST) {
+        // Ignore
+        GetToken();
+        Check(IsTypeStart());
+    }
     int t;
     if (TokenType == TOK_VOID) {
         t = VT_VOID;
@@ -795,6 +1084,9 @@ int ParseDeclSpecs(void)
         t = VT_CHAR;
     } else if (TokenType == TOK_INT) {
         t = VT_INT;
+    } else if (TokenType == TOK_VA_LIST) {
+        GetToken();
+        return VT_CHAR | VT_PTR;
     } else {
         Unexpected();
     }
@@ -808,9 +1100,10 @@ int ParseDeclSpecs(void)
 
 int AddVarDecl(int Type, int Id)
 {
-    assert(ScopesCount);
-    assert(Scopes[ScopesCount-1] < VARDECL_MAX);
-    const int vd = Scopes[ScopesCount-1]++;
+    int vd;
+    Check(ScopesCount);
+    Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
+    vd = ++Scopes[ScopesCount-1];
     VarDeclType[vd]   = Type;
     VarDeclOffset[vd] = 0;
     VarDeclId[vd]     = Id;
@@ -819,21 +1112,27 @@ int AddVarDecl(int Type, int Id)
 
 int ParseDecl(void)
 {
-    const int Type = ParseDeclSpecs();
-    const int Id   = ExpectId();
+    int Type;
+    int Id;
+    Type = ParseDeclSpecs();
+    Id   = ExpectId();
     return AddVarDecl(Type, Id);
 }
 
 void PushScope(void)
 {
-    assert(ScopesCount < SCOPE_MAX);
-    const int End = ScopesCount ? Scopes[ScopesCount-1] : 0;
+    int End;
+    Check(ScopesCount < SCOPE_MAX);
+    if (ScopesCount)
+        End = Scopes[ScopesCount-1];
+    else
+        End = -1;
     Scopes[ScopesCount++] = End;
 }
 
 void PopScope(void)
 {
-    assert(ScopesCount);
+    Check(ScopesCount);
     --ScopesCount;
 }
 
@@ -841,116 +1140,134 @@ void ParseCompoundStatement(void);
 
 void ParseStatement(void)
 {
-    const int OldBreak    = BreakLabel;
-    const int OldContinue = ContinueLabel;
+    int OldBreak;
+    int OldContinue;
+    OldBreak    = BreakLabel;
+    OldContinue = ContinueLabel;
 
-    if (TokenType == TOK_LBRACE) {
+    if (Accept(TOK_SEMICOLON)) {
+    } else if (TokenType == TOK_LBRACE) {
         ParseCompoundStatement();
     } else if (IsTypeStart()) {
-        const int vd = ParseDecl();
+        int vd;
+        vd = ParseDecl();
         LocalOffset -= 2;
         VarDeclOffset[vd] = LocalOffset;
-        printf("\tSUB\tSP, 2\n");
+        Printf("\tSUB\tSP, 2\t; [BP%+d] = %s\n", VarDeclOffset[vd], IdText(VarDeclId[vd]));
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
-        const int CondLabel  = LocalLabelCounter++;
-        const int BodyLabel  = LocalLabelCounter++;
-        const int EndLabel   = LocalLabelCounter++;
-        int IterLabel = CondLabel;
+        int CondLabel;
+        int BodyLabel;
+        int EndLabel;
+        int IterLabel;
+
+        CondLabel = LocalLabelCounter++;
+        BodyLabel = LocalLabelCounter++;
+        EndLabel  = LocalLabelCounter++;
+        IterLabel = CondLabel;
+
         Expect(TOK_LPAREN);
 
         // Init
         if (TokenType != TOK_SEMICOLON) {
-            ParseExpression();
+            ParseExpr();
         }
         Expect(TOK_SEMICOLON);
 
         // Cond
-        printf(".L%d:\t; Cond for\n", CondLabel);
+        Printf(".L%d:\t; Cond for\n", CondLabel);
         if (TokenType != TOK_SEMICOLON) {
-            ParseExpression();
+            ParseExpr();
             LvalToRval();
-            assert(CurrentType == VT_INT);
-            printf("\tAND\tAX, AX\n");
-            printf("\tJNZ\t.L%d\n", BodyLabel); // TODO: Need far jump?
-            printf("\tJMP\t.L%d\n", EndLabel);
+            Check(CurrentType == VT_INT);
+            Printf("\tAND\tAX, AX\n");
+            Printf("\tJNZ\t.L%d\n", BodyLabel); // TODO: Need far jump?
+            Printf("\tJMP\t.L%d\n", EndLabel);
         } else {
-            printf("\tJMP\t.L%d\n", BodyLabel);
+            Printf("\tJMP\t.L%d\n", BodyLabel);
         }
         Expect(TOK_SEMICOLON);
 
         // Iter
         if (TokenType != TOK_RPAREN) {
             IterLabel  = LocalLabelCounter++;
-            printf(".L%d:\t; Iter for\n", IterLabel);
-            ParseExpression();
-            printf("\tJMP\t.L%d\n", CondLabel);
+            Printf(".L%d:\t; Iter for\n", IterLabel);
+            ParseExpr();
+            Printf("\tJMP\t.L%d\n", CondLabel);
         }
         Expect(TOK_RPAREN);
 
-        printf(".L%d:\t; Body for\n", BodyLabel);
+        Printf(".L%d:\t; Body for\n", BodyLabel);
         BreakLabel    = EndLabel;
         ContinueLabel = IterLabel;
         ParseStatement();
-        printf("\tJMP\t.L%d\n", IterLabel);
-        printf(".L%d:\t; End for\n", EndLabel);
+        Printf("\tJMP\t.L%d\n", IterLabel);
+        Printf(".L%d:\t; End for\n", EndLabel);
     } else if (Accept(TOK_IF)) {
-        const int IfLabel    = LocalLabelCounter++;
-        const int ElseLabel  = LocalLabelCounter++;
-        const int EndLabel   = LocalLabelCounter++;
-        printf("\t; Start of if\n");
+        int IfLabel;
+        int ElseLabel;
+        int EndLabel;
+
+        IfLabel    = LocalLabelCounter++;
+        ElseLabel  = LocalLabelCounter++;
+        EndLabel   = LocalLabelCounter++;
+        Printf("\t; Start of if\n");
         Accept(TOK_LPAREN);
-        ParseExpression();
+        ParseExpr();
         LvalToRval();
-        assert(CurrentType == VT_INT);
-        printf("\tAND\tAX, AX\n");
-        printf("\tJNZ\t.L%d\n", IfLabel);
-        printf("\tJMP\t.L%d\n", ElseLabel);
+        Check(CurrentType == VT_INT);
+        Printf("\tAND\tAX, AX\n");
+        Printf("\tJNZ\t.L%d\n", IfLabel);
+        Printf("\tJMP\t.L%d\n", ElseLabel);
         Accept(TOK_RPAREN);
-        printf(".L%d:\t; If\n", IfLabel);
+        Printf(".L%d:\t; If\n", IfLabel);
         ParseStatement();
-        printf("\tJMP\t.L%d\n", EndLabel);
-        printf(".L%d:\t; Else\n", ElseLabel);
+        Printf("\tJMP\t.L%d\n", EndLabel);
+        Printf(".L%d:\t; Else\n", ElseLabel);
         if (Accept(TOK_ELSE)) {
             ParseStatement();
         }
-        printf(".L%d:\t; End if\n", EndLabel);
+        Printf(".L%d:\t; End if\n", EndLabel);
     } else if (Accept(TOK_RETURN)) {
         if (TokenType != TOK_SEMICOLON) {
-            ParseExpression();
+            ParseExpr();
+            LvalToRval();
         }
-        printf("\tJMP\t.L%d\n", ReturnLabel);
+        Printf("\tJMP\t.L%d\n", ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
-        const int StartLabel = LocalLabelCounter++;
-        const int BodyLabel  = LocalLabelCounter++;
-        const int EndLabel   = LocalLabelCounter++;
-        printf(".L%d:\t; Start of while\n", StartLabel);
+        int StartLabel;
+        int BodyLabel;
+        int EndLabel;
+        StartLabel = LocalLabelCounter++;
+        BodyLabel  = LocalLabelCounter++;
+        EndLabel   = LocalLabelCounter++;
+        Printf(".L%d:\t; Start of while\n", StartLabel);
         Expect(TOK_LPAREN);
-        ParseExpression();
+        ParseExpr();
         LvalToRval();
-        assert(CurrentType == VT_INT);
-        printf("\tAND\tAX, AX\n");
-        printf("\tJNZ\t.L%d\n", BodyLabel);
-        printf("\tJMP\t.L%d\n", EndLabel);
+        Check(CurrentType == VT_INT);
+        Printf("\tAND\tAX, AX\n");
+        Printf("\tJNZ\t.L%d\n", BodyLabel);
+        Printf("\tJMP\t.L%d\n", EndLabel);
         Expect(TOK_RPAREN);
-        printf(".L%d:\t; Body of while\n", BodyLabel);
+        Printf(".L%d:\t; Body of while\n", BodyLabel);
         BreakLabel = EndLabel;
         ContinueLabel = StartLabel;
         ParseStatement();
-        printf("\tJMP\t.L%d\n", StartLabel);
-        printf(".L%d:\t; End of while\n", EndLabel);
+        Printf("\tJMP\t.L%d\n", StartLabel);
+        Printf(".L%d:\t; End of while\n", EndLabel);
     } else if (Accept(TOK_BREAK)) {
-        assert(BreakLabel >= 0);
-        printf("\tJMP\t.L%d\n", BreakLabel);
+        Check(BreakLabel >= 0);
+        Printf("\tJMP\t.L%d\n", BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
-        assert(ContinueLabel >= 0);
-        printf("\tJMP\t.L%d\n", ContinueLabel);
+        Check(ContinueLabel >= 0);
+        Printf("\tJMP\t.L%d\n", ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else {
         // Expression statement
-        ParseExpression();
+        ParseExpr();
         Expect(TOK_SEMICOLON);
     }
 
@@ -960,12 +1277,18 @@ void ParseStatement(void)
 
 void ParseCompoundStatement(void)
 {
+    int InitialOffset;
+    InitialOffset = LocalOffset;
     PushScope();
     Expect(TOK_LBRACE);
     while (!Accept(TOK_RBRACE)) {
         ParseStatement();
     }
     PopScope();
+    if (InitialOffset != LocalOffset) {
+        Printf("\tADD\tSP, %d\t; LocalOffset=%d\n", InitialOffset - LocalOffset, InitialOffset);
+        LocalOffset = InitialOffset;
+    }
 }
 
 // Arg 2              BP + 6
@@ -978,15 +1301,18 @@ void ParseCompoundStatement(void)
 void ParseExternalDefition(void)
 {
     if (Accept(TOK_ENUM)) {
+        int EnumVal;
+        int id;
+        int vd;
         Expect(TOK_LBRACE);
-        int EnumVal = 0;
+        EnumVal = 0;
         while (TokenType != TOK_RBRACE) {
-            const int id = ExpectId();
+            id = ExpectId();
             if (Accept(TOK_EQ)) {
                 EnumVal = TokenNumVal;
                 Expect(TOK_NUM);
             }
-            const int vd = AddVarDecl(VT_INT|VT_ENUM, id);
+            vd = AddVarDecl(VT_INT|VT_ENUM, id);
             VarDeclOffset[vd] = EnumVal;
             if (!Accept(TOK_COMMA)) {
                 break;
@@ -998,11 +1324,12 @@ void ParseExternalDefition(void)
         return;
     }
 
-    const int fd = ParseDecl();
+    int fd;
+    fd = ParseDecl();
 
     if (Accept(TOK_SEMICOLON)) {
-        printf("_%s:\n", IdText(VarDeclId[fd]));
-        printf("\tDW\t0\n");
+        Printf("_%s:\n", IdText(VarDeclId[fd]));
+        Printf("\tDW\t0\n");
         return;
     }
 
@@ -1011,12 +1338,14 @@ void ParseExternalDefition(void)
     Expect(TOK_LPAREN);
     VarDeclType[fd] |= VT_FUN;
     PushScope();
-    int ArgOffset = 4;
+    int ArgOffset;
+    int vd;
+    ArgOffset = 4;
     while (TokenType != TOK_RPAREN) {
-        if (Accept(TOK_VOID)) {
+        if (Accept(TOK_VOID) || Accept(TOK_ELLIPSIS)) {
             break;
         }
-        const int vd = ParseDecl();
+        vd = ParseDecl();
         VarDeclOffset[vd] = ArgOffset;
         ArgOffset += 2;
         if (!Accept(TOK_COMMA)) {
@@ -1029,56 +1358,38 @@ void ParseExternalDefition(void)
         LocalLabelCounter = 0;
         ReturnLabel = LocalLabelCounter++;
         BreakLabel = ContinueLabel = -1;
-        printf("_%s:\n", IdText(VarDeclId[fd]));
-        printf("\tPUSH\tBP\n");
-        printf("\tMOV\tBP, SP\n");
+        Printf("_%s:\n", IdText(VarDeclId[fd]));
+        Printf("\tPUSH\tBP\n");
+        Printf("\tMOV\tBP, SP\n");
         ParseCompoundStatement();
-        printf(".L%d:\n", ReturnLabel);
-        printf("\tMOV\tSP, BP\n");
-        printf("\tPOP\tBP\n");
-        printf("\tRET\n");
+        Printf(".L%d:\n", ReturnLabel);
+        Printf("\tMOV\tSP, BP\n");
+        Printf("\tPOP\tBP\n");
+        Printf("\tRET\n");
     }
     PopScope();
 }
 
-void* Malloc(int size)
-{
-    void* ptr = malloc(size);
-    if (!ptr) Fatal("Out of memory");
-    return ptr;
-}
-
 int main(void)
 {
-    //InBuf = "void putchar(char c); void puts(char* s) { int i; i = 0; while (s[i]) { putchar(s[i]); i = i + 1; } putchar(13); putchar(10); } void main() { puts(\"Hello world!\"); }";
-    //InBuf = "void putchar(char c); int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); } void main() { int c; c = 0; while (c<256) { if (IsAlpha(c)) putchar(c); ++c; } }";
-    //InBuf = "void main() { int i; for (i = 0; ;++i) { if (!(i&1)) continue; if(i>=10)break; putchar('0'+i); } }";
-    //InBuf = "void main() { int i; i = 0; while (1) { ++i; if (i==10) break; if (i&1) continue; putchar('0'+i); } }";
-    //InBuf = "enum { A, B, X=8, Y }; void main() { putchar('0'+A); putchar('0'+B); putchar('0'+X); putchar('0'+Y); }";
-    //InBuf = "void main() { putchar('0' + 1+2*3); }";
+    TempBuf       = malloc(TMPBUF_MAX);
+    InBuf         = malloc(INBUF_MAX);
+    TokenText     = malloc(TOKEN_MAX);
+    IdBuffer      = malloc(IDBUFFER_MAX);
+    IdOffset      = malloc(sizeof(int)*ID_MAX);
+    VarDeclId     = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclType   = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
+    Scopes        = malloc(sizeof(int)*SCOPE_MAX);
 
-    InBuf = "int a; void main() { a=42; putchar(a); }";
-#if 0
-    FILE* fp = fopen("../scc.c", "rb");
-    if (!fp) Fatal("Error opening input");
-    fseek(fp, 0L, SEEK_END);
-    int size = (int)ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
-    InBuf = Malloc(size+1);
-    fread(InBuf, size, 1, fp);
-    InBuf[size] = 0;
-#endif
-
-    TokenText     = Malloc(TOKEN_MAX);
-    IdBuffer      = Malloc(IDBUFFER_MAX);
-    IdOffset      = Malloc(sizeof(int)*ID_MAX);
-    VarDeclId     = Malloc(sizeof(int)*VARDECL_MAX);
-    VarDeclType   = Malloc(sizeof(int)*VARDECL_MAX);
-    VarDeclOffset = Malloc(sizeof(int)*VARDECL_MAX);
-    Scopes        = Malloc(sizeof(int)*SCOPE_MAX);
+    InFile = open("scc.c", 0); // 0 = O_RDONLY
+    if (InFile < 0) {
+        Fatal("Error opening input file");
+    }
 
     AddId("break");
     AddId("char");
+    AddId("const");
     AddId("continue");
     AddId("else");
     AddId("enum");
@@ -1086,18 +1397,30 @@ int main(void)
     AddId("if");
     AddId("int");
     AddId("return");
+    AddId("sizeof");
     AddId("void");
     AddId("while");
-    assert(IdCount+TOK_BREAK-1 == TOK_WHILE);
+    AddId("va_list");
+    AddId("va_start");
+    AddId("va_end");
+    AddId("va_arg");
+    Check(IdCount+TOK_BREAK-1 == TOK_VA_ARG);
 
     // Prelude
-    puts(
+    Printf("%s\n",
     "\tcpu 8086\n"
     "\torg 0x100\n"
     "Start:\n"
     "\tXOR\tBP, BP\n"
     "\tCALL\t_main\n"
+    "\tPUSH\tAX\n"
+    "\tCALL\t_exit\n"
+    "\n"
+    "_exit:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
     "\tMOV\tAH, 0x4C\n"
+    "\tMOV\tAL, [BP+4]\n"
     "\tINT\t0x21\n"
     "\n"
     "_putchar:\n"
@@ -1122,7 +1445,50 @@ int main(void)
     "\tMOV\tSP, BP\n"
     "\tPOP\tBP\n"
     "\tRET\n"
-);
+    "\n"
+    "_open:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tMOV\tDX, [BP+4]\n"
+    "\tMOV\tAX, 0x3D00\n"
+    "\tINT\t0x21\n"
+    "\tJNC\t.Ok\n"
+    "\tMOV\tAX, -1\n"
+    "\t.Ok:\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+    "\n"
+    "_read:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tMOV\tBX, [BP+4]\n"
+    "\tMOV\tDX, [BP+6]\n"
+    "\tMOV\tCX, [BP+8]\n"
+    "\tMOV\tAH, 0x3F\n"
+    "\tINT\t0x21\n"
+    "\tJNC\t.Ok\n"
+    "\tXOR\tAX, AX\n"
+    "\t.Ok:\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+    "\n"
+    "_memcpy:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tPUSH\tSI\n"
+    "\tPUSH\tDI\n"
+    "\tMOV\tDI, [BP+4]\n"
+    "\tMOV\tSI, [BP+6]\n"
+    "\tMOV\tCX, [BP+8]\n"
+    "\tREP\tMOVSB\n"
+    "\tPOP\tDI\n"
+    "\tPOP\tSI\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+    );
 
     PushScope();
     Line = 1;
@@ -1133,7 +1499,7 @@ int main(void)
     PopScope();
 
     // Postlude
-    puts(
+    Printf("%s\n",
     "\n"
     "HeapPtr:\tdw HeapStart\n"
     "HeapStart:\n"
