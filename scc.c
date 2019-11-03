@@ -17,7 +17,6 @@ enum {
     LINEBUF_MAX = 100,
     TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
-    TOKEN_MAX = 64,
     SCOPE_MAX = 10,
     VARDECL_MAX = 200,
     ID_MAX = 300,
@@ -125,8 +124,6 @@ char UngottenChar;
 
 int Line;
 
-char* TokenText;
-int TokenLen;
 int TokenType;
 int TokenNumVal;
 
@@ -267,20 +264,6 @@ const char* IdText(int id)
     return IdBuffer + IdOffset[id];
 }
 
-int AddId(const char* Name)
-{
-    int cnt;
-    int ofs;
-    Check(IdCount < ID_MAX);
-    cnt = StrLen(Name) + 1;
-    ofs = IdBufferIndex;
-    IdBufferIndex += cnt;
-    Check(IdBufferIndex <= IDBUFFER_MAX);
-    memcpy(IdBuffer + ofs, Name, cnt);
-    IdOffset[IdCount++] = ofs;
-    return IdCount - 1;
-}
-
 void RawEmit(const char* format, ...)
 {
     va_list vl;
@@ -344,7 +327,6 @@ int TryGetChar(char ch)
         UnGetChar(ch2);
         return 0;
     }
-    TokenText[TokenLen++] = ch2;
     return 1;
 }
 
@@ -444,14 +426,11 @@ void GetToken(void)
 
     SkipWhitespace();
     ch = GetChar();
-    TokenLen = 0;
 
     if (!ch) {
         TokenType = TOK_EOF;
         return;
     }
-
-    TokenText[TokenLen++] = ch;
 
     if (ch == '#') {
         SkipLine();
@@ -465,30 +444,35 @@ void GetToken(void)
             if (!IsDigit(ch)) {
                 break;
             }
-            TokenText[TokenLen++] = ch;
         }
         UnGetChar(ch);
         TokenType = TOK_NUM;
     } else if (IsAlpha(ch) || ch == '_') {
         int id;
+        char* pc;
+        char* start;
+        start = pc = &IdBuffer[IdBufferIndex];
+        *pc++ = ch;
         for (;;) {
             ch = GetChar();
             if (ch != '_' && !IsDigit(ch) && !IsAlpha(ch)) {
                 break;
             }
-            TokenText[TokenLen++] = ch;
+            *pc++ = ch;
         }
-        TokenText[TokenLen] = 0;
+        *pc++ = 0;
         UnGetChar(ch);
         TokenType = -1;
         for (id = 0; id < IdCount; ++id) {
-            if (StrEqual(IdText(id), TokenText)) {
+            if (StrEqual(IdText(id), start)) {
                 TokenType = id;
                 break;
             }
         }
         if (TokenType < 0) {
-            TokenType = AddId(TokenText);
+            TokenType = IdCount++;
+            IdOffset[TokenType] = IdBufferIndex;
+            IdBufferIndex += pc - start;
         }
         TokenType += TOK_BREAK;
     } else if (ch == '\'') {
@@ -611,7 +595,6 @@ void GetToken(void)
             Fatal("Unknown token encountered");
         }
     }
-    TokenText[TokenLen] = 0;
 }
 
 int OperatorPrecedence(int tok)
@@ -647,7 +630,7 @@ int OperatorPrecedence(int tok)
 
 void Unexpected(void)
 {
-    Printf("%d \"%s\"\n", TokenType, TokenText);
+    Printf("token type %d\n", TokenType);
     Fatal("Unexpected token");
 }
 
@@ -1118,13 +1101,18 @@ void ParseExpr1(int OuterPrecedence)
             }
         } else {
             Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
-            Check(CurrentType == VT_INT);
-            if ((LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
+            Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
+            if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
                 Emit("ADD\tAX, AX");
             }
             Emit("POP\tCX");
             Emit("XCHG\tAX, CX");
             DoBinOp(Op);
+            if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
+                if (LhsType != (VT_CHAR|VT_PTR1))
+                    Emit("SAR\tAX, 1");
+                CurrentType = VT_INT;
+            }
         }
     }
 }
@@ -1287,7 +1275,6 @@ void ParseStatement(void)
         IfLabel    = LocalLabelCounter++;
         ElseLabel  = LocalLabelCounter++;
         EndLabel   = LocalLabelCounter++;
-        Emit("; Start of if");
         Accept(TOK_LPAREN);
         ParseExpr();
         LvalToRval();
@@ -1489,12 +1476,28 @@ void MakeOutputFilename(char* dest, const char* n)
     memcpy(dest, ".ASM", 5);
 }
 
+void AddBuiltins(const char* s)
+{
+    char ch;
+    IdOffset[0] = 0;
+    for (;;) {
+        ch = *s++;
+        if (ch <= ' ') {
+            IdBuffer[IdBufferIndex++] = 0;
+            IdOffset[++IdCount] = IdBufferIndex;
+            if (!ch) break;
+        } else {
+            IdBuffer[IdBufferIndex++] = ch;
+        }
+    }
+    Check(IdCount+TOK_BREAK-1 == TOK_VA_ARG);
+}
+
 int main(int argc, char** argv)
 {
     LineBuf       = malloc(LINEBUF_MAX);
     TempBuf       = malloc(TMPBUF_MAX);
     InBuf         = malloc(INBUF_MAX);
-    TokenText     = malloc(TOKEN_MAX);
     IdBuffer      = malloc(IDBUFFER_MAX);
     IdOffset      = malloc(sizeof(int)*ID_MAX);
     VarDeclId     = malloc(sizeof(int)*VARDECL_MAX);
@@ -1518,24 +1521,7 @@ int main(int argc, char** argv)
         Fatal("Error creating output file");
     }
 
-    AddId("break");
-    AddId("char");
-    AddId("const");
-    AddId("continue");
-    AddId("else");
-    AddId("enum");
-    AddId("for");
-    AddId("if");
-    AddId("int");
-    AddId("return");
-    AddId("sizeof");
-    AddId("void");
-    AddId("while");
-    AddId("va_list");
-    AddId("va_start");
-    AddId("va_end");
-    AddId("va_arg");
-    Check(IdCount+TOK_BREAK-1 == TOK_VA_ARG);
+    AddBuiltins("break char const continue else enum for if int return sizeof void while va_list va_start va_end va_arg");
 
     // Prelude
     OutputStr(
