@@ -15,7 +15,7 @@
 
 enum {
     LINEBUF_MAX = 100,
-    TMPBUF_MAX = 10,
+    TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
     TOKEN_MAX = 64,
     SCOPE_MAX = 10,
@@ -31,10 +31,12 @@ enum {
 
     VT_BASEMASK = 15,
 
-    VT_LVAL = 256,
-    VT_PTR  = 512,
-    VT_FUN  = 1024,
-    VT_ENUM = 2048
+    VT_LVAL = 32,
+    VT_FUN  = 64,
+    VT_ENUM = 128,
+
+    VT_PTR1 = 512,
+    VT_PTRMASK = 3584, // 512+1024+2048
 };
 
 enum {
@@ -180,7 +182,7 @@ void OutputStr(const char* buf)
 char* VSPrintf(char* dest, const char* format, va_list vl)
 {
     char ch;
-    while (ch = *format++) {
+    while ((ch = *format++)) {
         if (ch != '%') {
             *dest++ = ch;
             continue;
@@ -189,7 +191,7 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
         if (ch == 's') {
             dest = CopyStr(dest, va_arg(vl, char*));
         } else if(ch == 'c') {
-            *dest++ = va_arg(vl, char);
+            *dest++ = va_arg(vl, int);
         } else if ((ch == '+' && *format == 'd') || ch == 'd') {
             char* buf;
             int n;
@@ -257,7 +259,7 @@ void Check(int ok)
     }
 }
 
-#define Check(expr) do { if (!(expr)) Fatal(#expr " failed"); } while (0)
+#define Check(expr) do { if (!(expr)) { Printf("In %s:%d: ", __FILE__, __LINE__); Fatal(#expr " failed"); } } while (0)
 
 const char* IdText(int id)
 {
@@ -697,7 +699,7 @@ void LvalToRval(void)
             Emit("CBW");
             CurrentType = VT_INT;
         } else {
-            Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+            Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
             Emit("MOV\tAX, [BX]");
         }
     }
@@ -706,7 +708,7 @@ void LvalToRval(void)
 void DoIncDec(int Op)
 {
     int Amm;
-    if (CurrentType == VT_CHAR || CurrentType == VT_INT || CurrentType == (VT_CHAR|VT_PTR)) {
+    if (CurrentType == VT_CHAR || CurrentType == VT_INT || CurrentType == (VT_CHAR|VT_PTR1)) {
         Amm = 1;
     } else {
         Amm = 2;
@@ -740,7 +742,7 @@ void DoIncDecOp(int Op, int Post)
         Emit("MOV\t[BX], AL");
         CurrentType = VT_INT;
     } else {
-        Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+        Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
         Emit("MOV\tAX, [BX]");
         if (Post) Emit("PUSH\tAX");
         DoIncDec(Op);
@@ -752,6 +754,7 @@ void DoIncDecOp(int Op, int Post)
 void ParseExpr(void);
 void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
+int ParseDeclSpecs(void);
 
 int Lookup(int id)
 {
@@ -779,7 +782,7 @@ void ParsePrimaryExpression(void)
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
         Emit("MOV\tAX, .L%d", TokenNumVal);
-        CurrentType = VT_PTR | VT_CHAR;
+        CurrentType = VT_PTR1 | VT_CHAR;
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
         // Handle var arg builtins
@@ -790,7 +793,7 @@ void ParsePrimaryExpression(void)
         Expect(TOK_LPAREN);
         id = ExpectId();
         vd = Lookup(id);
-        if (vd < 0 || VarDeclType[vd] != (VT_CHAR|VT_PTR)) {
+        if (vd < 0 || VarDeclType[vd] != (VT_CHAR|VT_PTR1)) {
             Fatal("Invalid va_list");
         }
         offset = VarDeclOffset[vd];
@@ -864,7 +867,7 @@ void ParsePostfixExpression(void)
                 Check(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
                 LvalToRval();
-                Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 Emit("MOV\t[DI+%d], AX", NumArgs*2);
                 ++NumArgs;
 
@@ -884,17 +887,17 @@ void ParsePostfixExpression(void)
         } else if (Accept(TOK_LBRACKET)) {
             int AType;
             LvalToRval();
-            if (!(CurrentType & VT_PTR)) {
+            if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Expected pointer");
             }
-            AType = CurrentType & ~VT_PTR;
+            AType = CurrentType - VT_PTR1;
             Emit("PUSH\tAX");
             ParseExpr();
             Expect(TOK_RBRACKET);
             LvalToRval();
             Check(CurrentType == VT_INT);
             if (AType != VT_CHAR) {
-                Check(AType == VT_INT);
+                Check(AType == VT_INT || (AType & VT_PTRMASK));
                 Emit("ADD\tAX, AX");
             }
             Emit("POP\tCX");
@@ -930,12 +933,12 @@ void ParseUnaryExpression(void)
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("Lvalue required for address-of operator");
             }
-            CurrentType = (CurrentType&~VT_LVAL) | VT_PTR;
+            CurrentType = (CurrentType&~VT_LVAL) + VT_PTR1;
         } else if (Op == TOK_STAR) {
-            if (!(CurrentType & VT_PTR)) {
+            if (!(CurrentType & VT_PTR1)) {
                 Fatal("Pointer required for dereference");
             }
-            CurrentType = (CurrentType&~VT_PTR) | VT_LVAL;
+            CurrentType = (CurrentType-VT_PTR1) | VT_LVAL;
         } else if (Op == TOK_PLUS) {
             Check(CurrentType == VT_INT);
         } else if (Op == TOK_MINUS) {
@@ -966,6 +969,9 @@ void ParseUnaryExpression(void)
             Size = 2;
         } else {
             Fatal("sizeof not implemented for this type");
+        }
+        while (Accept(TOK_STAR)) {
+            Size = 2;
         }
         Expect(TOK_RPAREN);
         Emit("MOV\tAX, %d", Size);
@@ -1106,14 +1112,14 @@ void ParseExpr1(int OuterPrecedence)
                 Check(CurrentType == VT_INT);
                 Emit("MOV\t[BX], AL");
             } else {
-                Check(LhsType == VT_INT || (LhsType & VT_PTR));
-                Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
+                Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 Emit("MOV\t[BX], AX");
             }
         } else {
-            Check(LhsType == VT_INT || (LhsType & VT_PTR));
+            Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
             Check(CurrentType == VT_INT);
-            if (LhsType == (VT_INT|VT_PTR)) {
+            if ((LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
                 Emit("ADD\tAX, AX");
             }
             Emit("POP\tCX");
@@ -1156,13 +1162,13 @@ int ParseDeclSpecs(void)
         t = VT_INT;
     } else if (TokenType == TOK_VA_LIST) {
         GetToken();
-        return VT_CHAR | VT_PTR;
+        return VT_CHAR | VT_PTR1;
     } else {
         Unexpected();
     }
     GetToken();
-    if (TokenType == TOK_STAR) {
-        t |= VT_PTR;
+    while (TokenType == TOK_STAR) {
+        t += VT_PTR1;
         GetToken();
     }
     return t;
@@ -1356,7 +1362,7 @@ void ParseCompoundStatement(void)
     }
     PopScope();
     if (InitialOffset != LocalOffset) {
-        Emit("ADD\tSP, %d\t; LocalOffset=%d", InitialOffset - LocalOffset, InitialOffset);
+        Emit("ADD\tSP, %d", InitialOffset - LocalOffset);
         LocalOffset = InitialOffset;
     }
 }
@@ -1443,7 +1449,47 @@ void ParseExternalDefition(void)
 #define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC
 #define PERM_FLAGS S_IREAD | S_IWRITE
 
-int main(void)
+#if 0
+// Only used when self-compiling
+int CREATE_FLAGS;
+int PERM_FLAGS;
+
+void CallMain(int Len, char* CmdLine)
+{
+    char **Args;
+    int NumArgs;
+    CmdLine[Len] = 0;
+
+    Args = malloc(sizeof(char*)*10);
+    Args[0] = "scc";
+    NumArgs = 1;
+
+    while (*CmdLine) {
+        while (*CmdLine && *CmdLine <= ' ')
+            ++CmdLine;
+        if (!*CmdLine)
+            break;
+        Args[NumArgs++] = CmdLine;
+        while (*CmdLine && *CmdLine > ' ')
+            ++CmdLine;
+        if (!*CmdLine)
+            break;
+        *CmdLine++ = 0;
+    }
+    Args[NumArgs] = 0;
+    CREATE_FLAGS=1;
+    PERM_FLAGS=0;
+    exit(main(NumArgs, Args));
+}
+#endif
+
+void MakeOutputFilename(char* dest, const char* n)
+{
+    while (*n && *n != '.') *dest++ = *n++;
+    memcpy(dest, ".ASM", 5);
+}
+
+int main(int argc, char** argv)
 {
     LineBuf       = malloc(LINEBUF_MAX);
     TempBuf       = malloc(TMPBUF_MAX);
@@ -1456,23 +1502,20 @@ int main(void)
     VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
     Scopes        = malloc(sizeof(int)*SCOPE_MAX);
 
+    if (argc < 2) {
+        Printf("Usage: %s input-file\n", argv[0]);
+        return 1;
+    }
 
-#if 0
-    // Only active when self-compiling
-    int CREATE_FLAGS;
-    int PERM_FLAGS;
-    CREATE_FLAGS=1;
-    PERM_FLAGS=0;
-#endif
-
-    InFile = open("scc.c", 0); // O_RDONLY
+    InFile = open(argv[1], 0); // O_RDONLY
     if (InFile < 0) {
         Fatal("Error opening input file");
     }
 
-    OutFile = open("scc.asm", CREATE_FLAGS, PERM_FLAGS);
+    MakeOutputFilename(TempBuf, argv[1]);
+    OutFile = open(TempBuf, CREATE_FLAGS, PERM_FLAGS);
     if (OutFile < 0) {
-        Fatal("Error opening output file");
+        Fatal("Error creating output file");
     }
 
     AddId("break");
@@ -1500,9 +1543,12 @@ int main(void)
     "\torg 0x100\n"
     "Start:\n"
     "\tXOR\tBP, BP\n"
-    "\tCALL\t_main\n"
+    "\tMOV\tAX, 0x81\n"
     "\tPUSH\tAX\n"
-    "\tCALL\t_exit\n"
+    "\tMOV\tAL, [0x80]\n"
+    "\tPUSH\tAX\n"
+    "\tPUSH\tAX\n"
+    "\tJMP\t_CallMain\n"
     "\n"
     "_exit:\n"
     "\tPUSH\tBP\n"
