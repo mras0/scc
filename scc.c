@@ -4,12 +4,17 @@
 #include <stdarg.h>
 #include <io.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+
 #ifdef _MSC_VER
 #define open _open
+#define close _close
 #define read _read
+#define write _write
 #endif
 
 enum {
+    LINEBUF_MAX = 100,
     TMPBUF_MAX = 10,
     INBUF_MAX = 1024,
     TOKEN_MAX = 64,
@@ -106,6 +111,8 @@ enum {
     TOK_ID
 };
 
+int OutFile;
+char* LineBuf;
 char* TempBuf;
 
 int InFile;
@@ -150,27 +157,46 @@ void PutStr(const char* s)
         putchar(*s++);
 }
 
-void Printf(const char* format, ...)
+char* CopyStr(char* dst, const char* src)
 {
-    va_list vl;
+    while (*src) *dst++ = *src++;
+    return dst;
+}
+
+int StrLen(const char* s)
+{
+    int l;
+    l = 0;
+    while (*s++)
+        ++l;
+    return l;
+}
+
+void OutputStr(const char* buf)
+{
+    write(OutFile, buf, StrLen(buf));
+}
+
+char* VSPrintf(char* dest, const char* format, va_list vl)
+{
     char ch;
-    va_start(vl, format);
     while (ch = *format++) {
         if (ch != '%') {
-            putchar(ch);
+            *dest++ = ch;
             continue;
         }
         ch = *format++;
         if (ch == 's') {
-            PutStr(va_arg(vl, char*));
+            dest = CopyStr(dest, va_arg(vl, char*));
         } else if(ch == 'c') {
-            putchar(va_arg(vl, char));
-        } else if ((ch == '+' && *format++ == 'd') || ch == 'd') {
+            *dest++ = va_arg(vl, char);
+        } else if ((ch == '+' && *format == 'd') || ch == 'd') {
             char* buf;
             int n;
             int s;
             int always;
             if (ch == '+') {
+                ++format;
                 always = 1;
             } else {
                 always = 0;
@@ -190,13 +216,22 @@ void Printf(const char* format, ...)
             }
             if (s) *--buf = '-';
             else if (always) *--buf = '+';
-            PutStr(buf);
+            dest  = CopyStr(dest, buf);
         } else {
-            putchar(ch);
-            putchar('!');putchar('!');putchar('!');
+            PutStr("Invalid format string");
             exit(1);
         }
     }
+    *dest = 0;
+    return dest;
+}
+
+void Printf(const char* format, ...)
+{
+    va_list vl;
+    va_start(vl, format);
+    VSPrintf(LineBuf, format, vl);
+    PutStr(LineBuf);
     va_end(vl);
 }
 
@@ -222,6 +257,8 @@ void Check(int ok)
     }
 }
 
+#define Check(expr) do { if (!(expr)) Fatal(#expr " failed"); } while (0)
+
 const char* IdText(int id)
 {
     Check(id >= 0 && id < IdCount);
@@ -233,15 +270,46 @@ int AddId(const char* Name)
     int cnt;
     int ofs;
     Check(IdCount < ID_MAX);
-    for (cnt = 0; Name[cnt]; ++cnt)
-        ;
-    ++cnt;
+    cnt = StrLen(Name) + 1;
     ofs = IdBufferIndex;
     IdBufferIndex += cnt;
     Check(IdBufferIndex <= IDBUFFER_MAX);
     memcpy(IdBuffer + ofs, Name, cnt);
     IdOffset[IdCount++] = ofs;
     return IdCount - 1;
+}
+
+void RawEmit(const char* format, ...)
+{
+    va_list vl;
+    va_start(vl, format);
+    VSPrintf(LineBuf, format, vl);
+    OutputStr(LineBuf);
+    va_end(vl);
+}
+
+void Emit(const char* format, ...)
+{
+    va_list vl;
+    char* dest;
+    dest = LineBuf;
+    *dest++ = '\t';
+    va_start(vl, format);
+    dest = VSPrintf(dest, format, vl);
+    va_end(vl);
+    *dest++ = '\n';
+    *dest++ = 0;
+    OutputStr(LineBuf);
+}
+
+void EmitLocalLabel(int l)
+{
+    RawEmit(".L%d:\n", l);
+}
+
+void EmitGlobalLabel(int id)
+{
+    RawEmit("_%s:\n", IdText(id));
 }
 
 char GetChar(void)
@@ -306,6 +374,8 @@ char Unescape(void)
     ch = GetChar();
     if (ch == 'n') {
         return '\n';
+    } else if (ch == 'r') {
+        return '\r';
     } else if (ch == 't') {
         return '\t';
     } else if (ch == '\'') {
@@ -328,8 +398,8 @@ void GetStringLiteral(void)
 
     TokenNumVal = LocalLabelCounter++;
     JL = LocalLabelCounter++;
-    Printf("\tJMP\t.L%d\n", JL);
-    Printf(".L%d:\tDB ", TokenNumVal);
+    Emit("JMP\t.L%d", JL);
+    RawEmit(".L%d:\tDB ", TokenNumVal);
 
     open = 0;
     for (;;) {
@@ -342,16 +412,16 @@ void GetStringLiteral(void)
             }
             if (ch < ' ' || ch == '\'') {
                 if (open) {
-                    Printf("', ");
+                    RawEmit("', ");
                     open = 0;
                 }
-                Printf("%d, ", ch);
+                RawEmit("%d, ", ch);
             } else {
                 if (!open) {
                     open = 1;
-                    Printf("'");
+                    RawEmit("'");
                 }
-                putchar(ch);
+                RawEmit("%c", ch);
             }
         }
         SkipWhitespace();
@@ -361,9 +431,9 @@ void GetStringLiteral(void)
             break;
         }
     }
-    if (open) Printf("', ");
-    Printf("0\n");
-    Printf(".L%d:\n", JL);
+    if (open) RawEmit("', ");
+    RawEmit("0\n");
+    RawEmit(".L%d:\n", JL);
 }
 
 void GetToken(void)
@@ -621,14 +691,14 @@ void LvalToRval(void)
 {
     if (CurrentType & VT_LVAL) {
         CurrentType &= ~VT_LVAL;
-        Printf("\tMOV\tBX, AX\n");
+        Emit("MOV\tBX, AX");
         if (CurrentType == VT_CHAR) {
-            Printf("\tMOV\tAL, [BX]\n");
-            Printf("\tCBW\n");
+            Emit("MOV\tAL, [BX]");
+            Emit("CBW");
             CurrentType = VT_INT;
         } else {
             Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
-            Printf("\tMOV\tAX, [BX]\n");
+            Emit("MOV\tAX, [BX]");
         }
     }
 }
@@ -643,16 +713,16 @@ void DoIncDec(int Op)
     }
     if (Op == TOK_PLUSPLUS) {
         if (Amm == 1) {
-            Printf("\tINC\tAX\n");
+            Emit("INC\tAX");
         } else {
-            Printf("\tADD\tAX, %d\n", Amm);
+            Emit("ADD\tAX, %d", Amm);
         }
     } else {
         Check(Op == TOK_MINUSMINUS);
         if (Amm == 1) {
-            Printf("\tDEC\tAX\n");
+            Emit("DEC\tAX");
         } else {
-            Printf("\tSUB\tAX, %d\n", Amm);
+            Emit("SUB\tAX, %d", Amm);
         }
     }
 }
@@ -661,22 +731,22 @@ void DoIncDecOp(int Op, int Post)
 {
     Check(CurrentType & VT_LVAL);
     CurrentType &= ~VT_LVAL;
-    Printf("\tMOV\tBX, AX\n");
+    Emit("MOV\tBX, AX");
     if (CurrentType == VT_CHAR) {
-        Printf("\tMOV\tAL, [BX]\n");
-        Printf("\tCBW\n");
-        if (Post) Printf("\tPUSH\tAX\n");
+        Emit("MOV\tAL, [BX]");
+        Emit("CBW");
+        if (Post) Emit("PUSH\tAX");
         DoIncDec(Op);
-        Printf("\tMOV\t[BX], AL\n");
+        Emit("MOV\t[BX], AL");
         CurrentType = VT_INT;
     } else {
         Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
-        Printf("\tMOV\tAX, [BX]\n");
-        if (Post) Printf("\tPUSH\tAX\n");
+        Emit("MOV\tAX, [BX]");
+        if (Post) Emit("PUSH\tAX");
         DoIncDec(Op);
-        Printf("\tMOV\t[BX], AX\n");
+        Emit("MOV\t[BX], AX");
     }
-    if (Post) Printf("\tPOP\tAX\n");
+    if (Post) Emit("POP\tAX");
 }
 
 void ParseExpr(void);
@@ -704,11 +774,11 @@ void ParsePrimaryExpression(void)
         ParseExpr();
         Expect(TOK_RPAREN);
     } else if (TokenType == TOK_NUM) {
-        Printf("\tMOV\tAX, %d\n", TokenNumVal);
+        Emit("MOV\tAX, %d", TokenNumVal);
         CurrentType = VT_INT;
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
-        Printf("\tMOV\tAX, .L%d\n", TokenNumVal);
+        Emit("MOV\tAX, .L%d", TokenNumVal);
         CurrentType = VT_PTR | VT_CHAR;
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
@@ -731,16 +801,16 @@ void ParsePrimaryExpression(void)
             if (vd < 0 || !VarDeclOffset[vd]) {
                 Fatal("Invalid argument to va_start");
             }
-            Printf("\tLEA\tAX, [BP%+d]\n", VarDeclOffset[vd]);
-            Printf("\tMOV\t[BP%+d], AX\n", offset);
+            Emit("LEA\tAX, [BP%+d]", VarDeclOffset[vd]);
+            Emit("MOV\t[BP%+d], AX", offset);
             CurrentType = VT_VOID;
         } else if (func == TOK_VA_END) {
             CurrentType = VT_VOID;
         } else if (func == TOK_VA_ARG) {
             Expect(TOK_COMMA);
-            Printf("\tMOV\tAX, [BP%+d]\n", offset);
-            Printf("\tADD\tAX, 2\n");
-            Printf("\tMOV\t[BP%+d], AX\n", offset);
+            Emit("MOV\tAX, [BP%+d]", offset);
+            Emit("ADD\tAX, 2");
+            Emit("MOV\t[BP%+d], AX", offset);
             CurrentType = VT_LVAL | ParseDeclSpecs();
         }
         Expect(TOK_RPAREN);
@@ -750,18 +820,18 @@ void ParsePrimaryExpression(void)
         if (vd < 0) {
             // Lookup failed. Assume function returning int.
             CurrentType = VT_FUN|VT_INT;
-            Printf("\tMOV\tAX, _%s\n", IdText(id));
+            Emit("MOV\tAX, _%s", IdText(id));
         } else {
             if (VarDeclType[vd] & VT_ENUM) {
-                Printf("\tMOV\tAX, %d\n", VarDeclOffset[vd]);
+                Emit("MOV\tAX, %d", VarDeclOffset[vd]);
                 CurrentType = VT_INT;
                 return;
             }
             CurrentType = VarDeclType[vd] | VT_LVAL;
             if (VarDeclOffset[vd]) {
-                Printf("\tLEA\tAX, [BP%+d]\t; %s\n", VarDeclOffset[vd], IdText(VarDeclId[vd]));
+                Emit("LEA\tAX, [BP%+d]\t; %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
             } else {
-                Printf("\tMOV\tAX, _%s\n", IdText(id));
+                Emit("MOV\tAX, _%s", IdText(id));
                 if (CurrentType & VT_FUN) {
                     CurrentType &= ~VT_LVAL;
                 }
@@ -783,11 +853,11 @@ void ParsePostfixExpression(void)
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
             }
-            Printf("\tPUSH\tSI\n");
-            Printf("\tPUSH\tDI\n");
-            Printf("\tMOV\tSI, AX\n");
-            Printf("\tSUB\tSP, %d\n", MaxArgs*2);
-            Printf("\tMOV\tDI, SP\n");
+            Emit("PUSH\tSI");
+            Emit("PUSH\tDI");
+            Emit("MOV\tSI, AX");
+            Emit("SUB\tSP, %d", MaxArgs*2);
+            Emit("MOV\tDI, SP");
             RetType = CurrentType & ~VT_FUN;
             NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
@@ -795,7 +865,7 @@ void ParsePostfixExpression(void)
                 ParseAssignmentExpression();
                 LvalToRval();
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                Printf("\tMOV\t[DI+%d], AX\n", NumArgs*2);
+                Emit("MOV\t[DI+%d], AX", NumArgs*2);
                 ++NumArgs;
 
                 if (!Accept(TOK_COMMA)) {
@@ -803,10 +873,10 @@ void ParsePostfixExpression(void)
                 }
             }
             Expect(TOK_RPAREN);
-            Printf("\tCALL\tSI\n");
-            Printf("\tADD\tSP, %d\n", MaxArgs*2);
-            Printf("\tPOP\tDI\n");
-            Printf("\tPOP\tSI\n");
+            Emit("CALL\tSI");
+            Emit("ADD\tSP, %d", MaxArgs*2);
+            Emit("POP\tDI");
+            Emit("POP\tSI");
             CurrentType = RetType;
             if (CurrentType == VT_CHAR) {
                 CurrentType = VT_INT;
@@ -818,17 +888,17 @@ void ParsePostfixExpression(void)
                 Fatal("Expected pointer");
             }
             AType = CurrentType & ~VT_PTR;
-            Printf("\tPUSH\tAX\n");
+            Emit("PUSH\tAX");
             ParseExpr();
             Expect(TOK_RBRACKET);
             LvalToRval();
             Check(CurrentType == VT_INT);
             if (AType != VT_CHAR) {
                 Check(AType == VT_INT);
-                Printf("\tADD\tAX, AX\n");
+                Emit("ADD\tAX, AX");
             }
-            Printf("\tPOP\tCX\n");
-            Printf("\tADD\tAX, CX\n");
+            Emit("POP\tCX");
+            Emit("ADD\tAX, CX");
             CurrentType = AType | VT_LVAL;
         } else {
             int Op;
@@ -870,19 +940,19 @@ void ParseUnaryExpression(void)
             Check(CurrentType == VT_INT);
         } else if (Op == TOK_MINUS) {
             Check(CurrentType == VT_INT);
-            Printf("\tNEG\tAX\n");
+            Emit("NEG\tAX");
         } else if (Op == TOK_TILDE) {
             Check(CurrentType == VT_INT);
-            Printf("\tNOT\tAX\n");
+            Emit("NOT\tAX");
         } else if (Op == TOK_NOT) {
             int Lab;
             Lab = LocalLabelCounter++;
             Check(CurrentType == VT_INT);
-            Printf("\tAND\tAX, AX\n");
-            Printf("\tMOV\tAX, 0\n");
-            Printf("\tJNZ\t.L%d\n", Lab);
-            Printf("\tINC\tAL\n");
-            Printf(".L%d:\n", Lab);
+            Emit("AND\tAX, AX");
+            Emit("MOV\tAX, 0");
+            Emit("JNZ\t.L%d", Lab);
+            Emit("INC\tAL");
+            EmitLocalLabel(Lab);
         } else {
             Unexpected();
         }
@@ -898,7 +968,7 @@ void ParseUnaryExpression(void)
             Fatal("sizeof not implemented for this type");
         }
         Expect(TOK_RPAREN);
-        Printf("\tMOV\tAX, %d\n", Size);
+        Emit("MOV\tAX, %d", Size);
         CurrentType = VT_INT;
     } else {
         ParsePrimaryExpression();
@@ -928,37 +998,37 @@ void DoBinOp(int Op)
     if (Op == TOK_LT || Op == TOK_LTEQ || Op == TOK_GT || Op == TOK_GTEQ || Op == TOK_EQEQ || Op == TOK_NOTEQ) {
         int Lab;
         Lab = LocalLabelCounter++;
-        Printf("\tCMP\tAX, CX\n");
-        Printf("\tMOV\tAX, 1\n");
+        Emit("CMP\tAX, CX");
+        Emit("MOV\tAX, 1");
         RelOp(Op);
-        Printf("\tJ%s\t.L%d\n", RelOp(Op), Lab);
-        Printf("\tDEC\tAL\n");
-        Printf(".L%d:\n", Lab);
+        Emit("J%s\t.L%d", RelOp(Op), Lab);
+        Emit("DEC\tAL");
+        EmitLocalLabel(Lab);
         return;
     }
 
     if (Op == TOK_PLUS || Op == TOK_PLUSEQ) {
-        Printf("\tADD\tAX, CX\n");
+        Emit("ADD\tAX, CX");
     } else if (Op == TOK_MINUS || Op == TOK_MINUSEQ) {
-        Printf("\tSUB\tAX, CX\n");
+        Emit("SUB\tAX, CX");
     } else if (Op == TOK_STAR || Op == TOK_STAREQ) {
-        Printf("\tIMUL\tCX\n");
+        Emit("IMUL\tCX");
     } else if (Op == TOK_SLASH || Op == TOK_SLASHEQ || Op == TOK_MOD || Op == TOK_MODEQ) {
-        Printf("\tXOR\tDX, DX\n");
-        Printf("\tIDIV\tCX\n");
+        Emit("XOR\tDX, DX");
+        Emit("IDIV\tCX");
         if (Op == TOK_MOD || Op == TOK_MODEQ) {
-            Printf("\tMOV\tAX, DX\n");
+            Emit("MOV\tAX, DX");
         }
     } else if (Op == TOK_AND || Op == TOK_ANDEQ) {
-        Printf("\tAND\tAX, CX\n");
+        Emit("AND\tAX, CX");
     } else if (Op == TOK_XOR || Op == TOK_XOREQ) {
-        Printf("\tXOR\tAX, CX\n");
+        Emit("XOR\tAX, CX");
     } else if (Op == TOK_OR || Op == TOK_OREQ) {
-        Printf("\tOR\tAX, CX\n");
+        Emit("OR\tAX, CX");
     } else if (Op == TOK_LSH || Op == TOK_LSHEQ) {
-        Printf("\tSHL\tAX, CL\n");
+        Emit("SHL\tAX, CL");
     } else if (Op == TOK_RSH || Op == TOK_RSHEQ) {
-        Printf("\tSAR\tAX, CL\n");
+        Emit("SAR\tAX, CL");
     }
 }
 
@@ -994,17 +1064,17 @@ void ParseExpr1(int OuterPrecedence)
             LTemp = LocalLabelCounter++;
             LEnd = LocalLabelCounter++;
             Check(CurrentType == VT_INT);
-            Printf("\tAND\tAX, AX\n");
+            Emit("AND\tAX, AX");
             if (Op == TOK_ANDAND)
                 JText = "JNZ";
             else
                 JText = "JZ";
-            Printf("\t%s\t.L%d\t\n", JText, LTemp);
-            Printf("\tJMP\t.L%d\n", LEnd);
-            Printf(".L%d:\n", LTemp);
+            Emit("%s\t.L%d", JText, LTemp);
+            Emit("JMP\t.L%d", LEnd);
+            EmitLocalLabel(LTemp);
         } else {
             LEnd = -1;
-            Printf("\tPUSH\tAX\n");
+            Emit("PUSH\tAX");
         }
 
         // TODO: Question, ?:
@@ -1020,34 +1090,34 @@ void ParseExpr1(int OuterPrecedence)
         }
         LvalToRval();
         if (LEnd >= 0) {
-            Printf(".L%d:\n", LEnd);
+            EmitLocalLabel(LEnd);
         } else if (IsAssign) {
             Check(LhsType & VT_LVAL);
             LhsType &= ~VT_LVAL;
-            Printf("\tPOP\tBX\n");
+            Emit("POP\tBX");
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT);
                 Check(CurrentType == VT_INT);
-                Printf("\tMOV\tCX, AX\n");
-                Printf("\tMOV\tAX, [BX]\n");
+                Emit("MOV\tCX, AX");
+                Emit("MOV\tAX, [BX]");
                 DoBinOp(Op);
             }
             if (LhsType == VT_CHAR) {
                 Check(CurrentType == VT_INT);
-                Printf("\tMOV\t[BX], AL\n");
+                Emit("MOV\t[BX], AL");
             } else {
                 Check(LhsType == VT_INT || (LhsType & VT_PTR));
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTR));
-                Printf("\tMOV\t[BX], AX\n");
+                Emit("MOV\t[BX], AX");
             }
         } else {
             Check(LhsType == VT_INT || (LhsType & VT_PTR));
             Check(CurrentType == VT_INT);
             if (LhsType == (VT_INT|VT_PTR)) {
-                Printf("\tADD\tAX, AX\n");
+                Emit("ADD\tAX, AX");
             }
-            Printf("\tPOP\tCX\n");
-            Printf("\tXCHG\tAX, CX\n");
+            Emit("POP\tCX");
+            Emit("XCHG\tAX, CX");
             DoBinOp(Op);
         }
     }
@@ -1153,7 +1223,7 @@ void ParseStatement(void)
         vd = ParseDecl();
         LocalOffset -= 2;
         VarDeclOffset[vd] = LocalOffset;
-        Printf("\tSUB\tSP, 2\t; [BP%+d] = %s\n", VarDeclOffset[vd], IdText(VarDeclId[vd]));
+        Emit("SUB\tSP, 2\t; [BP%+d] = %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
         int CondLabel;
@@ -1175,34 +1245,34 @@ void ParseStatement(void)
         Expect(TOK_SEMICOLON);
 
         // Cond
-        Printf(".L%d:\t; Cond for\n", CondLabel);
+        EmitLocalLabel(CondLabel);
         if (TokenType != TOK_SEMICOLON) {
             ParseExpr();
             LvalToRval();
             Check(CurrentType == VT_INT);
-            Printf("\tAND\tAX, AX\n");
-            Printf("\tJNZ\t.L%d\n", BodyLabel); // TODO: Need far jump?
-            Printf("\tJMP\t.L%d\n", EndLabel);
+            Emit("AND\tAX, AX");
+            Emit("JNZ\t.L%d", BodyLabel); // TODO: Need far jump?
+            Emit("JMP\t.L%d", EndLabel);
         } else {
-            Printf("\tJMP\t.L%d\n", BodyLabel);
+            Emit("JMP\t.L%d", BodyLabel);
         }
         Expect(TOK_SEMICOLON);
 
         // Iter
         if (TokenType != TOK_RPAREN) {
             IterLabel  = LocalLabelCounter++;
-            Printf(".L%d:\t; Iter for\n", IterLabel);
+            EmitLocalLabel(IterLabel);
             ParseExpr();
-            Printf("\tJMP\t.L%d\n", CondLabel);
+            Emit("JMP\t.L%d", CondLabel);
         }
         Expect(TOK_RPAREN);
 
-        Printf(".L%d:\t; Body for\n", BodyLabel);
+        EmitLocalLabel(BodyLabel);
         BreakLabel    = EndLabel;
         ContinueLabel = IterLabel;
         ParseStatement();
-        Printf("\tJMP\t.L%d\n", IterLabel);
-        Printf(".L%d:\t; End for\n", EndLabel);
+        Emit("JMP\t.L%d", IterLabel);
+        EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_IF)) {
         int IfLabel;
         int ElseLabel;
@@ -1211,29 +1281,29 @@ void ParseStatement(void)
         IfLabel    = LocalLabelCounter++;
         ElseLabel  = LocalLabelCounter++;
         EndLabel   = LocalLabelCounter++;
-        Printf("\t; Start of if\n");
+        Emit("; Start of if");
         Accept(TOK_LPAREN);
         ParseExpr();
         LvalToRval();
         Check(CurrentType == VT_INT);
-        Printf("\tAND\tAX, AX\n");
-        Printf("\tJNZ\t.L%d\n", IfLabel);
-        Printf("\tJMP\t.L%d\n", ElseLabel);
+        Emit("AND\tAX, AX");
+        Emit("JNZ\t.L%d", IfLabel);
+        Emit("JMP\t.L%d", ElseLabel);
         Accept(TOK_RPAREN);
-        Printf(".L%d:\t; If\n", IfLabel);
+        EmitLocalLabel(IfLabel);
         ParseStatement();
-        Printf("\tJMP\t.L%d\n", EndLabel);
-        Printf(".L%d:\t; Else\n", ElseLabel);
+        Emit("JMP\t.L%d", EndLabel);
+        EmitLocalLabel(ElseLabel);
         if (Accept(TOK_ELSE)) {
             ParseStatement();
         }
-        Printf(".L%d:\t; End if\n", EndLabel);
+        EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_RETURN)) {
         if (TokenType != TOK_SEMICOLON) {
             ParseExpr();
             LvalToRval();
         }
-        Printf("\tJMP\t.L%d\n", ReturnLabel);
+        Emit("JMP\t.L%d", ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
         int StartLabel;
@@ -1242,28 +1312,28 @@ void ParseStatement(void)
         StartLabel = LocalLabelCounter++;
         BodyLabel  = LocalLabelCounter++;
         EndLabel   = LocalLabelCounter++;
-        Printf(".L%d:\t; Start of while\n", StartLabel);
+        EmitLocalLabel(StartLabel);
         Expect(TOK_LPAREN);
         ParseExpr();
         LvalToRval();
         Check(CurrentType == VT_INT);
-        Printf("\tAND\tAX, AX\n");
-        Printf("\tJNZ\t.L%d\n", BodyLabel);
-        Printf("\tJMP\t.L%d\n", EndLabel);
+        Emit("AND\tAX, AX");
+        Emit("JNZ\t.L%d", BodyLabel);
+        Emit("JMP\t.L%d", EndLabel);
         Expect(TOK_RPAREN);
-        Printf(".L%d:\t; Body of while\n", BodyLabel);
+        EmitLocalLabel(BodyLabel);
         BreakLabel = EndLabel;
         ContinueLabel = StartLabel;
         ParseStatement();
-        Printf("\tJMP\t.L%d\n", StartLabel);
-        Printf(".L%d:\t; End of while\n", EndLabel);
+        Emit("JMP\t.L%d", StartLabel);
+        EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
-        Printf("\tJMP\t.L%d\n", BreakLabel);
+        Emit("JMP\t.L%d", BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
-        Printf("\tJMP\t.L%d\n", ContinueLabel);
+        Emit("JMP\t.L%d", ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else {
         // Expression statement
@@ -1286,7 +1356,7 @@ void ParseCompoundStatement(void)
     }
     PopScope();
     if (InitialOffset != LocalOffset) {
-        Printf("\tADD\tSP, %d\t; LocalOffset=%d\n", InitialOffset - LocalOffset, InitialOffset);
+        Emit("ADD\tSP, %d\t; LocalOffset=%d", InitialOffset - LocalOffset, InitialOffset);
         LocalOffset = InitialOffset;
     }
 }
@@ -1328,8 +1398,8 @@ void ParseExternalDefition(void)
     fd = ParseDecl();
 
     if (Accept(TOK_SEMICOLON)) {
-        Printf("_%s:\n", IdText(VarDeclId[fd]));
-        Printf("\tDW\t0\n");
+        EmitGlobalLabel(VarDeclId[fd]);
+        Emit("DW\t0");
         return;
     }
 
@@ -1358,20 +1428,24 @@ void ParseExternalDefition(void)
         LocalLabelCounter = 0;
         ReturnLabel = LocalLabelCounter++;
         BreakLabel = ContinueLabel = -1;
-        Printf("_%s:\n", IdText(VarDeclId[fd]));
-        Printf("\tPUSH\tBP\n");
-        Printf("\tMOV\tBP, SP\n");
+        EmitGlobalLabel(VarDeclId[fd]);
+        Emit("PUSH\tBP");
+        Emit("MOV\tBP, SP");
         ParseCompoundStatement();
-        Printf(".L%d:\n", ReturnLabel);
-        Printf("\tMOV\tSP, BP\n");
-        Printf("\tPOP\tBP\n");
-        Printf("\tRET\n");
+        EmitLocalLabel(ReturnLabel);
+        Emit("MOV\tSP, BP");
+        Emit("POP\tBP");
+        Emit("RET");
     }
     PopScope();
 }
 
+#define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC
+#define PERM_FLAGS S_IREAD | S_IWRITE
+
 int main(void)
 {
+    LineBuf       = malloc(LINEBUF_MAX);
     TempBuf       = malloc(TMPBUF_MAX);
     InBuf         = malloc(INBUF_MAX);
     TokenText     = malloc(TOKEN_MAX);
@@ -1382,9 +1456,23 @@ int main(void)
     VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
     Scopes        = malloc(sizeof(int)*SCOPE_MAX);
 
-    InFile = open("scc.c", 0); // 0 = O_RDONLY
+
+#if 0
+    // Only active when self-compiling
+    int CREATE_FLAGS;
+    int PERM_FLAGS;
+    CREATE_FLAGS=1;
+    PERM_FLAGS=0;
+#endif
+
+    InFile = open("scc.c", 0); // O_RDONLY
     if (InFile < 0) {
         Fatal("Error opening input file");
+    }
+
+    OutFile = open("scc.asm", CREATE_FLAGS, PERM_FLAGS);
+    if (OutFile < 0) {
+        Fatal("Error opening output file");
     }
 
     AddId("break");
@@ -1407,7 +1495,7 @@ int main(void)
     Check(IdCount+TOK_BREAK-1 == TOK_VA_ARG);
 
     // Prelude
-    Printf("%s\n",
+    OutputStr(
     "\tcpu 8086\n"
     "\torg 0x100\n"
     "Start:\n"
@@ -1451,10 +1539,24 @@ int main(void)
     "\tMOV\tBP, SP\n"
     "\tMOV\tDX, [BP+4]\n"
     "\tMOV\tAX, 0x3D00\n"
+    "\tCMP\tWORD [BP+6], 0\n"
+    "\tJZ\t.DoOpen\n"
+    "\tDEC\tAH\n"
+    ".DoOpen:\n"
     "\tINT\t0x21\n"
     "\tJNC\t.Ok\n"
     "\tMOV\tAX, -1\n"
     "\t.Ok:\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+    "\n"
+    "_close:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tMOV\tBX, [BP+4]\n"
+    "\tMOV\tAH, 0x3E\n"
+    "\tINT\t0x21\n"
     "\tMOV\tSP, BP\n"
     "\tPOP\tBP\n"
     "\tRET\n"
@@ -1466,6 +1568,21 @@ int main(void)
     "\tMOV\tDX, [BP+6]\n"
     "\tMOV\tCX, [BP+8]\n"
     "\tMOV\tAH, 0x3F\n"
+    "\tINT\t0x21\n"
+    "\tJNC\t.Ok\n"
+    "\tXOR\tAX, AX\n"
+    "\t.Ok:\n"
+    "\tMOV\tSP, BP\n"
+    "\tPOP\tBP\n"
+    "\tRET\n"
+    "\n"
+    "_write:\n"
+    "\tPUSH\tBP\n"
+    "\tMOV\tBP, SP\n"
+    "\tMOV\tBX, [BP+4]\n"
+    "\tMOV\tDX, [BP+6]\n"
+    "\tMOV\tCX, [BP+8]\n"
+    "\tMOV\tAH, 0x40\n"
     "\tINT\t0x21\n"
     "\tJNC\t.Ok\n"
     "\tXOR\tAX, AX\n"
@@ -1488,6 +1605,7 @@ int main(void)
     "\tMOV\tSP, BP\n"
     "\tPOP\tBP\n"
     "\tRET\n"
+    "\n"
     );
 
     PushScope();
@@ -1499,11 +1617,14 @@ int main(void)
     PopScope();
 
     // Postlude
-    Printf("%s\n",
+    OutputStr(
     "\n"
     "HeapPtr:\tdw HeapStart\n"
     "HeapStart:\n"
     );
+
+    close(InFile);
+    close(OutFile);
 
     return 0;
 }
