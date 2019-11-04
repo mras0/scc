@@ -37,8 +37,8 @@ enum {
     VT_FUN  = 8,
     VT_ENUM = 16,
 
-    VT_PTR1 = 512,
-    VT_PTRMASK = 3584, // 512+1024+2048
+    VT_PTR1 = 32,
+    VT_PTRMASK = 96, // 32+64 - 3 levels of indirection should be enough..
 };
 
 enum {
@@ -493,111 +493,109 @@ void GetToken(void)
     } else if (ch == '"') {
         GetStringLiteral();
         TokenType = TOK_STRLIT;
-    } else {
-        if (ch == '(') { TokenType = TOK_LPAREN;    }
-        else if (ch == ')') { TokenType = TOK_RPAREN;    }
-        else if (ch == '{') { TokenType = TOK_LBRACE;    }
-        else if (ch == '}') { TokenType = TOK_RBRACE;    }
-        else if (ch == '[') { TokenType = TOK_LBRACKET;  }
-        else if (ch == ']') { TokenType = TOK_RBRACKET;  }
-        else if (ch == ',') { TokenType = TOK_COMMA;     }
-        else if (ch == ';') { TokenType = TOK_SEMICOLON; }
-        else if (ch == '~') { TokenType = TOK_TILDE;     }
-        else if (ch == '=') {
-            TokenType = TOK_EQ;
-            if (TryGetChar('=')) {
-                TokenType = TOK_EQEQ;
-            }
-        } else if (ch == '!') {
-            TokenType = TOK_NOT;
-            if (TryGetChar('=')) {
-                TokenType = TOK_NOTEQ;
-            }
-        } else if (ch == '<') {
-            TokenType = TOK_LT;
-            if (TryGetChar('<')) {
-                TokenType = TOK_LSH;
-                if (TryGetChar('=')) {
-                    TokenType = TOK_LSHEQ;
-                }
-            } else if (TryGetChar('=')) {
-                TokenType = TOK_LTEQ;
-            }
-        } else if (ch ==  '>') {
-            TokenType = TOK_GT;
-            if (TryGetChar('>')) {
-                TokenType = TOK_RSH;
-                if (TryGetChar('=')) {
-                    TokenType = TOK_RSHEQ;
-                }
-            } else if (TryGetChar('=')) {
-                TokenType = TOK_GTEQ;
-            }
-        } else if (ch == '&') {
-            TokenType = TOK_AND;
-            if (TryGetChar('&')) {
-                TokenType = TOK_ANDAND;
-            } else if (TryGetChar('=')) {
-                TokenType = TOK_ANDEQ;
-            }
-        } else if (ch == '|') {
-            TokenType = TOK_OR;
-            if (TryGetChar('|')) {
-                TokenType = TOK_OROR;
-            } else if (TryGetChar('=')) {
-                TokenType = TOK_OREQ;
-            }
-        } else if (ch == '^') {
-            TokenType = TOK_XOR;
-            if (TryGetChar('=')) {
-                TokenType = TOK_XOREQ;
-            }
-        } else if (ch == '+') {
-            TokenType = TOK_PLUS;
-            if (TryGetChar('+')) {
-                TokenType = TOK_PLUSPLUS;
-            } else if (TryGetChar('=')) {
-                TokenType = TOK_PLUSEQ;
-            }
-        } else if (ch == '-') {
-            TokenType = TOK_MINUS;
-            if (TryGetChar('-')) {
-                TokenType = TOK_MINUSMINUS;
-            } else if (TryGetChar('=')) {
-                TokenType = TOK_MINUSEQ;
-            }
-        } else if (ch == '*') {
-            TokenType = TOK_STAR;
-            if (TryGetChar('=')) {
-                TokenType = TOK_STAREQ;
-            }
-        } else if (ch == '/') {
-            if (TryGetChar('/')) {
-                SkipLine();
-                GetToken();
-                return;
-            }
-            TokenType = TOK_SLASH;
-            if (TryGetChar('=')) {
-                TokenType = TOK_SLASHEQ;
-            }
-        } else if (ch == '%') {
-            TokenType = TOK_MOD;
-            if (TryGetChar('=')) {
-                TokenType = TOK_MODEQ;
-            }
-        } else if (ch == '.') {
-            TokenType = TOK_DOT;
-            if (TryGetChar('.')) {
-                if (!TryGetChar('.')) {
-                    Fatal("Invalid token ..");
-                }
-                TokenType = TOK_ELLIPSIS;
-            }
-        } else {
-            Printf("Unknown token start '%c' (%d)\n", ch, ch);
-            Fatal("Unknown token encountered");
+    } else if (ch == '(') { TokenType = TOK_LPAREN;    }
+    else if (ch == ')') { TokenType = TOK_RPAREN;    }
+    else if (ch == '{') { TokenType = TOK_LBRACE;    }
+    else if (ch == '}') { TokenType = TOK_RBRACE;    }
+    else if (ch == '[') { TokenType = TOK_LBRACKET;  }
+    else if (ch == ']') { TokenType = TOK_RBRACKET;  }
+    else if (ch == ',') { TokenType = TOK_COMMA;     }
+    else if (ch == ';') { TokenType = TOK_SEMICOLON; }
+    else if (ch == '~') { TokenType = TOK_TILDE;     }
+    else if (ch == '=') {
+        TokenType = TOK_EQ;
+        if (TryGetChar('=')) {
+            TokenType = TOK_EQEQ;
         }
+    } else if (ch == '!') {
+        TokenType = TOK_NOT;
+        if (TryGetChar('=')) {
+            TokenType = TOK_NOTEQ;
+        }
+    } else if (ch == '<') {
+        TokenType = TOK_LT;
+        if (TryGetChar('<')) {
+            TokenType = TOK_LSH;
+            if (TryGetChar('=')) {
+                TokenType = TOK_LSHEQ;
+            }
+        } else if (TryGetChar('=')) {
+            TokenType = TOK_LTEQ;
+        }
+    } else if (ch ==  '>') {
+        TokenType = TOK_GT;
+        if (TryGetChar('>')) {
+            TokenType = TOK_RSH;
+            if (TryGetChar('=')) {
+                TokenType = TOK_RSHEQ;
+            }
+        } else if (TryGetChar('=')) {
+            TokenType = TOK_GTEQ;
+        }
+    } else if (ch == '&') {
+        TokenType = TOK_AND;
+        if (TryGetChar('&')) {
+            TokenType = TOK_ANDAND;
+        } else if (TryGetChar('=')) {
+            TokenType = TOK_ANDEQ;
+        }
+    } else if (ch == '|') {
+        TokenType = TOK_OR;
+        if (TryGetChar('|')) {
+            TokenType = TOK_OROR;
+        } else if (TryGetChar('=')) {
+            TokenType = TOK_OREQ;
+        }
+    } else if (ch == '^') {
+        TokenType = TOK_XOR;
+        if (TryGetChar('=')) {
+            TokenType = TOK_XOREQ;
+        }
+    } else if (ch == '+') {
+        TokenType = TOK_PLUS;
+        if (TryGetChar('+')) {
+            TokenType = TOK_PLUSPLUS;
+        } else if (TryGetChar('=')) {
+            TokenType = TOK_PLUSEQ;
+        }
+    } else if (ch == '-') {
+        TokenType = TOK_MINUS;
+        if (TryGetChar('-')) {
+            TokenType = TOK_MINUSMINUS;
+        } else if (TryGetChar('=')) {
+            TokenType = TOK_MINUSEQ;
+        }
+    } else if (ch == '*') {
+        TokenType = TOK_STAR;
+        if (TryGetChar('=')) {
+            TokenType = TOK_STAREQ;
+        }
+    } else if (ch == '/') {
+        if (TryGetChar('/')) {
+            SkipLine();
+            GetToken();
+            return;
+        }
+        TokenType = TOK_SLASH;
+        if (TryGetChar('=')) {
+            TokenType = TOK_SLASHEQ;
+        }
+    } else if (ch == '%') {
+        TokenType = TOK_MOD;
+        if (TryGetChar('=')) {
+            TokenType = TOK_MODEQ;
+        }
+    } else if (ch == '.') {
+        TokenType = TOK_DOT;
+        if (TryGetChar('.')) {
+            if (!TryGetChar('.')) {
+                Fatal("Invalid token ..");
+            }
+            TokenType = TOK_ELLIPSIS;
+        }
+    } else {
+        Printf("Unknown token start '%c' (%d)\n", ch, ch);
+        Fatal("Unknown token encountered");
     }
 }
 
@@ -922,7 +920,7 @@ void ParseUnaryExpression(void)
             }
             CurrentType = (CurrentType&~VT_LVAL) + VT_PTR1;
         } else if (Op == TOK_STAR) {
-            if (!(CurrentType & VT_PTR1)) {
+            if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Pointer required for dereference");
             }
             CurrentType = (CurrentType-VT_PTR1) | VT_LVAL;
@@ -1090,7 +1088,7 @@ void ParseExpr1(int OuterPrecedence)
             LhsType &= ~VT_LVAL;
             Emit("POP\tBX");
             if (Op != TOK_EQ) {
-                Check(LhsType == VT_INT || (LhsType & VT_PTRMASK)); // For pointer types only += and -= should be allowed
+                Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
                 Check(CurrentType == VT_INT);
                 Emit("MOV\tCX, AX");
                 Emit("MOV\tAX, [BX]");
@@ -1536,11 +1534,6 @@ void CallMain(int Len, char* CmdLine)
 }
 #endif
 
-void StrCpy(char* d, const char* s) {
-    while (*d++ = *s++)
-        ;
-}
-
 void MakeOutputFilename(char* dest, const char* n)
 {
     char* LastDot;
@@ -1551,7 +1544,7 @@ void MakeOutputFilename(char* dest, const char* n)
         *dest++ = *n++;
     }
     if (!LastDot) LastDot = dest;
-    StrCpy(LastDot, ".asm");
+    *CopyStr(LastDot, ".asm") = 0;
 }
 
 void AddBuiltins(const char* s)
