@@ -2,15 +2,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include <io.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef _MSC_VER
+#include <io.h>
 #define open _open
 #define close _close
 #define read _read
 #define write _write
+#else
+#include <unistd.h>
 #endif
 
 enum {
@@ -28,11 +31,11 @@ enum {
     VT_CHAR,
     VT_INT,
 
-    VT_BASEMASK = 15,
+    VT_BASEMASK = 3,
 
-    VT_LVAL = 32,
-    VT_FUN  = 64,
-    VT_ENUM = 128,
+    VT_LVAL = 4,
+    VT_FUN  = 8,
+    VT_ENUM = 16,
 
     VT_PTR1 = 512,
     VT_PTRMASK = 3584, // 512+1024+2048
@@ -470,6 +473,7 @@ void GetToken(void)
             }
         }
         if (TokenType < 0) {
+            Check(IdCount < ID_MAX);
             TokenType = IdCount++;
             IdOffset[TokenType] = IdBufferIndex;
             IdBufferIndex += pc - start;
@@ -933,12 +937,13 @@ void ParseUnaryExpression(void)
         } else if (Op == TOK_NOT) {
             int Lab;
             Lab = LocalLabelCounter++;
-            Check(CurrentType == VT_INT);
+            Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
             Emit("AND\tAX, AX");
             Emit("MOV\tAX, 0");
             Emit("JNZ\t.L%d", Lab);
             Emit("INC\tAL");
             EmitLocalLabel(Lab);
+            CurrentType = VT_INT;
         } else {
             Unexpected();
         }
@@ -1003,7 +1008,7 @@ void DoBinOp(int Op)
     } else if (Op == TOK_STAR || Op == TOK_STAREQ) {
         Emit("IMUL\tCX");
     } else if (Op == TOK_SLASH || Op == TOK_SLASHEQ || Op == TOK_MOD || Op == TOK_MODEQ) {
-        Emit("XOR\tDX, DX");
+        Emit("CWD");
         Emit("IDIV\tCX");
         if (Op == TOK_MOD || Op == TOK_MODEQ) {
             Emit("MOV\tAX, DX");
@@ -1439,7 +1444,6 @@ void ParseExternalDefition(void)
 #if 0
 // Only used when self-compiling
 int CREATE_FLAGS;
-int PERM_FLAGS;
 
 void CallMain(int Len, char* CmdLine)
 {
@@ -1465,15 +1469,21 @@ void CallMain(int Len, char* CmdLine)
     }
     Args[NumArgs] = 0;
     CREATE_FLAGS=1;
-    PERM_FLAGS=0;
     exit(main(NumArgs, Args));
 }
 #endif
 
 void MakeOutputFilename(char* dest, const char* n)
 {
-    while (*n && *n != '.') *dest++ = *n++;
-    memcpy(dest, ".ASM", 5);
+    char* LastDot;
+    LastDot = 0;
+    while (*n) {
+        if (*n == '.')
+            LastDot = dest;
+        *dest++ = *n++;
+    }
+    if (!LastDot) LastDot = dest;
+    memcpy(LastDot, ".asm", 5);
 }
 
 void AddBuiltins(const char* s)
@@ -1516,7 +1526,7 @@ int main(int argc, char** argv)
     }
 
     MakeOutputFilename(TempBuf, argv[1]);
-    OutFile = open(TempBuf, CREATE_FLAGS, PERM_FLAGS);
+    OutFile = open(TempBuf, CREATE_FLAGS, 384); // 384=0600
     if (OutFile < 0) {
         Fatal("Error creating output file");
     }
