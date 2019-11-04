@@ -1090,7 +1090,7 @@ void ParseExpr1(int OuterPrecedence)
             LhsType &= ~VT_LVAL;
             Emit("POP\tBX");
             if (Op != TOK_EQ) {
-                Check(LhsType == VT_INT);
+                Check(LhsType == VT_INT || (LhsType & VT_PTRMASK)); // For pointer types only += and -= should be allowed
                 Check(CurrentType == VT_INT);
                 Emit("MOV\tCX, AX");
                 Emit("MOV\tAX, [BX]");
@@ -1439,11 +1439,74 @@ void ParseExternalDefition(void)
 }
 
 #define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC
-#define PERM_FLAGS S_IREAD | S_IWRITE
 
 #if 0
 // Only used when self-compiling
-int CREATE_FLAGS;
+// Small "standard library"
+
+int CREATE_FLAGS; // Ugly hack
+
+char* HeapStart; // Initialized in "Start"
+
+char* malloc(int Size)
+{
+    char* ret;
+    ret = HeapStart;
+    HeapStart += Size;
+    Check(HeapStart < 32767); // FIXME
+    return ret;
+}
+
+void exit(int retval)
+{
+    retval = (retval & 255) | 19456; // 19456 = 0x4c00
+    DosCall(&retval, 0, 0, 0);
+}
+
+void putchar(int ch)
+{
+    int ax;
+    ax = 512; // 512 = 0x0200
+    DosCall(&ax, 0, 0, ch);
+}
+
+int open(const char* filename, int flags, ...)
+{
+    int ax;
+    if (flags)
+        ax = 15360; // 0x3c00 create or truncate file
+    else
+        ax = 15616; // 0x3d00 open existing file
+
+    if (DosCall(&ax, 0, 0, filename))
+        return -1;
+    return ax;
+}
+
+void close(int fd)
+{
+    int ax;
+    ax = 15872; // 0x3b00
+    DosCall(&ax, fd, 0, 0);
+}
+
+int read(int fd, char* buf, int count)
+{
+    int ax;
+    ax = 16128; // 0x3f00
+    if (DosCall(&ax, fd, count, buf))
+        return 0;
+    return ax;
+}
+
+int write(int fd, const char* buf, int count)
+{
+    int ax;
+    ax = 16384; // 0x4000
+    if (DosCall(&ax, fd, count, buf))
+        return 0;
+    return ax;
+}
 
 void CallMain(int Len, char* CmdLine)
 {
@@ -1468,10 +1531,15 @@ void CallMain(int Len, char* CmdLine)
         *CmdLine++ = 0;
     }
     Args[NumArgs] = 0;
-    CREATE_FLAGS=1;
+    CREATE_FLAGS = 1;
     exit(main(NumArgs, Args));
 }
 #endif
+
+void StrCpy(char* d, const char* s) {
+    while (*d++ = *s++)
+        ;
+}
 
 void MakeOutputFilename(char* dest, const char* n)
 {
@@ -1483,7 +1551,7 @@ void MakeOutputFilename(char* dest, const char* n)
         *dest++ = *n++;
     }
     if (!LastDot) LastDot = dest;
-    memcpy(LastDot, ".asm", 5);
+    StrCpy(LastDot, ".asm");
 }
 
 void AddBuiltins(const char* s)
@@ -1539,6 +1607,7 @@ int main(int argc, char** argv)
     "\torg 0x100\n"
     "Start:\n"
     "\tXOR\tBP, BP\n"
+    "\tMOV\tWORD [_HeapStart], ProgramEnd\n"
     "\tMOV\tAX, 0x81\n"
     "\tPUSH\tAX\n"
     "\tMOV\tAL, [0x80]\n"
@@ -1546,104 +1615,19 @@ int main(int argc, char** argv)
     "\tPUSH\tAX\n"
     "\tJMP\t_CallMain\n"
     "\n"
-    "_exit:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tMOV\tAH, 0x4C\n"
-    "\tMOV\tAL, [BP+4]\n"
-    "\tINT\t0x21\n"
-    "\n"
-    "_putchar:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tMOV\tDL, [BP+4]\n"
-    "\tMOV\tAH, 0x02\n"
-    "\tINT\t0x21\n"
-    "\tMOV\tSP, BP\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
-    "_malloc:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tMOV\tAX, [HeapPtr]\n"
-    "\tMOV\tCX, [BP+4]\n"
-    "\tINC\tCX\n"
-    "\tAND\tCL, 0xFE\n"
-    "\tADD\tCX, AX\n"
-    "\tMOV\t[HeapPtr], CX\n"
-    "\tMOV\tSP, BP\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
-    "_open:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tMOV\tDX, [BP+4]\n"
-    "\tMOV\tAX, 0x3D00\n"
-    "\tCMP\tWORD [BP+6], 0\n"
-    "\tJZ\t.DoOpen\n"
-    "\tDEC\tAH\n"
-    ".DoOpen:\n"
-    "\tINT\t0x21\n"
-    "\tJNC\t.Ok\n"
-    "\tMOV\tAX, -1\n"
-    "\t.Ok:\n"
-    "\tMOV\tSP, BP\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
-    "_close:\n"
+    "_DosCall:\n"
     "\tPUSH\tBP\n"
     "\tMOV\tBP, SP\n"
     "\tMOV\tBX, [BP+4]\n"
-    "\tMOV\tAH, 0x3E\n"
+    "\tMOV\tAX, [BX]\n"
+    "\tMOV\tBX, [BP+6]\n"
+    "\tMOV\tCX, [BP+8]\n"
+    "\tMOV\tDX, [BP+10]\n"
     "\tINT\t0x21\n"
-    "\tMOV\tSP, BP\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
-    "_read:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
     "\tMOV\tBX, [BP+4]\n"
-    "\tMOV\tDX, [BP+6]\n"
-    "\tMOV\tCX, [BP+8]\n"
-    "\tMOV\tAH, 0x3F\n"
-    "\tINT\t0x21\n"
-    "\tJNC\t.Ok\n"
-    "\tXOR\tAX, AX\n"
-    "\t.Ok:\n"
-    "\tMOV\tSP, BP\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
-    "_write:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tMOV\tBX, [BP+4]\n"
-    "\tMOV\tDX, [BP+6]\n"
-    "\tMOV\tCX, [BP+8]\n"
-    "\tMOV\tAH, 0x40\n"
-    "\tINT\t0x21\n"
-    "\tJNC\t.Ok\n"
-    "\tXOR\tAX, AX\n"
-    "\t.Ok:\n"
-    "\tMOV\tSP, BP\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
-    "_memcpy:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tPUSH\tSI\n"
-    "\tPUSH\tDI\n"
-    "\tMOV\tDI, [BP+4]\n"
-    "\tMOV\tSI, [BP+6]\n"
-    "\tMOV\tCX, [BP+8]\n"
-    "\tREP\tMOVSB\n"
-    "\tPOP\tDI\n"
-    "\tPOP\tSI\n"
+    "\tMOV\t[BX], AX\n"
+    "\tMOV\tAX, 0\n"
+    "\tSBB\tAX, AX\n"
     "\tMOV\tSP, BP\n"
     "\tPOP\tBP\n"
     "\tRET\n"
@@ -1659,11 +1643,7 @@ int main(int argc, char** argv)
     PopScope();
 
     // Postlude
-    OutputStr(
-    "\n"
-    "HeapPtr:\tdw HeapStart\n"
-    "HeapStart:\n"
-    );
+    OutputStr("\nProgramEnd:\n");
 
     close(InFile);
     close(OutFile);
