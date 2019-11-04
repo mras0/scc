@@ -39,6 +39,9 @@ enum {
 
     VT_PTR1 = 32,
     VT_PTRMASK = 96, // 32+64 - 3 levels of indirection should be enough..
+
+    VT_LOCLIT = 128,
+    VT_LOCMASK = 128, // Remember to extend this...
 };
 
 enum {
@@ -144,14 +147,16 @@ int* Scopes; // VarDecl index
 int ScopesCount;
 
 int LocalOffset;
-int CurrentType;
 int LocalLabelCounter;
 int ReturnLabel;
 int BreakLabel;
 int ContinueLabel;
 
-int IsDigit(char ch) { return ch >= '0' && ch <= '9'; }
-int IsAlpha(char ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
+int CurrentType;
+int CurrentVal;  // Only holds something if CurrentType & VT_LOCMASK
+
+int IsDigit(int ch) { return ch >= '0' && ch <= '9'; }
+int IsAlpha(int ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
 
 void PutStr(const char* s)
 {
@@ -599,6 +604,11 @@ void GetToken(void)
     }
 }
 
+enum {
+    PRED_EQ = 14,
+    PRED_COMMA,
+};
+
 int OperatorPrecedence(int tok)
 {
     if (tok == TOK_STAR || tok == TOK_SLASH || tok == TOK_MOD) {
@@ -622,9 +632,9 @@ int OperatorPrecedence(int tok)
     } else if (tok == TOK_OROR) {
         return 12;
     } else if (tok == TOK_EQ || tok == TOK_PLUSEQ || tok == TOK_MINUSEQ || tok == TOK_STAREQ || tok == TOK_SLASHEQ || tok == TOK_MODEQ || tok == TOK_LSHEQ || tok == TOK_RSHEQ || tok == TOK_ANDEQ || tok == TOK_XOREQ || tok == TOK_OREQ) {
-        return 14;
+        return PRED_EQ;
     } else if (tok == TOK_COMMA) {
-        return 15;
+        return PRED_COMMA;
     } else {
         return 100;
     }
@@ -807,8 +817,8 @@ void ParsePrimaryExpression(void)
         vd = Lookup(id);
         if (vd < 0) {
             // Lookup failed. Assume function returning int.
-            CurrentType = VT_FUN|VT_INT;
-            Emit("MOV\tAX, _%s", IdText(id));
+            CurrentType = VT_LOCLIT|VT_FUN|VT_INT;
+            CurrentVal  = id;
         } else {
             if (VarDeclType[vd] & VT_ENUM) {
                 Emit("MOV\tAX, %d", VarDeclOffset[vd]);
@@ -819,36 +829,40 @@ void ParsePrimaryExpression(void)
             if (VarDeclOffset[vd]) {
                 Emit("LEA\tAX, [BP%+d]\t; %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
             } else {
-                Emit("MOV\tAX, _%s", IdText(id));
                 if (CurrentType & VT_FUN) {
-                    CurrentType &= ~VT_LVAL;
+                    CurrentType = (CurrentType & ~VT_LVAL) | VT_LOCLIT;
+                    CurrentVal  = id;
+                } else {
+                    Emit("MOV\tAX, _%s", IdText(id));
                 }
             }
         }
     }
 }
 
+enum { MaxArgs = 4 }; // TODO: Handle this better...
 void ParsePostfixExpression(void)
 {
     for (;;) {
         if (Accept(TOK_LPAREN)) {
             int RetType;
             int NumArgs;
-            int MaxArgs;
-            MaxArgs = 4; // TODO: Handle this better...
+            int FuncId;
 
             // Function call
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
             }
-            Emit("PUSH\tSI");
-            Emit("PUSH\tDI");
-            Emit("MOV\tSI, AX");
-            Emit("SUB\tSP, %d", MaxArgs*2);
-            Emit("MOV\tDI, SP");
-            RetType = CurrentType & ~VT_FUN;
+            Check(CurrentType & VT_LOCMASK);
+            FuncId  = CurrentVal;
+            RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
             NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
+                if (!NumArgs) {
+                    Emit("PUSH\tDI");
+                    Emit("SUB\tSP, %d", MaxArgs*2);
+                    Emit("MOV\tDI, SP");
+                }
                 Check(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
                 LvalToRval();
@@ -861,10 +875,11 @@ void ParsePostfixExpression(void)
                 }
             }
             Expect(TOK_RPAREN);
-            Emit("CALL\tSI");
-            Emit("ADD\tSP, %d", MaxArgs*2);
-            Emit("POP\tDI");
-            Emit("POP\tSI");
+            Emit("CALL\t_%s", IdText(FuncId));
+            if (NumArgs) {
+                Emit("ADD\tSP, %d", MaxArgs*2);
+                Emit("POP\tDI");
+            }
             CurrentType = RetType;
             if (CurrentType == VT_CHAR) {
                 CurrentType = VT_INT;
@@ -1040,7 +1055,7 @@ void ParseExpr1(int OuterPrecedence)
         }
         GetToken();
 
-        IsAssign = Prec == OperatorPrecedence(TOK_EQ);
+        IsAssign = Prec == PRED_EQ;
 
         if (IsAssign) {
             if (!(CurrentType & VT_LVAL)) {
@@ -1076,7 +1091,7 @@ void ParseExpr1(int OuterPrecedence)
             int LookAheadPrecedence;
             LookAheadOp         = TokenType;
             LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
-            if (LookAheadPrecedence > Prec) // || (LookAheadPrecedence == Prec && !IsRightAssociative(LookAheadOp))
+            if (LookAheadPrecedence > Prec || (LookAheadPrecedence == Prec && LookAheadPrecedence < PRED_EQ)) // LookAheadOp < PRED_EQ => !IsRightAssociative
                 break;
             ParseExpr1(LookAheadPrecedence);
         }
@@ -1128,12 +1143,12 @@ void ParseExpr0(int OuterPrecedence)
 
 void ParseExpr(void)
 {
-    ParseExpr0(OperatorPrecedence(TOK_COMMA));
+    ParseExpr0(PRED_COMMA);
 }
 
 void ParseAssignmentExpression(void)
 {
-    ParseExpr0(OperatorPrecedence(TOK_EQ));
+    ParseExpr0(PRED_EQ);
 }
 
 int ParseDeclSpecs(void)
@@ -1442,7 +1457,7 @@ void ParseExternalDefition(void)
 // Only used when self-compiling
 // Small "standard library"
 
-int CREATE_FLAGS; // Ugly hack
+enum { CREATE_FLAGS = 1 }; // Ugly hack
 
 char* HeapStart; // Initialized in "Start"
 
@@ -1529,7 +1544,6 @@ void CallMain(int Len, char* CmdLine)
         *CmdLine++ = 0;
     }
     Args[NumArgs] = 0;
-    CREATE_FLAGS = 1;
     exit(main(NumArgs, Args));
 }
 #endif
@@ -1586,8 +1600,8 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    MakeOutputFilename(TempBuf, argv[1]);
-    OutFile = open(TempBuf, CREATE_FLAGS, 384); // 384=0600
+    MakeOutputFilename(IdBuffer, argv[1]);
+    OutFile = open(IdBuffer, CREATE_FLAGS, 384); // 384=0600
     if (OutFile < 0) {
         Fatal("Error creating output file");
     }
