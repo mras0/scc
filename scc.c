@@ -1142,6 +1142,7 @@ void ParseExpr1(int OuterPrecedence)
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("L-value required");
             }
+            CurrentType &= ~VT_LVAL;
         } else {
             LvalToRval();
         }
@@ -1188,13 +1189,11 @@ void ParseExpr1(int OuterPrecedence)
             continue;
         }
 
-        GetLit();
         if (LEnd >= 0) {
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
             char c;
-            Check(LhsType & VT_LVAL);
-            LhsType &= ~VT_LVAL;
+            GetLit();
             if (LhsType == VT_CHAR) {
                 Check(CurrentType == VT_INT);
                 c = 'L';
@@ -1223,18 +1222,24 @@ void ParseExpr1(int OuterPrecedence)
                 Emit("MOV\t[BX], A%c", c);
             }
         } else {
-            Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
-            if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
-                Emit("ADD\tAX, AX");
-            }
-            if (LhsLoc == VT_LOCLIT) {
-                Check(LhsType == VT_INT);
-                Emit("MOV\tCX, %d", LhsVal);
+            if (CurrentType == (VT_LOCLIT|VT_INT)) {
+                Emit("POP\tAX");
+                Emit("MOV\tCX, %d", CurrentVal);
+                CurrentType = VT_INT;
             } else {
-                Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
-                Emit("POP\tCX");
+                Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
+                if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
+                    Emit("ADD\tAX, AX");
+                }
+                if (LhsLoc == VT_LOCLIT) {
+                    Check(LhsType == VT_INT);
+                    Emit("MOV\tCX, %d", LhsVal);
+                } else {
+                    Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
+                    Emit("POP\tCX");
+                }
+                Emit("XCHG\tAX, CX");
             }
-            Emit("XCHG\tAX, CX");
             DoBinOp(Op);
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
                 if (LhsType != (VT_CHAR|VT_PTR1))
