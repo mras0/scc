@@ -786,8 +786,8 @@ void ParsePrimaryExpression(void)
         ParseExpr();
         Expect(TOK_RPAREN);
     } else if (TokenType == TOK_NUM) {
-        Emit("MOV\tAX, %d", TokenNumVal);
-        CurrentType = VT_INT;
+        CurrentType = VT_LOCLIT | VT_INT;
+        CurrentVal  = TokenNumVal;
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
         Emit("MOV\tAX, .L%d", TokenNumVal);
@@ -835,8 +835,8 @@ void ParsePrimaryExpression(void)
             CurrentVal  = id;
         } else {
             if (VarDeclType[vd] & VT_ENUM) {
-                Emit("MOV\tAX, %d", VarDeclOffset[vd]);
-                CurrentType = VT_INT;
+                CurrentType = VT_LOCLIT | VT_INT;
+                CurrentVal  = VarDeclOffset[vd];
                 return;
             }
             CurrentType = VarDeclType[vd] | VT_LVAL;
@@ -853,6 +853,17 @@ void ParsePrimaryExpression(void)
                 }
             }
         }
+    }
+}
+
+void GetLit(void)
+{
+    int loc;
+    loc = CurrentType & VT_LOCMASK;
+    if (loc) {
+        Check(loc == VT_LOCLIT);
+        CurrentType &= ~VT_LOCMASK;
+        Emit("MOV\tAX, %d", CurrentVal);
     }
 }
 
@@ -882,8 +893,13 @@ void ParsePostfixExpression(void)
                 Check(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
                 LvalToRval();
-                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                Emit("MOV\t[DI+%d], AX", NumArgs*2);
+                if (CurrentType & VT_LOCMASK) {
+                    Check(CurrentType == (VT_INT|VT_LOCLIT));
+                    Emit("MOV\tWORD [DI+%d], %d", NumArgs*2, CurrentVal);
+                } else {
+                    Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
+                    Emit("MOV\t[DI+%d], AX", NumArgs*2);
+                }
                 ++NumArgs;
 
                 if (!Accept(TOK_COMMA)) {
@@ -902,22 +918,33 @@ void ParsePostfixExpression(void)
             }
         } else if (Accept(TOK_LBRACKET)) {
             int AType;
+            int Double;
             LvalToRval();
             if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Expected pointer");
             }
             AType = CurrentType - VT_PTR1;
+            Double = 0;
+            if (AType != VT_CHAR) {
+                Check(AType == VT_INT || (AType & VT_PTRMASK));
+                Double = 1;
+            }
             Emit("PUSH\tAX");
             ParseExpr();
             Expect(TOK_RBRACKET);
-            LvalToRval();
-            Check(CurrentType == VT_INT);
-            if (AType != VT_CHAR) {
-                Check(AType == VT_INT || (AType & VT_PTRMASK));
-                Emit("ADD\tAX, AX");
+            if (CurrentType == (VT_INT|VT_LOCLIT)) {
+                if (Double) CurrentVal <<= 1;
+                Emit("POP\tAX");
+                Emit("ADD\tAX, %d", CurrentVal);
+            } else {
+                LvalToRval();
+                Check(CurrentType == VT_INT);
+                if (Double) {
+                    Emit("ADD\tAX, AX");
+                }
+                Emit("POP\tCX");
+                Emit("ADD\tAX, CX");
             }
-            Emit("POP\tCX");
-            Emit("ADD\tAX, CX");
             CurrentType = AType | VT_LVAL;
         } else {
             int Op;
@@ -934,6 +961,7 @@ void ParsePostfixExpression(void)
 void ParseUnaryExpression(void)
 {
     int Op;
+    int IsConst;
     Op = TokenType;
     if (Op == TOK_PLUSPLUS || Op == TOK_MINUSMINUS) {
         GetToken();
@@ -942,7 +970,11 @@ void ParseUnaryExpression(void)
     } else if (Op == TOK_AND || Op == TOK_STAR || Op == TOK_PLUS || Op == TOK_MINUS || Op == TOK_TILDE || Op == TOK_NOT) {
         GetToken();
         ParseCastExpression();
-        if (Op != TOK_AND) {
+        IsConst = 0;
+        if ((CurrentType & VT_LOCMASK) == VT_LOCLIT) {
+            Check(CurrentType == (VT_INT|VT_LOCLIT));
+            IsConst = 1;
+        } else if (Op != TOK_AND) {
             LvalToRval();
         }
         if (Op == TOK_AND) {
@@ -960,43 +992,53 @@ void ParseUnaryExpression(void)
             }
             CurrentType = (CurrentType-VT_PTR1) | VT_LVAL;
         } else if (Op == TOK_PLUS) {
-            Check(CurrentType == VT_INT);
+            Check(IsConst || CurrentType == VT_INT);
         } else if (Op == TOK_MINUS) {
-            Check(CurrentType == VT_INT);
-            Emit("NEG\tAX");
+            if (IsConst) {
+                CurrentVal = -CurrentVal;
+            } else {
+                Check(CurrentType == VT_INT);
+                Emit("NEG\tAX");
+            }
         } else if (Op == TOK_TILDE) {
-            Check(CurrentType == VT_INT);
-            Emit("NOT\tAX");
+            if (IsConst) {
+                CurrentVal = ~CurrentVal;
+            } else {
+                Check(CurrentType == VT_INT);
+                Emit("NOT\tAX");
+            }
         } else if (Op == TOK_NOT) {
-            int Lab;
-            Lab = LocalLabelCounter++;
-            Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-            Emit("AND\tAX, AX");
-            Emit("MOV\tAX, 0");
-            Emit("JNZ\t.L%d", Lab);
-            Emit("INC\tAL");
-            EmitLocalLabel(Lab);
-            CurrentType = VT_INT;
+            if (IsConst) {
+                CurrentVal = !CurrentVal;
+            } else {
+                int Lab;
+                Lab = LocalLabelCounter++;
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
+                Emit("AND\tAX, AX");
+                Emit("MOV\tAX, 0");
+                Emit("JNZ\t.L%d", Lab);
+                Emit("INC\tAL");
+                EmitLocalLabel(Lab);
+                CurrentType = VT_INT;
+            }
         } else {
             Unexpected();
         }
     } else if (Op == TOK_SIZEOF) {
-        int Size;
         GetToken();
         Expect(TOK_LPAREN);
         if (Accept(TOK_CHAR)) {
-            Size = 1;
+            CurrentVal = 1;
         } else if (Accept(TOK_INT)) {
-            Size = 2;
+            CurrentVal = 2;
         } else {
             Fatal("sizeof not implemented for this type");
         }
         while (Accept(TOK_STAR)) {
-            Size = 2;
+            CurrentVal = 2;
         }
         Expect(TOK_RPAREN);
-        Emit("MOV\tAX, %d", Size);
-        CurrentType = VT_INT;
+        CurrentType = VT_LOCLIT | VT_INT;
     } else {
         ParsePrimaryExpression();
         ParsePostfixExpression();
@@ -1056,7 +1098,24 @@ void DoBinOp(int Op)
         Emit("SHL\tAX, CL");
     } else if (Op == TOK_RSH || Op == TOK_RSHEQ) {
         Emit("SAR\tAX, CL");
+    } else {
+        Check(0);
     }
+}
+
+int DoConstBinOp(int Op, int L, int R)
+{
+    if (Op == TOK_PLUS)  return L + R;
+    if (Op == TOK_MINUS) return L - R;
+    if (Op == TOK_STAR)  return L * R;
+    if (Op == TOK_SLASH) return L / R;
+    if (Op == TOK_MOD)   return L % R;
+    if (Op == TOK_AND)   return L & R;
+    if (Op == TOK_XOR)   return L ^ R;
+    if (Op == TOK_OR)    return L | R;
+    if (Op == TOK_LSH)   return L << R;
+    if (Op == TOK_RSH)   return L >> R;
+    Check(0);
 }
 
 void ParseExpr1(int OuterPrecedence)
@@ -1068,6 +1127,7 @@ void ParseExpr1(int OuterPrecedence)
     int IsAssign;
     int LhsType;
     int LhsVal;
+    int LhsLoc;
     for (;;) {
         Op   = TokenType;
         Prec = OperatorPrecedence(Op);
@@ -1119,14 +1179,22 @@ void ParseExpr1(int OuterPrecedence)
             ParseExpr1(LookAheadPrecedence);
         }
         LvalToRval();
+        LhsLoc = LhsType & VT_LOCMASK;
+        LhsType &= ~VT_LOCMASK;
+
+        if (LhsLoc == VT_LOCLIT && CurrentType == (VT_LOCLIT|VT_INT)) {
+            Check(LhsType == VT_INT);
+            CurrentVal = DoConstBinOp(Op, LhsVal, CurrentVal);
+            continue;
+        }
+
+        GetLit();
         if (LEnd >= 0) {
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
-            int loc;
             char c;
             Check(LhsType & VT_LVAL);
-            loc = LhsType & VT_LOCOFF;
-            LhsType &= ~(VT_LVAL | VT_LOCMASK);
+            LhsType &= ~VT_LVAL;
             if (LhsType == VT_CHAR) {
                 Check(CurrentType == VT_INT);
                 c = 'L';
@@ -1135,32 +1203,37 @@ void ParseExpr1(int OuterPrecedence)
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 c = 'X';
             }
-            if (loc != VT_LOCOFF) {
+            if (LhsLoc != VT_LOCOFF) {
                 Emit("POP\tBX");
             }
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
                 Check(CurrentType == VT_INT);
                 Emit("MOV\tCX, AX");
-                if (loc == VT_LOCOFF) {
+                if (LhsLoc == VT_LOCOFF) {
                     Emit("MOV\tAX, [BP%+d]", LhsVal);
                 } else {
                     Emit("MOV\tAX, [BX]");
                 }
                 DoBinOp(Op);
             }
-            if (loc == VT_LOCOFF) {
+            if (LhsLoc == VT_LOCOFF) {
                 Emit("MOV\t[BP%+d], A%c", LhsVal, c);
             } else {
                 Emit("MOV\t[BX], A%c", c);
             }
         } else {
-            Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
             Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
             if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
                 Emit("ADD\tAX, AX");
             }
-            Emit("POP\tCX");
+            if (LhsLoc == VT_LOCLIT) {
+                Check(LhsType == VT_INT);
+                Emit("MOV\tCX, %d", LhsVal);
+            } else {
+                Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
+                Emit("POP\tCX");
+            }
             Emit("XCHG\tAX, CX");
             DoBinOp(Op);
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
@@ -1255,6 +1328,18 @@ void PopScope(void)
     --ScopesCount;
 }
 
+void DoCond(int TrueLabel, int FalseLabel)
+{
+    ParseExpr();
+    LvalToRval();
+    // Could optimize for constant conditions here
+    GetLit();
+    Check(CurrentType == VT_INT);
+    Emit("AND\tAX, AX");
+    Emit("JNZ\t.L%d", TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
+    Emit("JMP\t.L%d", FalseLabel);
+}
+
 void ParseCompoundStatement(void);
 
 void ParseStatement(void)
@@ -1296,12 +1381,7 @@ void ParseStatement(void)
         // Cond
         EmitLocalLabel(CondLabel);
         if (TokenType != TOK_SEMICOLON) {
-            ParseExpr();
-            LvalToRval();
-            Check(CurrentType == VT_INT);
-            Emit("AND\tAX, AX");
-            Emit("JNZ\t.L%d", BodyLabel); // TODO: Need far jump?
-            Emit("JMP\t.L%d", EndLabel);
+            DoCond(BodyLabel, EndLabel);
         } else {
             Emit("JMP\t.L%d", BodyLabel);
         }
@@ -1331,12 +1411,7 @@ void ParseStatement(void)
         ElseLabel  = LocalLabelCounter++;
         EndLabel   = LocalLabelCounter++;
         Accept(TOK_LPAREN);
-        ParseExpr();
-        LvalToRval();
-        Check(CurrentType == VT_INT);
-        Emit("AND\tAX, AX");
-        Emit("JNZ\t.L%d", IfLabel);
-        Emit("JMP\t.L%d", ElseLabel);
+        DoCond(IfLabel, ElseLabel);
         Accept(TOK_RPAREN);
         EmitLocalLabel(IfLabel);
         ParseStatement();
@@ -1350,6 +1425,7 @@ void ParseStatement(void)
         if (TokenType != TOK_SEMICOLON) {
             ParseExpr();
             LvalToRval();
+            GetLit();
         }
         Emit("JMP\t.L%d", ReturnLabel);
         Expect(TOK_SEMICOLON);
@@ -1362,12 +1438,7 @@ void ParseStatement(void)
         EndLabel   = LocalLabelCounter++;
         EmitLocalLabel(StartLabel);
         Expect(TOK_LPAREN);
-        ParseExpr();
-        LvalToRval();
-        Check(CurrentType == VT_INT);
-        Emit("AND\tAX, AX");
-        Emit("JNZ\t.L%d", BodyLabel);
-        Emit("JMP\t.L%d", EndLabel);
+        DoCond(BodyLabel, EndLabel);
         Expect(TOK_RPAREN);
         EmitLocalLabel(BodyLabel);
         BreakLabel = EndLabel;
