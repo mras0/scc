@@ -1,8 +1,8 @@
 // TODO:
-//  - Use that constant expressions work in enum/var defs...
 //  - VT_LVAL directly to BX somehow?
 //  - Lazily PUSH AX to avoid PUSH AX\POP AX sequence
 //  - Optimize BinOp with constant RHS
+//  - Allow multiple variable definitions in one statement
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +28,7 @@ enum {
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 250,
-    ID_MAX = 300,
+    ID_MAX = 350,
     IDBUFFER_MAX = 4096,
 };
 
@@ -42,14 +42,13 @@ enum {
 
     VT_LVAL = 4,
     VT_FUN  = 8,
-    VT_ENUM = 16,
 
-    VT_PTR1 = 32,
-    VT_PTRMASK = 96,    // 32+64 - 3 levels of indirection should be enough..
+    VT_PTR1 = 16,
+    VT_PTRMASK = 16+32, // 3 levels of indirection should be enough..
 
-    VT_LOCLIT = 128,    // CurrentValue holds a literal value (or label)
-    VT_LOCOFF = 256,    // CurrentValue holds BP offset
-    VT_LOCMASK = 384,   // 384=128+256
+    VT_LOCLIT = 64,     // CurrentValue holds a literal value (or label)
+    VT_LOCOFF = 128,    // CurrentValue holds BP offset
+    VT_LOCMASK = 64+128,
 };
 
 enum {
@@ -136,7 +135,7 @@ int InBufCnt;
 int InBufSize;
 char UngottenChar;
 
-int Line;
+int Line = 1;
 
 int TokenType;
 int TokenNumVal;
@@ -163,8 +162,15 @@ int ContinueLabel;
 int CurrentType;
 int CurrentVal;
 
-int IsDigit(int ch) { return ch >= '0' && ch <= '9'; }
-int IsAlpha(int ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
+int IsDigit(int ch)
+{
+    return ch >= '0' && ch <= '9';
+}
+
+int IsAlpha(int ch)
+{
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
 
 void PutStr(const char* s)
 {
@@ -694,15 +700,12 @@ int IsTypeStart(void)
 
 void LvalToRval(void)
 {
-    char sz;
-    int loc;
     if (CurrentType & VT_LVAL) {
-        loc = CurrentType & VT_LOCMASK;
+        const int loc = CurrentType & VT_LOCMASK;
+        int sz = 'X';
         CurrentType &= ~(VT_LVAL | VT_LOCMASK);
         if (CurrentType == VT_CHAR)
             sz = 'L';
-        else
-            sz = 'X';
         if (loc == VT_LOCOFF) {
             Emit("MOV\tA%c, [BP%+d]", sz, CurrentVal);
         } else {
@@ -802,9 +805,7 @@ void ParsePrimaryExpression(void)
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
         // Handle var arg builtins
-        int offset;
-        int func;
-        func = TokenType;
+        const int func = TokenType;
         GetToken();
         Expect(TOK_LPAREN);
         id = ExpectId();
@@ -812,7 +813,7 @@ void ParsePrimaryExpression(void)
         if (vd < 0 || VarDeclType[vd] != (VT_CHAR|VT_PTR1)) {
             Fatal("Invalid va_list");
         }
-        offset = VarDeclOffset[vd];
+        const int offset = VarDeclOffset[vd];
         if (func == TOK_VA_START) {
             Expect(TOK_COMMA);
             id = ExpectId();
@@ -841,13 +842,13 @@ void ParsePrimaryExpression(void)
             CurrentType = VT_LOCLIT|VT_FUN|VT_INT;
             CurrentVal  = id;
         } else {
-            if (VarDeclType[vd] & VT_ENUM) {
-                CurrentType = VT_LOCLIT | VT_INT;
-                CurrentVal  = VarDeclOffset[vd];
+            CurrentType = VarDeclType[vd];
+            CurrentVal = VarDeclOffset[vd];
+            if (CurrentType & VT_LOCMASK) {
+                Check(CurrentType == (VT_LOCLIT | VT_INT));
                 return;
             }
-            CurrentType = VarDeclType[vd] | VT_LVAL;
-            CurrentVal = VarDeclOffset[vd];
+            CurrentType |= VT_LVAL;
             if (CurrentVal) {
                 CurrentType |= VT_LOCOFF;
             } else {
@@ -905,8 +906,7 @@ void GetVal(void)
         return;
     }
 
-    int loc;
-    loc = CurrentType & VT_LOCMASK;
+    const int loc = CurrentType & VT_LOCMASK;
     if (loc) {
         Check(loc == VT_LOCLIT);
         CurrentType &= ~VT_LOCMASK;
@@ -919,18 +919,14 @@ void ParsePostfixExpression(void)
 {
     for (;;) {
         if (Accept(TOK_LPAREN)) {
-            int RetType;
-            int NumArgs;
-            int FuncId;
-
             // Function call
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
             }
             Check((CurrentType & VT_LOCMASK) == VT_LOCLIT);
-            FuncId  = CurrentVal;
-            RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
-            NumArgs = 0;
+            const int FuncId  = CurrentVal;
+            const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
+            int NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
                 if (!NumArgs) {
                     Emit("PUSH\tDI");
@@ -965,14 +961,12 @@ void ParsePostfixExpression(void)
                 CurrentType = VT_INT;
             }
         } else if (Accept(TOK_LBRACKET)) {
-            int AType;
-            int Double;
             LvalToRval();
             if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Expected pointer");
             }
-            AType = CurrentType - VT_PTR1;
-            Double = 0;
+            const int AType = CurrentType - VT_PTR1;
+            int Double = 0;
             if (AType != VT_CHAR) {
                 Check(AType == VT_INT || (AType & VT_PTRMASK));
                 Double = 1;
@@ -995,8 +989,7 @@ void ParsePostfixExpression(void)
             }
             CurrentType = AType | VT_LVAL;
         } else {
-            int Op;
-            Op = TokenType;
+            const int Op = TokenType;
             if (Op != TOK_PLUSPLUS && Op != TOK_MINUSMINUS) {
                 break;
             }
@@ -1008,9 +1001,8 @@ void ParsePostfixExpression(void)
 
 void ParseUnaryExpression(void)
 {
-    int Op;
-    int IsConst;
-    Op = TokenType;
+    const int Op = TokenType;
+    int IsConst = 0;
     if (Op == TOK_PLUSPLUS || Op == TOK_MINUSMINUS) {
         GetToken();
         ParseUnaryExpression();
@@ -1018,7 +1010,6 @@ void ParseUnaryExpression(void)
     } else if (Op == TOK_AND || Op == TOK_STAR || Op == TOK_PLUS || Op == TOK_MINUS || Op == TOK_TILDE || Op == TOK_NOT) {
         GetToken();
         ParseCastExpression();
-        IsConst = 0;
         if ((CurrentType & VT_LOCMASK) == VT_LOCLIT) {
             Check(CurrentType == (VT_INT|VT_LOCLIT));
             IsConst = 1;
@@ -1218,10 +1209,8 @@ void ParseExpr1(int OuterPrecedence)
         // TODO: Question, ?:
         ParseCastExpression(); // RHS
         for (;;) {
-            int LookAheadOp;
-            int LookAheadPrecedence;
-            LookAheadOp         = TokenType;
-            LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
+            const int LookAheadOp         = TokenType;
+            const int LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
             if (LookAheadPrecedence > Prec || (LookAheadPrecedence == Prec && LookAheadPrecedence < PRED_EQ)) // LookAheadOp < PRED_EQ => !IsRightAssociative
                 break;
             ParseExpr1(LookAheadPrecedence);
@@ -1415,18 +1404,22 @@ void ParseStatement(void)
         LocalOffset -= 2;
         VarDeclOffset[vd] = LocalOffset;
         Emit("SUB\tSP, 2\t; [BP%+d] = %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
+        if (Accept(TOK_EQ)) {
+            ParseAssignmentExpression();
+            LvalToRval();
+            GetVal();
+            if (CurrentType == VT_CHAR) {
+                Emit("CBW");
+            }
+            Emit("MOV\t[BP%+d], AX", LocalOffset);
+        }
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
-        int CondLabel;
-        int BodyLabel;
-        int EndLabel;
-        int IterLabel;
-
-        CondLabel = LocalLabelCounter++;
-        BodyLabel = LocalLabelCounter++;
-        EndLabel  = LocalLabelCounter++;
-        IterLabel = CondLabel;
-
+        const int CondLabel = LocalLabelCounter++;
+        const int BodyLabel = LocalLabelCounter++;
+        const int EndLabel  = LocalLabelCounter++;
+        int IterLabel       = CondLabel;
+        
         Expect(TOK_LPAREN);
 
         // Init
@@ -1460,13 +1453,10 @@ void ParseStatement(void)
         Emit("JMP\t.L%d", IterLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_IF)) {
-        int IfLabel;
-        int ElseLabel;
-        int EndLabel;
+        const int IfLabel   = LocalLabelCounter++;
+        const int ElseLabel = LocalLabelCounter++;
+        const int EndLabel  = LocalLabelCounter++;
 
-        IfLabel    = LocalLabelCounter++;
-        ElseLabel  = LocalLabelCounter++;
-        EndLabel   = LocalLabelCounter++;
         Accept(TOK_LPAREN);
         DoCond(IfLabel, ElseLabel);
         Accept(TOK_RPAREN);
@@ -1487,12 +1477,9 @@ void ParseStatement(void)
         Emit("JMP\t.L%d", ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
-        int StartLabel;
-        int BodyLabel;
-        int EndLabel;
-        StartLabel = LocalLabelCounter++;
-        BodyLabel  = LocalLabelCounter++;
-        EndLabel   = LocalLabelCounter++;
+        const int StartLabel = LocalLabelCounter++;
+        const int BodyLabel  = LocalLabelCounter++;
+        const int EndLabel   = LocalLabelCounter++;
         EmitLocalLabel(StartLabel);
         Expect(TOK_LPAREN);
         DoCond(BodyLabel, EndLabel);
@@ -1523,8 +1510,7 @@ void ParseStatement(void)
 
 void ParseCompoundStatement(void)
 {
-    int InitialOffset;
-    InitialOffset = LocalOffset;
+    const int InitialOffset = LocalOffset;
     PushScope();
     Expect(TOK_LBRACE);
     while (!Accept(TOK_RBRACE)) {
@@ -1544,21 +1530,27 @@ void ParseCompoundStatement(void)
 // Local 1            BP - 2
 // Local 2            BP - 4  <-- SP
 
+void EmitGlobal(int VarDeclIndex, int InitVal)
+{
+    EmitGlobalLabel(VarDeclId[VarDeclIndex]);
+    Emit("DW\t%d", InitVal);
+}
+
 void ParseExternalDefition(void)
 {
     if (Accept(TOK_ENUM)) {
-        int EnumVal;
         int id;
         int vd;
         Expect(TOK_LBRACE);
-        EnumVal = 0;
+        int EnumVal = 0;
         while (TokenType != TOK_RBRACE) {
             id = ExpectId();
             if (Accept(TOK_EQ)) {
-                EnumVal = TokenNumVal;
-                Expect(TOK_NUM);
+                ParseAssignmentExpression();
+                Check(CurrentType == (VT_INT|VT_LOCLIT));
+                EnumVal = CurrentVal;
             }
-            vd = AddVarDecl(VT_INT|VT_ENUM, id);
+            vd = AddVarDecl(VT_INT|VT_LOCLIT, id);
             VarDeclOffset[vd] = EnumVal;
             if (!Accept(TOK_COMMA)) {
                 break;
@@ -1570,12 +1562,17 @@ void ParseExternalDefition(void)
         return;
     }
 
-    int fd;
-    fd = ParseDecl();
+    const int fd = ParseDecl();
 
-    if (Accept(TOK_SEMICOLON)) {
-        EmitGlobalLabel(VarDeclId[fd]);
-        Emit("DW\t0");
+    // Variable?
+    if (Accept(TOK_EQ)) {
+        ParseAssignmentExpression();
+        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Expecct constant expressions
+        EmitGlobal(fd, CurrentVal);
+        Expect(TOK_SEMICOLON);
+        return;
+    } else if (Accept(TOK_SEMICOLON)) {
+        EmitGlobal(fd, 0);
         return;
     }
 
@@ -1807,7 +1804,6 @@ int main(int argc, char** argv)
     );
 
     PushScope();
-    Line = 1;
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
