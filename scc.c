@@ -1,7 +1,6 @@
 // TODO:
 //  - VT_LVAL directly to BX somehow?
 //  - Lazily PUSH AX to avoid PUSH AX\POP AX sequence
-//  - Optimize BinOp with constant RHS
 //  - Allow multiple variable definitions in one statement
 
 #include <stdio.h>
@@ -1097,10 +1096,15 @@ int RelOpToCC(int Op)
     Fatal("Not implemented");
 }
 
+int IsRelOp(int Op)
+{
+    return Op == TOK_LT || Op == TOK_LTEQ || Op == TOK_GT || Op == TOK_GTEQ || Op == TOK_EQEQ || Op == TOK_NOTEQ;
+}
+
 // Emit: AX <- AX 'OP' CX, Must preserve BX.
 void DoBinOp(int Op)
 {
-    if (Op == TOK_LT || Op == TOK_LTEQ || Op == TOK_GT || Op == TOK_GTEQ || Op == TOK_EQEQ || Op == TOK_NOTEQ) {
+    if (IsRelOp(Op)) {
         Emit("CMP\tAX, CX");
         CurrentType = VT_BOOL;
         CurrentVal  = RelOpToCC(Op);
@@ -1132,6 +1136,35 @@ void DoBinOp(int Op)
     } else {
         Check(0);
     }
+}
+
+void DoRhsConstBinOp(int Op)
+{
+    if (IsRelOp(Op)) {
+        Emit("CMP\tAX, %d", CurrentVal);
+        CurrentType = VT_BOOL;
+        CurrentVal  = RelOpToCC(Op);
+        return;
+    }
+
+    if (Op == TOK_STAR && CurrentVal == 2) {
+        // Do one special case for fun
+        Emit("ADD\tAX, AX");
+        return;
+    }
+
+    const char* Inst = 0;
+    if (Op == TOK_PLUS)       Inst = "ADD";
+    else if (Op == TOK_MINUS) Inst = "SUB";
+    else if (Op == TOK_AND)   Inst = "AND";
+    else if (Op == TOK_XOR)   Inst = "XOR";
+    else if (Op == TOK_OR)    Inst = "OR";
+    else {
+        Emit("MOV\tCX, %d", CurrentVal);
+        DoBinOp(Op);
+        return;
+    }
+    Emit("%s\tAX, %d", Inst, CurrentVal);
 }
 
 int DoConstBinOp(int Op, int L, int R)
@@ -1274,8 +1307,8 @@ void ParseExpr1(int OuterPrecedence)
         } else {
             if (CurrentType == (VT_LOCLIT|VT_INT)) {
                 Emit("POP\tAX");
-                Emit("MOV\tCX, %d", CurrentVal);
                 CurrentType = VT_INT;
+                DoRhsConstBinOp(Op);
             } else {
                 Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
                 if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
@@ -1289,8 +1322,8 @@ void ParseExpr1(int OuterPrecedence)
                     Emit("POP\tCX");
                 }
                 Emit("XCHG\tAX, CX");
+                DoBinOp(Op);
             }
-            DoBinOp(Op);
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
                 if (LhsType != (VT_CHAR|VT_PTR1))
                     Emit("SAR\tAX, 1");
