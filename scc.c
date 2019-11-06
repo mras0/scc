@@ -1,3 +1,9 @@
+// TODO:
+//  - Use that constant expressions work in enum/var defs...
+//  - VT_LVAL directly to BX somehow?
+//  - Lazily PUSH AX to avoid PUSH AX\POP AX sequence
+//  - Optimize BinOp with constant RHS
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,13 +27,14 @@ enum {
     TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
-    VARDECL_MAX = 200,
+    VARDECL_MAX = 250,
     ID_MAX = 300,
     IDBUFFER_MAX = 4096,
 };
 
 enum {
     VT_VOID,
+    VT_BOOL,        // CurrentValue holds condition code for "true"
     VT_CHAR,
     VT_INT,
 
@@ -38,11 +45,11 @@ enum {
     VT_ENUM = 16,
 
     VT_PTR1 = 32,
-    VT_PTRMASK = 96, // 32+64 - 3 levels of indirection should be enough..
+    VT_PTRMASK = 96,    // 32+64 - 3 levels of indirection should be enough..
 
-    VT_LOCLIT = 128,
-    VT_LOCOFF = 256,
-    VT_LOCMASK = 384, // 384=128+256
+    VT_LOCLIT = 128,    // CurrentValue holds a literal value (or label)
+    VT_LOCOFF = 256,    // CurrentValue holds BP offset
+    VT_LOCMASK = 384,   // 384=128+256
 };
 
 enum {
@@ -154,7 +161,7 @@ int BreakLabel;
 int ContinueLabel;
 
 int CurrentType;
-int CurrentVal;  // Only holds something if CurrentType & VT_LOCMASK
+int CurrentVal;
 
 int IsDigit(int ch) { return ch >= '0' && ch <= '9'; }
 int IsAlpha(int ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
@@ -842,7 +849,6 @@ void ParsePrimaryExpression(void)
             CurrentType = VarDeclType[vd] | VT_LVAL;
             CurrentVal = VarDeclOffset[vd];
             if (CurrentVal) {
-                //Emit("LEA\tAX, [BP%+d]\t; %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
                 CurrentType |= VT_LOCOFF;
             } else {
                 if (CurrentType & VT_FUN) {
@@ -856,8 +862,49 @@ void ParsePrimaryExpression(void)
     }
 }
 
-void GetLit(void)
+enum {
+    JO , //  0x0
+    JNO, //  0x1
+    JC , //  0x2
+    JNC, //  0x3
+    JZ , //  0x4
+    JNZ, //  0x5
+    JNA, //  0x6
+    JA , //  0x7
+    JS , //  0x8
+    JNS, //  0x9
+    JPE, //  0xa
+    JPO, //  0xb
+    JL , //  0xc
+    JNL, //  0xd
+    JNG, //  0xe
+    JG , //  0xf
+};
+
+const char* GetJcc(int CC)
 {
+    if (CC == JZ)  return "JZ";
+    if (CC == JNZ) return "JNZ";
+    if (CC == JL)  return "JL";
+    if (CC == JNL) return "JNL";
+    if (CC == JNG) return "JNG";
+    if (CC == JG)  return "JG";
+    Fatal("Not implemented");
+}
+
+void GetVal(void)
+{
+    if (CurrentType == VT_BOOL) {
+        int Lab;
+        Lab = LocalLabelCounter++;
+        Emit("MOV\tAX, 1");
+        Emit("%s\t.L%d", GetJcc(CurrentVal), Lab);
+        Emit("DEC\tAL");
+        EmitLocalLabel(Lab);
+        CurrentType = VT_INT;
+        return;
+    }
+
     int loc;
     loc = CurrentType & VT_LOCMASK;
     if (loc) {
@@ -897,6 +944,7 @@ void ParsePostfixExpression(void)
                     Check(CurrentType == (VT_INT|VT_LOCLIT));
                     Emit("MOV\tWORD [DI+%d], %d", NumArgs*2, CurrentVal);
                 } else {
+                    GetVal();
                     Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                     Emit("MOV\t[DI+%d], AX", NumArgs*2);
                 }
@@ -1015,11 +1063,8 @@ void ParseUnaryExpression(void)
                 Lab = LocalLabelCounter++;
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 Emit("AND\tAX, AX");
-                Emit("MOV\tAX, 0");
-                Emit("JNZ\t.L%d", Lab);
-                Emit("INC\tAL");
-                EmitLocalLabel(Lab);
-                CurrentType = VT_INT;
+                CurrentType = VT_BOOL;
+                CurrentVal  = JZ;
             }
         } else {
             Unexpected();
@@ -1050,14 +1095,14 @@ void ParseCastExpression(void)
     ParseUnaryExpression();
 }
 
-const char* RelOp(int Op)
+int RelOpToCC(int Op)
 {
-    if (Op == TOK_LT)         return "L";
-    else if (Op == TOK_LTEQ)  return "NG";
-    else if (Op == TOK_GT)    return "G";
-    else if (Op == TOK_GTEQ)  return "NL";
-    else if (Op == TOK_EQEQ)  return "E";
-    else if (Op == TOK_NOTEQ) return "NE";
+    if (Op == TOK_LT)         return JL;
+    else if (Op == TOK_LTEQ)  return JNG;
+    else if (Op == TOK_GT)    return JG;
+    else if (Op == TOK_GTEQ)  return JNL;
+    else if (Op == TOK_EQEQ)  return JZ;
+    else if (Op == TOK_NOTEQ) return JNZ;
     Fatal("Not implemented");
 }
 
@@ -1065,14 +1110,9 @@ const char* RelOp(int Op)
 void DoBinOp(int Op)
 {
     if (Op == TOK_LT || Op == TOK_LTEQ || Op == TOK_GT || Op == TOK_GTEQ || Op == TOK_EQEQ || Op == TOK_NOTEQ) {
-        int Lab;
-        Lab = LocalLabelCounter++;
         Emit("CMP\tAX, CX");
-        Emit("MOV\tAX, 1");
-        RelOp(Op);
-        Emit("J%s\t.L%d", RelOp(Op), Lab);
-        Emit("DEC\tAL");
-        EmitLocalLabel(Lab);
+        CurrentType = VT_BOOL;
+        CurrentVal  = RelOpToCC(Op);
         return;
     }
 
@@ -1153,13 +1193,20 @@ void ParseExpr1(int OuterPrecedence)
             const char* JText;
             LTemp = LocalLabelCounter++;
             LEnd = LocalLabelCounter++;
-            Check(CurrentType == VT_INT);
-            Emit("AND\tAX, AX");
-            if (Op == TOK_ANDAND)
-                JText = "JNZ";
-            else
-                JText = "JZ";
-            Emit("%s\t.L%d", JText, LTemp);
+            if (CurrentType == VT_BOOL) {
+                if (Op != TOK_ANDAND)
+                    CurrentVal ^= 1;
+                Emit("%s\t.L%d", GetJcc(CurrentVal), LTemp);
+                Emit("MOV\tAX, %d", Op != TOK_ANDAND);
+            } else {
+                Check(CurrentType == VT_INT);
+                Emit("AND\tAX, AX");
+                if (Op == TOK_ANDAND)
+                    JText = "JNZ";
+                else
+                    JText = "JZ";
+                Emit("%s\t.L%d", JText, LTemp);
+            }
             Emit("JMP\t.L%d", LEnd);
             EmitLocalLabel(LTemp);
         } else {
@@ -1190,10 +1237,11 @@ void ParseExpr1(int OuterPrecedence)
         }
 
         if (LEnd >= 0) {
+            GetVal();
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
             char c;
-            GetLit();
+            GetVal();
             if (LhsType == VT_CHAR) {
                 Check(CurrentType == VT_INT);
                 c = 'L';
@@ -1337,11 +1385,15 @@ void DoCond(int TrueLabel, int FalseLabel)
 {
     ParseExpr();
     LvalToRval();
-    // Could optimize for constant conditions here
-    GetLit();
-    Check(CurrentType == VT_INT);
-    Emit("AND\tAX, AX");
-    Emit("JNZ\t.L%d", TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
+    if (CurrentType == VT_BOOL) {
+        Emit("%s\t.L%d", GetJcc(CurrentVal), TrueLabel);
+    } else {
+        // Could optimize for constant conditions here
+        GetVal();
+        Check(CurrentType == VT_INT);
+        Emit("AND\tAX, AX");
+        Emit("JNZ\t.L%d", TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
+    }
     Emit("JMP\t.L%d", FalseLabel);
 }
 
@@ -1430,7 +1482,7 @@ void ParseStatement(void)
         if (TokenType != TOK_SEMICOLON) {
             ParseExpr();
             LvalToRval();
-            GetLit();
+            GetVal();
         }
         Emit("JMP\t.L%d", ReturnLabel);
         Expect(TOK_SEMICOLON);
