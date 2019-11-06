@@ -1230,13 +1230,10 @@ void ParseExpr1(int OuterPrecedence)
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
             char c;
-            GetVal();
             if (LhsType == VT_CHAR) {
-                Check(CurrentType == VT_INT);
                 c = 'L';
             } else {
                 Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
-                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 c = 'X';
             }
             if (LhsLoc != VT_LOCOFF) {
@@ -1244,14 +1241,30 @@ void ParseExpr1(int OuterPrecedence)
             }
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
-                Check(CurrentType == VT_INT);
-                Emit("MOV\tCX, AX");
+                if (CurrentType == (VT_INT|VT_LOCLIT)) {
+                    Emit("MOV\tCX, %d", CurrentVal);
+                } else {
+                    Check(CurrentType == VT_INT);
+                    Emit("MOV\tCX, AX");
+                }
                 if (LhsLoc == VT_LOCOFF) {
                     Emit("MOV\tAX, [BP%+d]", LhsVal);
                 } else {
                     Emit("MOV\tAX, [BX]");
                 }
                 DoBinOp(Op);
+            } else if (CurrentType == (VT_INT|VT_LOCLIT)) {
+                // Constant assignment
+                const char* Size = "WORD";
+                if (c == 'L') Size = "BYTE";
+                if (LhsLoc == VT_LOCOFF) {
+                    Emit("MOV\t%s [BP%+d], %d", Size, LhsVal, CurrentVal);
+                } else {
+                    Emit("MOV\t%s [BX], %d", Size, CurrentVal);
+                }
+                continue;
+            } else {
+                GetVal();
             }
             if (LhsLoc == VT_LOCOFF) {
                 Emit("MOV\t[BP%+d], A%c", LhsVal, c);
