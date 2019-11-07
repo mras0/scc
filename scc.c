@@ -154,6 +154,7 @@ int ScopesCount;
 int LocalOffset;
 int LocalLabelCounter;
 int ReturnLabel;
+int BCStackLevel; // Break/Continue stack level (== LocalOffset of block)
 int BreakLabel;
 int ContinueLabel;
 
@@ -1450,10 +1451,8 @@ void ParseCompoundStatement(void);
 
 void ParseStatement(void)
 {
-    int OldBreak;
-    int OldContinue;
-    OldBreak    = BreakLabel;
-    OldContinue = ContinueLabel;
+    const int OldBreak    = BreakLabel;
+    const int OldContinue = ContinueLabel;
 
     if (Accept(TOK_SEMICOLON)) {
     } else if (TokenType == TOK_LBRACE) {
@@ -1463,7 +1462,6 @@ void ParseStatement(void)
         vd = ParseDecl();
         LocalOffset -= 2;
         VarDeclOffset[vd] = LocalOffset;
-        Emit("SUB\tSP, 2\t; [BP%+d] = %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
         if (Accept(TOK_EQ)) {
             ParseAssignmentExpression();
             LvalToRval();
@@ -1471,7 +1469,9 @@ void ParseStatement(void)
             if (CurrentType == VT_CHAR) {
                 Emit("CBW");
             }
-            Emit("MOV\t[BP%+d], AX", LocalOffset);
+            Emit("PUSH\tAX\t; [BP%+d] = %s", LocalOffset, IdText(VarDeclId[vd]));
+        } else {
+            Emit("SUB\tSP, 2\t; [BP%+d] = %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
         }
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
@@ -1509,7 +1509,10 @@ void ParseStatement(void)
         EmitLocalLabel(BodyLabel);
         BreakLabel    = EndLabel;
         ContinueLabel = IterLabel;
+        const int OldBCStack = BCStackLevel;
+        BCStackLevel  = LocalOffset;
         ParseStatement();
+        BCStackLevel  = OldBCStack;
         Emit("JMP\t.L%d", IterLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_IF)) {
@@ -1534,6 +1537,8 @@ void ParseStatement(void)
             LvalToRval();
             GetVal();
         }
+        if (LocalOffset)
+            Emit("ADD\tSP, %d", -LocalOffset);
         Emit("JMP\t.L%d", ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
@@ -1547,15 +1552,22 @@ void ParseStatement(void)
         EmitLocalLabel(BodyLabel);
         BreakLabel = EndLabel;
         ContinueLabel = StartLabel;
+        const int OldBCStack = BCStackLevel;
+        BCStackLevel  = LocalOffset;
         ParseStatement();
+        BCStackLevel  = OldBCStack;
         Emit("JMP\t.L%d", StartLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
+        if (LocalOffset != BCStackLevel)
+            Emit("ADD\tSP, %d", BCStackLevel - LocalOffset);
         Emit("JMP\t.L%d", BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
+        if (LocalOffset != BCStackLevel)
+            Emit("ADD\tSP, %d", BCStackLevel - LocalOffset);
         Emit("JMP\t.L%d", ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else {
@@ -1666,7 +1678,6 @@ void ParseExternalDefition(void)
         Emit("MOV\tBP, SP");
         ParseCompoundStatement();
         EmitLocalLabel(ReturnLabel);
-        Emit("MOV\tSP, BP");
         Emit("POP\tBP");
         Emit("RET");
     }
@@ -1857,7 +1868,6 @@ int main(int argc, char** argv)
     "\tMOV\t[BX], AX\n"
     "\tMOV\tAX, 0\n"
     "\tSBB\tAX, AX\n"
-    "\tMOV\tSP, BP\n"
     "\tPOP\tBP\n"
     "\tRET\n"
     "\n"
