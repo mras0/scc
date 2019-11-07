@@ -1,6 +1,5 @@
 // TODO:
 //  - VT_LVAL directly to BX somehow?
-//  - Lazily PUSH AX to avoid PUSH AX\POP AX sequence
 //  - Allow multiple variable definitions in one statement
 
 #include <stdio.h>
@@ -161,6 +160,8 @@ int ContinueLabel;
 int CurrentType;
 int CurrentVal;
 
+int PendingPushAx;
+
 int IsDigit(int ch)
 {
     return ch >= '0' && ch <= '9';
@@ -287,6 +288,7 @@ const char* IdText(int id)
 
 void RawEmit(const char* format, ...)
 {
+    Check(!PendingPushAx);
     va_list vl;
     va_start(vl, format);
     VSPrintf(LineBuf, format, vl);
@@ -296,6 +298,10 @@ void RawEmit(const char* format, ...)
 
 void Emit(const char* format, ...)
 {
+    if (PendingPushAx) {
+        OutputStr("\tPUSH\tAX\n");
+        PendingPushAx = 0;
+    }
     va_list vl;
     char* dest;
     dest = LineBuf;
@@ -1235,8 +1241,10 @@ void ParseExpr1(int OuterPrecedence)
             EmitLocalLabel(LTemp);
         } else {
             LEnd = -1;
-            if (!(LhsType & VT_LOCMASK))
-                Emit("PUSH\tAX");
+            if (!(LhsType & VT_LOCMASK)) {
+                Check(!PendingPushAx);
+                PendingPushAx = 1;
+            }
         }
 
         // TODO: Question, ?:
@@ -1270,7 +1278,12 @@ void ParseExpr1(int OuterPrecedence)
                 c = 'X';
             }
             if (LhsLoc != VT_LOCOFF) {
-                Emit("POP\tBX");
+                if (PendingPushAx) {
+                    PendingPushAx = 0;
+                    Emit("MOV\tBX, AX");
+                } else {
+                    Emit("POP\tBX");
+                }
             }
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
@@ -1306,7 +1319,8 @@ void ParseExpr1(int OuterPrecedence)
             }
         } else {
             if (CurrentType == (VT_LOCLIT|VT_INT)) {
-                Emit("POP\tAX");
+                Check(PendingPushAx);
+                PendingPushAx = 0;
                 CurrentType = VT_INT;
                 DoRhsConstBinOp(Op);
             } else {
