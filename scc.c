@@ -38,15 +38,16 @@ enum {
 
     VT_BASEMASK = 3,
 
-    VT_LVAL = 4,
-    VT_FUN  = 8,
+    VT_LVAL    = 1<<2,
+    VT_FUN     = 1<<3,
 
-    VT_PTR1 = 16,
-    VT_PTRMASK = 16+32, // 3 levels of indirection should be enough..
+    VT_PTR1    = 1<<4,
+    VT_PTRMASK = 3<<4, // 3 levels of indirection should be enough..
 
-    VT_LOCLIT = 64,     // CurrentValue holds a literal value (or label)
-    VT_LOCOFF = 128,    // CurrentValue holds BP offset
-    VT_LOCMASK = 64+128,
+    VT_LOCLIT  = 1<<6,    // CurrentVal holds a literal value (or label)
+    VT_LOCOFF  = 2<<6,    // CurrentVal holds BP offset
+    VT_LOCGLOB = 3<<6,    // CurrentVal holds the VarDecl index of a global
+    VT_LOCMASK = 3<<6,
 };
 
 enum {
@@ -187,8 +188,7 @@ char* CopyStr(char* dst, const char* src)
 
 int StrLen(const char* s)
 {
-    int l;
-    l = 0;
+    int l = 0;
     while (*s++)
         ++l;
     return l;
@@ -714,7 +714,10 @@ void LvalToRval(void)
             sz = 'L';
         if (loc == VT_LOCOFF) {
             Emit("MOV\tA%c, [BP%+d]", sz, CurrentVal);
+        } else if (loc == VT_LOCGLOB) {
+            Emit("MOV\tA%c, [_%s]", sz, IdText(CurrentVal));
         } else {
+            Check(!loc);
             Emit("MOV\tBX, AX");
             Emit("MOV\tA%c, [BX]", sz);
         }
@@ -753,8 +756,14 @@ void DoIncDecOp(int Op, int Post)
 {
     Check(CurrentType & VT_LVAL);
     CurrentType &= ~VT_LVAL;
-    if ((CurrentType & VT_LOCMASK) == VT_LOCOFF) {
-        Emit("LEA\tBX, [BP%+d]", CurrentVal);
+    const int loc = CurrentType & VT_LOCMASK;
+    if (loc) {
+        if (loc == VT_LOCOFF) {
+            Emit("LEA\tBX, [BP%+d]", CurrentVal);
+        } else {
+            Check(loc == VT_LOCGLOB);
+            Emit("MOV\tBX, _%s", IdText(CurrentVal));
+        }
         CurrentType &= ~VT_LOCMASK;
     } else {
         Emit("MOV\tBX, AX");
@@ -858,11 +867,11 @@ void ParsePrimaryExpression(void)
             if (CurrentVal) {
                 CurrentType |= VT_LOCOFF;
             } else {
+                CurrentVal  = id;
                 if (CurrentType & VT_FUN) {
                     CurrentType = (CurrentType & ~VT_LVAL) | VT_LOCLIT;
-                    CurrentVal  = id;
                 } else {
-                    Emit("MOV\tAX, _%s", IdText(id));
+                    CurrentType |= VT_LOCGLOB;
                 }
             }
         }
@@ -1026,8 +1035,12 @@ void ParseUnaryExpression(void)
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("Lvalue required for address-of operator");
             }
-            if ((CurrentType & VT_LOCMASK) == VT_LOCOFF) {
-                Emit("LEA\tAX, [BP%+d]", CurrentVal);
+            const int loc = CurrentType & VT_LOCMASK;
+            if (loc) {
+                if (loc == VT_LOCOFF)
+                    Emit("LEA\tAX, [BP%+d]", CurrentVal);
+                else
+                    Check(0);
                 CurrentType &= ~VT_LOCMASK;
             }
             CurrentType = (CurrentType&~VT_LVAL) + VT_PTR1;
@@ -1278,13 +1291,15 @@ void ParseExpr1(int OuterPrecedence)
                 Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
                 c = 'X';
             }
-            if (LhsLoc != VT_LOCOFF) {
+            if (!LhsLoc) {
                 if (PendingPushAx) {
                     PendingPushAx = 0;
                     Emit("MOV\tBX, AX");
                 } else {
                     Emit("POP\tBX");
                 }
+            } else {
+                Check(LhsLoc == VT_LOCOFF || LhsLoc == VT_LOCGLOB);
             }
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
@@ -1296,7 +1311,10 @@ void ParseExpr1(int OuterPrecedence)
                 }
                 if (LhsLoc == VT_LOCOFF) {
                     Emit("MOV\tAX, [BP%+d]", LhsVal);
+                } else if (LhsLoc == VT_LOCGLOB) {
+                    Emit("MOV\tAX, [_%s]", IdText(LhsVal));
                 } else {
+                    Check(!LhsLoc);
                     Emit("MOV\tAX, [BX]");
                 }
                 DoBinOp(Op);
@@ -1306,7 +1324,10 @@ void ParseExpr1(int OuterPrecedence)
                 if (c == 'L') Size = "BYTE";
                 if (LhsLoc == VT_LOCOFF) {
                     Emit("MOV\t%s [BP%+d], %d", Size, LhsVal, CurrentVal);
+                } else if (LhsLoc == VT_LOCGLOB) {
+                    Emit("MOV\t%s [_%s], %d", Size, IdText(LhsVal), CurrentVal);
                 } else {
+                    Check(!LhsLoc);
                     Emit("MOV\t%s [BX], %d", Size, CurrentVal);
                 }
                 continue;
@@ -1315,7 +1336,10 @@ void ParseExpr1(int OuterPrecedence)
             }
             if (LhsLoc == VT_LOCOFF) {
                 Emit("MOV\t[BP%+d], A%c", LhsVal, c);
+            } else if (LhsLoc == VT_LOCGLOB) {
+                Emit("MOV\t[_%s], A%c", IdText(LhsVal), c);
             } else {
+                Check(!LhsLoc);
                 Emit("MOV\t[BX], A%c", c);
             }
         } else {
