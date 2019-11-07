@@ -163,6 +163,7 @@ int CurrentType;
 int CurrentVal;
 
 int PendingPushAx;
+int IsDeadCode;
 
 int IsDigit(int ch)
 {
@@ -299,6 +300,9 @@ void RawEmit(const char* format, ...)
 
 void Emit(const char* format, ...)
 {
+    if (IsDeadCode) {
+        return;
+    }
     if (PendingPushAx) {
         OutputStr("\tPUSH\tAX\n");
         PendingPushAx = 0;
@@ -318,11 +322,23 @@ void Emit(const char* format, ...)
 void EmitLocalLabel(int l)
 {
     RawEmit(".L%d:\n", l);
+    IsDeadCode = 0;
 }
 
 void EmitGlobalLabel(int id)
 {
     RawEmit("_%s:\n", IdText(id));
+    IsDeadCode = 0;
+}
+
+void EmitJmp(int l)
+{
+    PendingPushAx = 0;
+    if (IsDeadCode) {
+        return;
+    }
+    Emit("JMP\t.L%d", l);
+    IsDeadCode = 1;
 }
 
 char GetChar(void)
@@ -404,16 +420,16 @@ char Unescape(void)
 
 void GetStringLiteral(void)
 {
-    int JL;
-    int open;
-    char ch;
 
     TokenNumVal = LocalLabelCounter++;
-    JL = LocalLabelCounter++;
-    Emit("JMP\t.L%d", JL);
+    const int WasDeadCode = IsDeadCode;
+    const int JL = LocalLabelCounter++;
+    EmitJmp(JL);
     RawEmit(".L%d:\tDB ", TokenNumVal);
+    IsDeadCode = WasDeadCode;
 
-    open = 0;
+    char ch;
+    int open = 0;
     for (;;) {
         while ((ch = GetChar()) != '"') {
             if (ch == '\\') {
@@ -1251,7 +1267,7 @@ void ParseExpr1(int OuterPrecedence)
                     JText = "JZ";
                 Emit("%s\t.L%d", JText, LTemp);
             }
-            Emit("JMP\t.L%d", LEnd);
+            EmitJmp(LEnd);
             EmitLocalLabel(LTemp);
         } else {
             LEnd = -1;
@@ -1468,7 +1484,7 @@ void DoCond(int TrueLabel, int FalseLabel)
         Emit("AND\tAX, AX");
         Emit("JNZ\t.L%d", TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
     }
-    Emit("JMP\t.L%d", FalseLabel);
+    EmitJmp(FalseLabel);
 }
 
 void ParseCompoundStatement(void);
@@ -1517,7 +1533,7 @@ void ParseStatement(void)
         if (TokenType != TOK_SEMICOLON) {
             DoCond(BodyLabel, EndLabel);
         } else {
-            Emit("JMP\t.L%d", BodyLabel);
+            EmitJmp(BodyLabel);
         }
         Expect(TOK_SEMICOLON);
 
@@ -1526,7 +1542,7 @@ void ParseStatement(void)
             IterLabel  = LocalLabelCounter++;
             EmitLocalLabel(IterLabel);
             ParseExpr();
-            Emit("JMP\t.L%d", CondLabel);
+            EmitJmp(CondLabel);
         }
         Expect(TOK_RPAREN);
 
@@ -1537,7 +1553,7 @@ void ParseStatement(void)
         BCStackLevel  = LocalOffset;
         ParseStatement();
         BCStackLevel  = OldBCStack;
-        Emit("JMP\t.L%d", IterLabel);
+        EmitJmp(IterLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_IF)) {
         const int IfLabel   = LocalLabelCounter++;
@@ -1549,7 +1565,7 @@ void ParseStatement(void)
         Accept(TOK_RPAREN);
         EmitLocalLabel(IfLabel);
         ParseStatement();
-        Emit("JMP\t.L%d", EndLabel);
+        EmitJmp(EndLabel);
         EmitLocalLabel(ElseLabel);
         if (Accept(TOK_ELSE)) {
             ParseStatement();
@@ -1563,7 +1579,7 @@ void ParseStatement(void)
         }
         if (LocalOffset)
             Emit("ADD\tSP, %d", -LocalOffset);
-        Emit("JMP\t.L%d", ReturnLabel);
+        EmitJmp(ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
         const int StartLabel = LocalLabelCounter++;
@@ -1580,19 +1596,19 @@ void ParseStatement(void)
         BCStackLevel  = LocalOffset;
         ParseStatement();
         BCStackLevel  = OldBCStack;
-        Emit("JMP\t.L%d", StartLabel);
+        EmitJmp(StartLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
         if (LocalOffset != BCStackLevel)
             Emit("ADD\tSP, %d", BCStackLevel - LocalOffset);
-        Emit("JMP\t.L%d", BreakLabel);
+        EmitJmp(BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
         if (LocalOffset != BCStackLevel)
             Emit("ADD\tSP, %d", BCStackLevel - LocalOffset);
-        Emit("JMP\t.L%d", ContinueLabel);
+        EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else {
         // Expression statement
