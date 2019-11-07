@@ -960,20 +960,20 @@ void ParsePostfixExpression(void)
             int NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
                 if (!NumArgs) {
-                    Emit("PUSH\tDI");
                     Emit("SUB\tSP, %d", MaxArgs*2);
-                    Emit("MOV\tDI, SP");
+                    LocalOffset -= MaxArgs*2;
                 }
                 Check(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
                 LvalToRval();
+                const int off = LocalOffset + NumArgs*2;
                 if (CurrentType & VT_LOCMASK) {
                     Check(CurrentType == (VT_INT|VT_LOCLIT));
-                    Emit("MOV\tWORD [DI+%d], %d", NumArgs*2, CurrentVal);
+                    Emit("MOV\tWORD [BP%+d], %d", off, CurrentVal);
                 } else {
                     GetVal();
                     Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                    Emit("MOV\t[DI+%d], AX", NumArgs*2);
+                    Emit("MOV\t[BP%+d], AX", off);
                 }
                 ++NumArgs;
 
@@ -985,7 +985,7 @@ void ParsePostfixExpression(void)
             Emit("CALL\t_%s", IdText(FuncId));
             if (NumArgs) {
                 Emit("ADD\tSP, %d", MaxArgs*2);
-                Emit("POP\tDI");
+                LocalOffset += MaxArgs*2;
             }
             CurrentType = RetType;
             if (CurrentType == VT_CHAR) {
@@ -1500,8 +1500,6 @@ void ParseStatement(void)
     } else if (IsTypeStart()) {
         int vd;
         vd = ParseDecl();
-        LocalOffset -= 2;
-        VarDeclOffset[vd] = LocalOffset;
         if (Accept(TOK_EQ)) {
             ParseAssignmentExpression();
             LvalToRval();
@@ -1509,10 +1507,11 @@ void ParseStatement(void)
             if (CurrentType == VT_CHAR) {
                 Emit("CBW");
             }
-            Emit("PUSH\tAX\t; [BP%+d] = %s", LocalOffset, IdText(VarDeclId[vd]));
-        } else {
-            Emit("SUB\tSP, 2\t; [BP%+d] = %s", VarDeclOffset[vd], IdText(VarDeclId[vd]));
         }
+        LocalOffset -= 2;
+        VarDeclOffset[vd] = LocalOffset;
+        // Note: AX contains "random" garbage at first if the variable isn't initialized
+        Emit("PUSH\tAX\t; [BP%+d] = %s", LocalOffset, IdText(VarDeclId[vd]));
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
         const int CondLabel = LocalLabelCounter++;
