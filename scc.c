@@ -1,7 +1,3 @@
-// TODO:
-//  - VT_LVAL directly to BX somehow?
-//  - Allow multiple variable definitions in one statement
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -162,6 +158,7 @@ int ContinueLabel;
 int CurrentType;
 int CurrentVal;
 
+int ReturnUsed;
 int PendingPushAx;
 int IsDeadCode;
 
@@ -339,6 +336,54 @@ void EmitJmp(int l)
     }
     Emit("JMP\t.L%d", l);
     IsDeadCode = 1;
+}
+
+void EmitLoadAx(int Size, int Loc, int Val)
+{
+    if (Size == 1) Size = 'L';
+    else Size = 'X';
+    if (Loc == VT_LOCOFF) {
+        Emit("MOV\tA%c, [BP%+d]", Size, Val);
+    } else if (Loc == VT_LOCGLOB) {
+        Emit("MOV\tA%c, [_%s]", Size, IdText(Val));
+    } else {
+        Emit("MOV\tA%c, [BX]", Size);
+    }
+    if (Size == 'L')
+        Emit("CBW");
+}
+
+void EmitStoreAx(int Size, int Loc, int Val)
+{
+    if (Size == 1) Size = 'L';
+    else Size = 'X';
+    if (Loc == VT_LOCOFF) {
+        Emit("MOV\t[BP%+d], A%c", Val, Size);
+    } else if (Loc == VT_LOCGLOB) {
+        Emit("MOV\t[_%s], A%c", IdText(Val), Size);
+    } else {
+        Check(!Loc);
+        Emit("MOV\t[BX], A%c", Size);
+    }
+}
+
+void EmitStoreConst(int Size, int Loc, int Val)
+{
+    const char* SizeText = "WORD";
+    if (Size == 1) SizeText = "BYTE";
+    if (Loc == VT_LOCOFF) {
+        Emit("MOV\t%s [BP%+d], %d", SizeText, Val, CurrentVal);
+    } else if (Loc == VT_LOCGLOB) {
+        Emit("MOV\t%s [_%s], %d", SizeText, IdText(Val), CurrentVal);
+    } else {
+        Check(!Loc);
+        Emit("MOV\t%s [BX], %d", SizeText, CurrentVal);
+    }
+}
+
+void EmitAdjSp(int Amm)
+{
+    Emit("ADD\tSP, %d", Amm);
 }
 
 char GetChar(void)
@@ -724,23 +769,15 @@ void LvalToRval(void)
 {
     if (CurrentType & VT_LVAL) {
         const int loc = CurrentType & VT_LOCMASK;
-        int sz = 'X';
         CurrentType &= ~(VT_LVAL | VT_LOCMASK);
-        if (CurrentType == VT_CHAR)
-            sz = 'L';
-        if (loc == VT_LOCOFF) {
-            Emit("MOV\tA%c, [BP%+d]", sz, CurrentVal);
-        } else if (loc == VT_LOCGLOB) {
-            Emit("MOV\tA%c, [_%s]", sz, IdText(CurrentVal));
-        } else {
-            Check(!loc);
-            Emit("MOV\tBX, AX");
-            Emit("MOV\tA%c, [BX]", sz);
-        }
+        int sz = 2;
         if (CurrentType == VT_CHAR) {
-            Emit("CBW");
+            sz = 1;
             CurrentType = VT_INT;
         }
+        if (!loc)
+            Emit("MOV\tBX, AX");
+        EmitLoadAx(sz, loc, CurrentVal);
     }
 }
 
@@ -774,29 +811,20 @@ void DoIncDecOp(int Op, int Post)
     CurrentType &= ~VT_LVAL;
     const int loc = CurrentType & VT_LOCMASK;
     if (loc) {
-        if (loc == VT_LOCOFF) {
-            Emit("LEA\tBX, [BP%+d]", CurrentVal);
-        } else {
-            Check(loc == VT_LOCGLOB);
-            Emit("MOV\tBX, _%s", IdText(CurrentVal));
-        }
         CurrentType &= ~VT_LOCMASK;
     } else {
         Emit("MOV\tBX, AX");
     }
+    char Sz = 2;
     if (CurrentType == VT_CHAR) {
-        Emit("MOV\tAL, [BX]");
-        Emit("CBW");
-        if (Post) Emit("PUSH\tAX");
-        DoIncDec(Op);
-        Emit("MOV\t[BX], AL");
+        Sz = 1;
+    }
+    EmitLoadAx(Sz, loc, CurrentVal);
+    if (Post) Emit("PUSH\tAX");
+    DoIncDec(Op);
+    EmitStoreAx(Sz, loc, CurrentVal);
+    if (Sz == 1) {
         CurrentType = VT_INT;
-    } else {
-        Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-        Emit("MOV\tAX, [BX]");
-        if (Post) Emit("PUSH\tAX");
-        DoIncDec(Op);
-        Emit("MOV\t[BX], AX");
     }
     if (Post) Emit("POP\tAX");
 }
@@ -853,15 +881,15 @@ void ParsePrimaryExpression(void)
                 Fatal("Invalid argument to va_start");
             }
             Emit("LEA\tAX, [BP%+d]", VarDeclOffset[vd]);
-            Emit("MOV\t[BP%+d], AX", offset);
+            EmitStoreAx(2, VT_LOCOFF, offset);
             CurrentType = VT_VOID;
         } else if (func == TOK_VA_END) {
             CurrentType = VT_VOID;
         } else if (func == TOK_VA_ARG) {
             Expect(TOK_COMMA);
-            Emit("MOV\tAX, [BP%+d]", offset);
+            EmitLoadAx(2, VT_LOCOFF, offset);
             Emit("ADD\tAX, 2");
-            Emit("MOV\t[BP%+d], AX", offset);
+            EmitStoreAx(2, VT_LOCOFF, offset);
             CurrentType = VT_LVAL | ParseDeclSpecs();
         }
         Expect(TOK_RPAREN);
@@ -960,7 +988,7 @@ void ParsePostfixExpression(void)
             int NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
                 if (!NumArgs) {
-                    Emit("SUB\tSP, %d", MaxArgs*2);
+                    EmitAdjSp(-MaxArgs*2);
                     LocalOffset -= MaxArgs*2;
                 }
                 Check(NumArgs < MaxArgs);
@@ -969,11 +997,11 @@ void ParsePostfixExpression(void)
                 const int off = LocalOffset + NumArgs*2;
                 if (CurrentType & VT_LOCMASK) {
                     Check(CurrentType == (VT_INT|VT_LOCLIT));
-                    Emit("MOV\tWORD [BP%+d], %d", off, CurrentVal);
+                    EmitStoreConst(2, VT_LOCOFF, off);
                 } else {
                     GetVal();
                     Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                    Emit("MOV\t[BP%+d], AX", off);
+                    EmitStoreAx(2, VT_LOCOFF, off);
                 }
                 ++NumArgs;
 
@@ -984,7 +1012,7 @@ void ParsePostfixExpression(void)
             Expect(TOK_RPAREN);
             Emit("CALL\t_%s", IdText(FuncId));
             if (NumArgs) {
-                Emit("ADD\tSP, %d", MaxArgs*2);
+                EmitAdjSp(MaxArgs*2);
                 LocalOffset += MaxArgs*2;
             }
             CurrentType = RetType;
@@ -1137,6 +1165,21 @@ int IsRelOp(int Op)
     return Op == TOK_LT || Op == TOK_LTEQ || Op == TOK_GT || Op == TOK_GTEQ || Op == TOK_EQEQ || Op == TOK_NOTEQ;
 }
 
+int RemoveAssign(int Op)
+{
+    if (Op == TOK_PLUSEQ)  return TOK_PLUS;
+    if (Op == TOK_MINUSEQ) return TOK_MINUS;
+    if (Op == TOK_STAREQ)  return TOK_STAR;
+    if (Op == TOK_SLASHEQ) return TOK_SLASH;
+    if (Op == TOK_MODEQ)   return TOK_MOD;
+    if (Op == TOK_LSHEQ)   return TOK_LSH;
+    if (Op == TOK_RSHEQ)   return TOK_RSH;
+    if (Op == TOK_ANDEQ)   return TOK_AND;
+    if (Op == TOK_XOREQ)   return TOK_XOR;
+    if (Op == TOK_OREQ)    return TOK_OR;
+    Check(0);
+}
+
 // Emit: AX <- AX 'OP' CX, Must preserve BX.
 void DoBinOp(int Op)
 {
@@ -1147,27 +1190,27 @@ void DoBinOp(int Op)
         return;
     }
 
-    if (Op == TOK_PLUS || Op == TOK_PLUSEQ) {
+    if (Op == TOK_PLUS) {
         Emit("ADD\tAX, CX");
-    } else if (Op == TOK_MINUS || Op == TOK_MINUSEQ) {
+    } else if (Op == TOK_MINUS) {
         Emit("SUB\tAX, CX");
-    } else if (Op == TOK_STAR || Op == TOK_STAREQ) {
+    } else if (Op == TOK_STAR) {
         Emit("IMUL\tCX");
-    } else if (Op == TOK_SLASH || Op == TOK_SLASHEQ || Op == TOK_MOD || Op == TOK_MODEQ) {
+    } else if (Op == TOK_SLASH || Op == TOK_MOD) {
         Emit("CWD");
         Emit("IDIV\tCX");
-        if (Op == TOK_MOD || Op == TOK_MODEQ) {
+        if (Op == TOK_MOD) {
             Emit("MOV\tAX, DX");
         }
-    } else if (Op == TOK_AND || Op == TOK_ANDEQ) {
+    } else if (Op == TOK_AND) {
         Emit("AND\tAX, CX");
-    } else if (Op == TOK_XOR || Op == TOK_XOREQ) {
+    } else if (Op == TOK_XOR) {
         Emit("XOR\tAX, CX");
-    } else if (Op == TOK_OR || Op == TOK_OREQ) {
+    } else if (Op == TOK_OR) {
         Emit("OR\tAX, CX");
-    } else if (Op == TOK_LSH || Op == TOK_LSHEQ) {
+    } else if (Op == TOK_LSH) {
         Emit("SHL\tAX, CL");
-    } else if (Op == TOK_RSH || Op == TOK_RSHEQ) {
+    } else if (Op == TOK_RSH) {
         Emit("SAR\tAX, CL");
     } else {
         Check(0);
@@ -1218,10 +1261,16 @@ int DoConstBinOp(int Op, int L, int R)
     Check(0);
 }
 
+int OpCommutes(int Op)
+{
+    return Op == TOK_PLUS || Op == TOK_STAR || Op == TOK_EQ || Op == TOK_NOTEQ
+        || Op == TOK_AND || Op == TOK_XOR || Op == TOK_OR;
+}
+
 void ParseExpr1(int OuterPrecedence)
 {
     int LEnd;
-    int LTemp;
+    int Temp;
     int Op;
     int Prec;
     int IsAssign;
@@ -1242,6 +1291,8 @@ void ParseExpr1(int OuterPrecedence)
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("L-value required");
             }
+            if (Op != TOK_EQ)
+                Op = RemoveAssign(Op);
             CurrentType &= ~VT_LVAL;
         } else {
             LvalToRval();
@@ -1251,12 +1302,12 @@ void ParseExpr1(int OuterPrecedence)
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
             const char* JText;
-            LTemp = LocalLabelCounter++;
+            Temp = LocalLabelCounter++;
             LEnd = LocalLabelCounter++;
             if (CurrentType == VT_BOOL) {
                 if (Op != TOK_ANDAND)
                     CurrentVal ^= 1;
-                Emit("%s\t.L%d", GetJcc(CurrentVal), LTemp);
+                Emit("%s\t.L%d", GetJcc(CurrentVal), Temp);
                 Emit("MOV\tAX, %d", Op != TOK_ANDAND);
             } else {
                 Check(CurrentType == VT_INT);
@@ -1265,10 +1316,10 @@ void ParseExpr1(int OuterPrecedence)
                     JText = "JNZ";
                 else
                     JText = "JZ";
-                Emit("%s\t.L%d", JText, LTemp);
+                Emit("%s\t.L%d", JText, Temp);
             }
             EmitJmp(LEnd);
-            EmitLocalLabel(LTemp);
+            EmitLocalLabel(Temp);
         } else {
             LEnd = -1;
             if (!(LhsType & VT_LOCMASK)) {
@@ -1300,12 +1351,11 @@ void ParseExpr1(int OuterPrecedence)
             GetVal();
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
-            char c;
+            int Size = 2;
             if (LhsType == VT_CHAR) {
-                c = 'L';
+                Size = 1;
             } else {
                 Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
-                c = 'X';
             }
             if (!LhsLoc) {
                 if (PendingPushAx) {
@@ -1319,45 +1369,24 @@ void ParseExpr1(int OuterPrecedence)
             }
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
-                if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                    Emit("MOV\tCX, %d", CurrentVal);
-                } else {
+                Temp = CurrentType == (VT_INT|VT_LOCLIT);
+                if (!Temp) {
                     Check(CurrentType == VT_INT);
                     Emit("MOV\tCX, AX");
                 }
-                if (LhsLoc == VT_LOCOFF) {
-                    Emit("MOV\tAX, [BP%+d]", LhsVal);
-                } else if (LhsLoc == VT_LOCGLOB) {
-                    Emit("MOV\tAX, [_%s]", IdText(LhsVal));
-                } else {
-                    Check(!LhsLoc);
-                    Emit("MOV\tAX, [BX]");
-                }
-                DoBinOp(Op);
+                EmitLoadAx(2, LhsLoc, LhsVal);
+                if (Temp)
+                    DoRhsConstBinOp(Op);
+                else
+                    DoBinOp(Op);
             } else if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 // Constant assignment
-                const char* Size = "WORD";
-                if (c == 'L') Size = "BYTE";
-                if (LhsLoc == VT_LOCOFF) {
-                    Emit("MOV\t%s [BP%+d], %d", Size, LhsVal, CurrentVal);
-                } else if (LhsLoc == VT_LOCGLOB) {
-                    Emit("MOV\t%s [_%s], %d", Size, IdText(LhsVal), CurrentVal);
-                } else {
-                    Check(!LhsLoc);
-                    Emit("MOV\t%s [BX], %d", Size, CurrentVal);
-                }
+                EmitStoreConst(Size, LhsLoc, LhsVal);
                 continue;
             } else {
                 GetVal();
             }
-            if (LhsLoc == VT_LOCOFF) {
-                Emit("MOV\t[BP%+d], A%c", LhsVal, c);
-            } else if (LhsLoc == VT_LOCGLOB) {
-                Emit("MOV\t[_%s], A%c", IdText(LhsVal), c);
-            } else {
-                Check(!LhsLoc);
-                Emit("MOV\t[BX], A%c", c);
-            }
+            EmitStoreAx(Size, LhsLoc, LhsVal);
         } else {
             if (CurrentType == (VT_LOCLIT|VT_INT)) {
                 Check(PendingPushAx);
@@ -1369,14 +1398,22 @@ void ParseExpr1(int OuterPrecedence)
                 if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
                     Emit("ADD\tAX, AX");
                 }
+                Temp = OpCommutes(Op);
                 if (LhsLoc == VT_LOCLIT) {
                     Check(LhsType == VT_INT);
-                    Emit("MOV\tCX, %d", LhsVal);
+                    if (Temp) {
+                        CurrentVal = LhsVal;
+                        DoRhsConstBinOp(Op);
+                        continue;
+                    } else {
+                        Emit("MOV\tCX, %d", LhsVal);
+                    }
                 } else {
                     Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
                     Emit("POP\tCX");
                 }
-                Emit("XCHG\tAX, CX");
+                if (!Temp)
+                    Emit("XCHG\tAX, CX");
                 DoBinOp(Op);
             }
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
@@ -1577,7 +1614,7 @@ void ParseStatement(void)
             GetVal();
         }
         if (LocalOffset)
-            Emit("ADD\tSP, %d", -LocalOffset);
+            ReturnUsed = 1;
         EmitJmp(ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
@@ -1600,13 +1637,13 @@ void ParseStatement(void)
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
         if (LocalOffset != BCStackLevel)
-            Emit("ADD\tSP, %d", BCStackLevel - LocalOffset);
+            EmitAdjSp(BCStackLevel - LocalOffset);
         EmitJmp(BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
         if (LocalOffset != BCStackLevel)
-            Emit("ADD\tSP, %d", BCStackLevel - LocalOffset);
+            EmitAdjSp(BCStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else {
@@ -1629,7 +1666,7 @@ void ParseCompoundStatement(void)
     }
     PopScope();
     if (InitialOffset != LocalOffset) {
-        Emit("ADD\tSP, %d", InitialOffset - LocalOffset);
+        EmitAdjSp(InitialOffset - LocalOffset);
         LocalOffset = InitialOffset;
     }
 }
@@ -1709,6 +1746,7 @@ void ParseExternalDefition(void)
     Expect(TOK_RPAREN);
     if (!Accept(TOK_SEMICOLON)) {
         LocalOffset = 0;
+        ReturnUsed = 0;
         LocalLabelCounter = 0;
         ReturnLabel = LocalLabelCounter++;
         BreakLabel = ContinueLabel = -1;
@@ -1717,6 +1755,8 @@ void ParseExternalDefition(void)
         Emit("MOV\tBP, SP");
         ParseCompoundStatement();
         EmitLocalLabel(ReturnLabel);
+        if (ReturnUsed)
+            Emit("MOV\tSP, BP");
         Emit("POP\tBP");
         Emit("RET");
     }
