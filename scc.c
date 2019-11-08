@@ -21,8 +21,8 @@ enum {
     TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
-    VARDECL_MAX = 250,
-    ID_MAX = 350,
+    VARDECL_MAX = 300,
+    ID_MAX = 400,
     IDBUFFER_MAX = 4096,
 };
 
@@ -297,13 +297,7 @@ void RawEmit(const char* format, ...)
 
 void Emit(const char* format, ...)
 {
-    if (IsDeadCode) {
-        return;
-    }
-    if (PendingPushAx) {
-        OutputStr("\tPUSH\tAX\n");
-        PendingPushAx = 0;
-    }
+    if (EmitChecks()) return;
     va_list vl;
     char* dest;
     dest = LineBuf;
@@ -338,52 +332,156 @@ void EmitJmp(int l)
     IsDeadCode = 1;
 }
 
+enum {
+    JO , //  0x0
+    JNO, //  0x1
+    JC , //  0x2
+    JNC, //  0x3
+    JZ , //  0x4
+    JNZ, //  0x5
+    JNA, //  0x6
+    JA , //  0x7
+    JS , //  0x8
+    JNS, //  0x9
+    JPE, //  0xa
+    JPO, //  0xb
+    JL , //  0xc
+    JNL, //  0xd
+    JNG, //  0xe
+    JG , //  0xf
+};
+
+enum {
+    R_AX, R_CX, R_DX, R_BX, R_SP, R_BP, R_SI, R_DI,
+};
+
+enum {
+    MODRM_DISP16   = 0x06, // [disp16]
+    MODRM_BX       = 0x07, // [BX]
+    MODRM_BP_DISP8 = 0x46, // [BP+disp8]
+    MODRM_REG      = 0xC0,
+};
+
+enum {
+    I_ADD           = 0x00,
+    I_OR            = 0x08,
+    I_ADC           = 0x10,
+    I_SBB           = 0x18,
+    I_AND           = 0x20,
+    I_SUB           = 0x28,
+    I_XOR           = 0x30,
+    I_CMP           = 0x38,
+    I_INC           = 0x40,
+    I_DEC           = 0x48,
+    I_PUSH          = 0x50,
+    I_POP           = 0x58,
+    I_MOV_R_RM      = 0x88,
+    I_MOV_RM_R      = 0x8a,
+    I_LEA           = 0x8d,
+    I_XCHG_AX       = 0x90,
+    I_CBW           = 0x98,
+    I_CWD           = 0x99,
+    I_MOV_R_IMM16   = 0xb8,
+    I_SHROT16_CL    = 0xd3,
+    I_CALL          = 0xe8,
+};
+
+enum {
+    SHROT_SHL = 4,
+    SHROT_SAR = 7,
+};
+
+void OutputBytes(int first, ...)
+{
+    if (EmitChecks()) return;
+    va_list vl;
+    va_start(vl, first);
+    RawEmit("\tDB %d", first);
+    while ((first = va_arg(vl, int)) != -1) {
+        RawEmit(", %d", first);
+    }
+    RawEmit("\n");
+    va_end(vl);
+}
+
+void EmitModrm(int Inst, int Loc, int Val)
+{
+    if (Loc == VT_LOCOFF) {
+        OutputBytes(Inst, MODRM_BP_DISP8, Val & 0xff, -1);
+    } else if (Loc == VT_LOCGLOB) {
+        OutputBytes(Inst, MODRM_DISP16, -1);
+        RawEmit("\tDW _%s\n", IdText(Val));
+    } else {
+        Check(!Loc);
+        OutputBytes(Inst, 0x07, -1);
+    }
+}
+
 void EmitLoadAx(int Size, int Loc, int Val)
 {
-    if (Size == 1) Size = 'L';
-    else Size = 'X';
-    if (Loc == VT_LOCOFF) {
-        Emit("MOV\tA%c, [BP%+d]", Size, Val);
-    } else if (Loc == VT_LOCGLOB) {
-        Emit("MOV\tA%c, [_%s]", Size, IdText(Val));
-    } else {
-        Emit("MOV\tA%c, [BX]", Size);
-    }
-    if (Size == 'L')
-        Emit("CBW");
+    EmitModrm(I_MOV_RM_R-1+Size, Loc, Val);
+    if (Size == 1)
+        OutputBytes(I_CBW, -1);
 }
 
 void EmitStoreAx(int Size, int Loc, int Val)
 {
-    if (Size == 1) Size = 'L';
-    else Size = 'X';
-    if (Loc == VT_LOCOFF) {
-        Emit("MOV\t[BP%+d], A%c", Val, Size);
-    } else if (Loc == VT_LOCGLOB) {
-        Emit("MOV\t[_%s], A%c", IdText(Val), Size);
-    } else {
-        Check(!Loc);
-        Emit("MOV\t[BX], A%c", Size);
-    }
+    EmitModrm(I_MOV_R_RM-1+Size, Loc, Val);
 }
 
 void EmitStoreConst(int Size, int Loc, int Val)
 {
-    const char* SizeText = "WORD";
-    if (Size == 1) SizeText = "BYTE";
-    if (Loc == VT_LOCOFF) {
-        Emit("MOV\t%s [BP%+d], %d", SizeText, Val, CurrentVal);
-    } else if (Loc == VT_LOCGLOB) {
-        Emit("MOV\t%s [_%s], %d", SizeText, IdText(Val), CurrentVal);
-    } else {
-        Check(!Loc);
-        Emit("MOV\t%s [BX], %d", SizeText, CurrentVal);
-    }
+    EmitModrm(0xc6-1+Size, Loc, Val);
+    OutputBytes(CurrentVal & 0xff, - 1);
+    if (Size == 2)
+        OutputBytes((CurrentVal >> 8) & 0xff, - 1);
 }
 
 void EmitAdjSp(int Amm)
 {
-    Emit("ADD\tSP, %d", Amm);
+    OutputBytes(0x83, 0xC4, Amm & 0xff, -1);
+}
+
+void EmitPush(int r)
+{
+    OutputBytes(I_PUSH | r, -1);
+}
+
+void EmitPop(int r)
+{
+    OutputBytes(I_POP | r, -1);
+}
+
+void EmitMovRR(int d, int s)
+{
+    OutputBytes(I_MOV_R_RM | 1, MODRM_REG | s<<3 | d, -1);
+}
+
+void EmitMovRImm(int r, int val)
+{
+    OutputBytes(I_MOV_R_IMM16 | r, val & 0xff, (val >> 8) & 0xff, -1);
+}
+
+void EmitLeaStackVar(int r, int off)
+{
+    OutputBytes(I_LEA, MODRM_BP_DISP8 | r<<3, off & 0xff, -1);
+}
+
+void EmitToBool(void)
+{
+    OutputBytes(I_AND|1, MODRM_REG, -1); // AND AX, AX
+}
+
+int EmitChecks(void)
+{
+    if (IsDeadCode) {
+        return 1;
+    }
+    if (PendingPushAx) {
+        PendingPushAx = 0;
+        EmitPush(R_AX);
+    }
+    return 0;
 }
 
 char GetChar(void)
@@ -791,33 +889,25 @@ void LvalToRval(void)
             CurrentType = VT_INT;
         }
         if (!loc)
-            Emit("MOV\tBX, AX");
+            EmitMovRR(R_BX, R_AX);
         EmitLoadAx(sz, loc, CurrentVal);
     }
 }
 
 void DoIncDec(int Op)
 {
-    int Amm;
+    if (Op == TOK_PLUSPLUS)
+        Op = 0x40; // INC AX
+    else
+        Op = 0x48; // DEC AX
+
+    int A2;
     if (CurrentType == VT_CHAR || CurrentType == VT_INT || CurrentType == (VT_CHAR|VT_PTR1)) {
-        Amm = 1;
+        A2 = -1;
     } else {
-        Amm = 2;
+        A2 = Op; // Repeat Op
     }
-    if (Op == TOK_PLUSPLUS) {
-        if (Amm == 1) {
-            Emit("INC\tAX");
-        } else {
-            Emit("ADD\tAX, %d", Amm);
-        }
-    } else {
-        Check(Op == TOK_MINUSMINUS);
-        if (Amm == 1) {
-            Emit("DEC\tAX");
-        } else {
-            Emit("SUB\tAX, %d", Amm);
-        }
-    }
+    OutputBytes(Op, A2, -1);
 }
 
 void DoIncDecOp(int Op, int Post)
@@ -828,20 +918,20 @@ void DoIncDecOp(int Op, int Post)
     if (loc) {
         CurrentType &= ~VT_LOCMASK;
     } else {
-        Emit("MOV\tBX, AX");
+        EmitMovRR(R_BX, R_AX);
     }
     char Sz = 2;
     if (CurrentType == VT_CHAR) {
         Sz = 1;
     }
     EmitLoadAx(Sz, loc, CurrentVal);
-    if (Post) Emit("PUSH\tAX");
+    if (Post) EmitPush(R_AX);
     DoIncDec(Op);
     EmitStoreAx(Sz, loc, CurrentVal);
     if (Sz == 1) {
         CurrentType = VT_INT;
     }
-    if (Post) Emit("POP\tAX");
+    if (Post) EmitPop(R_AX);
 }
 
 void ParseExpr(void);
@@ -874,7 +964,8 @@ void ParsePrimaryExpression(void)
         CurrentVal  = TokenNumVal;
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
-        Emit("MOV\tAX, .L%d", TokenNumVal);
+        OutputBytes(I_MOV_R_IMM16, -1);
+        RawEmit("\tDW .L%d\n", TokenNumVal);
         CurrentType = VT_PTR1 | VT_CHAR;
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
@@ -895,7 +986,7 @@ void ParsePrimaryExpression(void)
             if (vd < 0 || !VarDeclOffset[vd]) {
                 Fatal("Invalid argument to va_start");
             }
-            Emit("LEA\tAX, [BP%+d]", VarDeclOffset[vd]);
+            EmitLeaStackVar(R_AX, VarDeclOffset[vd]);
             EmitStoreAx(2, VT_LOCOFF, offset);
             CurrentType = VT_VOID;
         } else if (func == TOK_VA_END) {
@@ -903,7 +994,7 @@ void ParsePrimaryExpression(void)
         } else if (func == TOK_VA_ARG) {
             Expect(TOK_COMMA);
             EmitLoadAx(2, VT_LOCOFF, offset);
-            Emit("ADD\tAX, 2");
+            OutputBytes(0x40, 0x40, -1); // INC AX \ INC AX
             EmitStoreAx(2, VT_LOCOFF, offset);
             CurrentType = VT_LVAL | ParseDeclSpecs();
         }
@@ -937,25 +1028,6 @@ void ParsePrimaryExpression(void)
     }
 }
 
-enum {
-    JO , //  0x0
-    JNO, //  0x1
-    JC , //  0x2
-    JNC, //  0x3
-    JZ , //  0x4
-    JNZ, //  0x5
-    JNA, //  0x6
-    JA , //  0x7
-    JS , //  0x8
-    JNS, //  0x9
-    JPE, //  0xa
-    JPO, //  0xb
-    JL , //  0xc
-    JNL, //  0xd
-    JNG, //  0xe
-    JG , //  0xf
-};
-
 const char* GetJcc(int CC)
 {
     if (CC == JZ)  return "JZ";
@@ -972,9 +1044,9 @@ void GetVal(void)
     if (CurrentType == VT_BOOL) {
         int Lab;
         Lab = LocalLabelCounter++;
-        Emit("MOV\tAX, 1");
+        EmitMovRImm(R_AX, 1);
         Emit("%s\t.L%d", GetJcc(CurrentVal), Lab);
-        Emit("DEC\tAL");
+        OutputBytes(0x48, -1); // DEC AX
         EmitLocalLabel(Lab);
         CurrentType = VT_INT;
         return;
@@ -984,7 +1056,7 @@ void GetVal(void)
     if (loc) {
         Check(loc == VT_LOCLIT);
         CurrentType &= ~VT_LOCMASK;
-        Emit("MOV\tAX, %d", CurrentVal);
+        EmitMovRImm(R_AX, CurrentVal);
     }
 }
 
@@ -1025,7 +1097,8 @@ void ParsePostfixExpression(void)
                 }
             }
             Expect(TOK_RPAREN);
-            Emit("CALL\t_%s", IdText(FuncId));
+            OutputBytes(I_CALL, -1);
+            RawEmit("\tDW\t_%s - ($ + 2)\n", IdText(FuncId));
             if (NumArgs) {
                 EmitAdjSp(MaxArgs*2);
                 LocalOffset += MaxArgs*2;
@@ -1045,21 +1118,21 @@ void ParsePostfixExpression(void)
                 Check(AType == VT_INT || (AType & VT_PTRMASK));
                 Double = 1;
             }
-            Emit("PUSH\tAX");
+            EmitPush(R_AX);
             ParseExpr();
             Expect(TOK_RBRACKET);
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 if (Double) CurrentVal <<= 1;
-                Emit("POP\tAX");
-                Emit("ADD\tAX, %d", CurrentVal);
+                EmitPop(R_AX);
+                OutputBytes(I_ADD|5, CurrentVal&0xff, (CurrentVal>>8)&0xff, -1);
             } else {
                 LvalToRval();
                 Check(CurrentType == VT_INT);
                 if (Double) {
-                    Emit("ADD\tAX, AX");
+                    OutputBytes(I_ADD|1, MODRM_REG, -1);
                 }
-                Emit("POP\tCX");
-                Emit("ADD\tAX, CX");
+                EmitPop(R_CX);
+                OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
             }
             CurrentType = AType | VT_LVAL;
         } else {
@@ -1097,7 +1170,7 @@ void ParseUnaryExpression(void)
             const int loc = CurrentType & VT_LOCMASK;
             if (loc) {
                 if (loc == VT_LOCOFF)
-                    Emit("LEA\tAX, [BP%+d]", CurrentVal);
+                    EmitLeaStackVar(R_AX, CurrentVal);
                 else
                     Check(0);
                 CurrentType &= ~VT_LOCMASK;
@@ -1115,14 +1188,14 @@ void ParseUnaryExpression(void)
                 CurrentVal = -CurrentVal;
             } else {
                 Check(CurrentType == VT_INT);
-                Emit("NEG\tAX");
+                OutputBytes(0xF7, 0xD8, -1); // NEG AX
             }
         } else if (Op == TOK_TILDE) {
             if (IsConst) {
                 CurrentVal = ~CurrentVal;
             } else {
                 Check(CurrentType == VT_INT);
-                Emit("NOT\tAX");
+                OutputBytes(0xF7, 0xD0, -1); // NOT AX
             }
         } else if (Op == TOK_NOT) {
             if (IsConst) {
@@ -1131,7 +1204,7 @@ void ParseUnaryExpression(void)
                 int Lab;
                 Lab = LocalLabelCounter++;
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                Emit("AND\tAX, AX");
+                EmitToBool();
                 CurrentType = VT_BOOL;
                 CurrentVal  = JZ;
             }
@@ -1198,67 +1271,63 @@ int RemoveAssign(int Op)
 // Emit: AX <- AX 'OP' CX, Must preserve BX.
 void DoBinOp(int Op)
 {
+    int RM = MODRM_REG|R_CX<<3;
     if (IsRelOp(Op)) {
-        Emit("CMP\tAX, CX");
         CurrentType = VT_BOOL;
         CurrentVal  = RelOpToCC(Op);
-        return;
-    }
-
-    if (Op == TOK_PLUS) {
-        Emit("ADD\tAX, CX");
+        Op = I_CMP;
+    } else if (Op == TOK_PLUS) {
+        Op = I_ADD;
     } else if (Op == TOK_MINUS) {
-        Emit("SUB\tAX, CX");
+        Op = I_SUB;
     } else if (Op == TOK_STAR) {
-        Emit("IMUL\tCX");
+        // IMUL : F7 /5
+        Op = 0xF7;
+        RM = MODRM_REG | (5<<3) | R_CX;
     } else if (Op == TOK_SLASH || Op == TOK_MOD) {
-        Emit("CWD");
-        Emit("IDIV\tCX");
+        OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1);
         if (Op == TOK_MOD) {
-            Emit("MOV\tAX, DX");
+            EmitMovRR(R_AX, R_DX);
         }
+        return;
     } else if (Op == TOK_AND) {
-        Emit("AND\tAX, CX");
+        Op = I_AND;
     } else if (Op == TOK_XOR) {
-        Emit("XOR\tAX, CX");
+        Op = I_XOR;
     } else if (Op == TOK_OR) {
-        Emit("OR\tAX, CX");
+        Op = I_OR;
     } else if (Op == TOK_LSH) {
-        Emit("SHL\tAX, CL");
+        Op = 0xd3; // Don't care about |1 below
+        RM = MODRM_REG|SHROT_SHL<<3;
     } else if (Op == TOK_RSH) {
-        Emit("SAR\tAX, CL");
+        Op = 0xd3;
+        RM = MODRM_REG|SHROT_SAR<<3;
     } else {
         Check(0);
     }
+    OutputBytes(Op|1, RM, -1);
 }
 
 void DoRhsConstBinOp(int Op)
 {
+    int NextVal = CurrentVal;
     if (IsRelOp(Op)) {
-        Emit("CMP\tAX, %d", CurrentVal);
         CurrentType = VT_BOOL;
-        CurrentVal  = RelOpToCC(Op);
-        return;
+        NextVal = RelOpToCC(Op);
+        Op = I_CMP;
     }
-
-    if (Op == TOK_STAR && CurrentVal == 2) {
-        // Do one special case for fun
-        Emit("ADD\tAX, AX");
-        return;
-    }
-
-    const char* Inst = 0;
-    if (Op == TOK_PLUS)       Inst = "ADD";
-    else if (Op == TOK_MINUS) Inst = "SUB";
-    else if (Op == TOK_AND)   Inst = "AND";
-    else if (Op == TOK_XOR)   Inst = "XOR";
-    else if (Op == TOK_OR)    Inst = "OR";
+    else if (Op == TOK_PLUS)  Op = I_ADD;
+    else if (Op == TOK_MINUS) Op = I_SUB;
+    else if (Op == TOK_AND)   Op = I_AND;
+    else if (Op == TOK_XOR)   Op = I_XOR;
+    else if (Op == TOK_OR)    Op = I_OR;
     else {
-        Emit("MOV\tCX, %d", CurrentVal);
+        EmitMovRImm(R_CX, CurrentVal);
         DoBinOp(Op);
         return;
     }
-    Emit("%s\tAX, %d", Inst, CurrentVal);
+    OutputBytes(Op|5, CurrentVal & 0xff, (CurrentVal>>8) & 0xff, -1);
+    CurrentVal = NextVal;
 }
 
 int DoConstBinOp(int Op, int L, int R)
@@ -1323,10 +1392,10 @@ void ParseExpr1(int OuterPrecedence)
                 if (Op != TOK_ANDAND)
                     CurrentVal ^= 1;
                 Emit("%s\t.L%d", GetJcc(CurrentVal), Temp);
-                Emit("MOV\tAX, %d", Op != TOK_ANDAND);
+                EmitMovRImm(R_AX, Op != TOK_ANDAND);
             } else {
                 Check(CurrentType == VT_INT);
-                Emit("AND\tAX, AX");
+                EmitToBool();
                 if (Op == TOK_ANDAND)
                     JText = "JNZ";
                 else
@@ -1375,9 +1444,9 @@ void ParseExpr1(int OuterPrecedence)
             if (!LhsLoc) {
                 if (PendingPushAx) {
                     PendingPushAx = 0;
-                    Emit("MOV\tBX, AX");
+                    EmitMovRR(R_BX, R_AX);
                 } else {
-                    Emit("POP\tBX");
+                    EmitPop(R_BX);
                 }
             } else {
                 Check(LhsLoc == VT_LOCOFF || LhsLoc == VT_LOCGLOB);
@@ -1387,7 +1456,7 @@ void ParseExpr1(int OuterPrecedence)
                 Temp = CurrentType == (VT_INT|VT_LOCLIT);
                 if (!Temp) {
                     Check(CurrentType == VT_INT);
-                    Emit("MOV\tCX, AX");
+                    EmitMovRR(R_CX, R_AX);
                 }
                 EmitLoadAx(2, LhsLoc, LhsVal);
                 if (Temp)
@@ -1421,14 +1490,14 @@ void ParseExpr1(int OuterPrecedence)
                         DoRhsConstBinOp(Op);
                         continue;
                     } else {
-                        Emit("MOV\tCX, %d", LhsVal);
+                        EmitMovRImm(R_CX, LhsVal);
                     }
                 } else {
                     Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
-                    Emit("POP\tCX");
+                    EmitPop(R_CX);
                 }
                 if (!Temp)
-                    Emit("XCHG\tAX, CX");
+                    OutputBytes(I_XCHG_AX | R_CX, -1);
                 DoBinOp(Op);
             }
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
@@ -1533,7 +1602,7 @@ void DoCond(int TrueLabel, int FalseLabel)
         // Could optimize for constant conditions here
         GetVal();
         Check(CurrentType == VT_INT);
-        Emit("AND\tAX, AX");
+        EmitToBool();
         Emit("JNZ\t.L%d", TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
     }
     EmitJmp(FalseLabel);
@@ -1563,7 +1632,7 @@ void ParseStatement(void)
         LocalOffset -= 2;
         VarDeclOffset[vd] = LocalOffset;
         // Note: AX contains "random" garbage at first if the variable isn't initialized
-        Emit("PUSH\tAX\t; [BP%+d] = %s", LocalOffset, IdText(VarDeclId[vd]));
+        EmitPush(R_AX);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
         const int CondLabel = LocalLabelCounter++;
@@ -1696,7 +1765,7 @@ void ParseCompoundStatement(void)
 void EmitGlobal(int VarDeclIndex, int InitVal)
 {
     EmitGlobalLabel(VarDeclId[VarDeclIndex]);
-    Emit("DW\t%d", InitVal);
+    RawEmit("\tDW\t%d\n", InitVal);
 }
 
 void ParseExternalDefition(void)
@@ -1766,14 +1835,14 @@ void ParseExternalDefition(void)
         ReturnLabel = LocalLabelCounter++;
         BreakLabel = ContinueLabel = -1;
         EmitGlobalLabel(VarDeclId[fd]);
-        Emit("PUSH\tBP");
-        Emit("MOV\tBP, SP");
+        EmitPush(R_BP);
+        EmitMovRR(R_BP, R_SP);
         ParseCompoundStatement();
         EmitLocalLabel(ReturnLabel);
         if (ReturnUsed)
-            Emit("MOV\tSP, BP");
-        Emit("POP\tBP");
-        Emit("RET");
+            EmitMovRR(R_SP, R_BP);
+        EmitPop(R_BP);
+        OutputBytes(0xC3, -1); // RET
     }
     PopScope();
 }
