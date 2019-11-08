@@ -525,14 +525,29 @@ void GetToken(void)
         SkipLine();
         GetToken();
         return;
-    } else if (ch >= '0' && ch <= '9') {
+    } else if (IsDigit(ch)) {
         TokenNumVal = 0;
-        for (;;) {
-            TokenNumVal = TokenNumVal*10 + ch - '0';
+        int base = 10;
+        if (ch == '0') {
+            base = 8;
             ch = GetChar();
-            if (!IsDigit(ch)) {
-                break;
+            if (ch == 'x' || ch == 'X') {
+                base = 16;
+                ch = GetChar();
             }
+        }
+        for (;;) {
+            if (IsDigit(ch)) {
+                ch -= '0';
+            } else if (ch >= 'A' && ch <= 'F') {
+                ch -= 'A'-10;
+            } else if (ch >= 'a' && ch <= 'f') {
+                ch -= 'a'-10;
+            }
+            if (ch < 0 || ch >= base)
+                break;
+            TokenNumVal = TokenNumVal*base + ch;
+            ch = GetChar();
         }
         UnGetChar(ch);
         TokenType = TOK_NUM;
@@ -1784,14 +1799,14 @@ char* malloc(int Size)
 
 void exit(int retval)
 {
-    retval = (retval & 255) | 19456; // 19456 = 0x4c00
+    retval = (retval & 0xff) | 0x4c00;
     DosCall(&retval, 0, 0, 0);
 }
 
 void putchar(int ch)
 {
     int ax;
-    ax = 512; // 512 = 0x0200
+    ax = 0x200;
     DosCall(&ax, 0, 0, ch);
 }
 
@@ -1799,9 +1814,9 @@ int open(const char* filename, int flags, ...)
 {
     int ax;
     if (flags)
-        ax = 15360; // 0x3c00 create or truncate file
+        ax = 0x3c00; // create or truncate file
     else
-        ax = 15616; // 0x3d00 open existing file
+        ax = 0x3d00; // open existing file
 
     if (DosCall(&ax, 0, 0, filename))
         return -1;
@@ -1811,14 +1826,14 @@ int open(const char* filename, int flags, ...)
 void close(int fd)
 {
     int ax;
-    ax = 15872; // 0x3b00
+    ax = 0x3e00;
     DosCall(&ax, fd, 0, 0);
 }
 
 int read(int fd, char* buf, int count)
 {
     int ax;
-    ax = 16128; // 0x3f00
+    ax = 0x3f00;
     if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
@@ -1827,7 +1842,7 @@ int read(int fd, char* buf, int count)
 int write(int fd, const char* buf, int count)
 {
     int ax;
-    ax = 16384; // 0x4000
+    ax = 0x4000;
     if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
@@ -1913,7 +1928,7 @@ int main(int argc, char** argv)
     }
 
     MakeOutputFilename(IdBuffer, argv[1]);
-    OutFile = open(IdBuffer, CREATE_FLAGS, 384); // 384=0600
+    OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
     if (OutFile < 0) {
         Fatal("Error creating output file");
     }
