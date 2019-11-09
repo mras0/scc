@@ -162,6 +162,8 @@ int ReturnUsed;
 int PendingPushAx;
 int IsDeadCode;
 
+int CodeAddress = 0x100;
+
 int IsDigit(int ch)
 {
     return ch >= '0' && ch <= '9';
@@ -237,6 +239,13 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
             if (s) *--buf = '-';
             else if (always) *--buf = '+';
             dest  = CopyStr(dest, buf);
+        } else if (ch == 'X') {
+            const char* HexD = "0123456789ABCDEF";
+            int n = va_arg(vl, int);
+            int i;
+            for (i = 3; i >= 0; --i) {
+                *dest++ = HexD[(n>>i*4)&0xf];
+            }
         } else {
             PutStr("Invalid format string");
             exit(1);
@@ -295,21 +304,6 @@ void RawEmit(const char* format, ...)
     va_end(vl);
 }
 
-void Emit(const char* format, ...)
-{
-    if (EmitChecks()) return;
-    va_list vl;
-    char* dest;
-    dest = LineBuf;
-    *dest++ = '\t';
-    va_start(vl, format);
-    dest = VSPrintf(dest, format, vl);
-    va_end(vl);
-    *dest++ = '\n';
-    *dest++ = 0;
-    OutputStr(LineBuf);
-}
-
 void EmitLocalLabel(int l)
 {
     RawEmit(".L%d:\n", l);
@@ -318,18 +312,33 @@ void EmitLocalLabel(int l)
 
 void EmitGlobalLabel(int id)
 {
+    Printf("%s\t%X\n", IdText(id), CodeAddress);
     RawEmit("_%s:\n", IdText(id));
     IsDeadCode = 0;
 }
 
-void EmitJmp(int l)
+void EmitGlobalRef(int id)
 {
-    PendingPushAx = 0;
-    if (IsDeadCode) {
-        return;
-    }
-    Emit("JMP\t.L%d", l);
-    IsDeadCode = 1;
+    RawEmit("\tDW _%s\n", IdText(id));
+    CodeAddress += 2;
+}
+
+void EmitGlobalRefRel(int id)
+{
+    RawEmit("\tDW _%s - ($+2)\n", IdText(id));
+    CodeAddress += 2;
+}
+
+void EmitLocalRef(int l)
+{
+    RawEmit("\tDW .L%d\n", l);
+    CodeAddress += 2;
+}
+
+void EmitLocalRefRel(int l)
+{
+    RawEmit("\tDW .L%d - ($+2)\n", l);
+    CodeAddress += 2;
 }
 
 enum {
@@ -382,8 +391,11 @@ enum {
     I_CBW           = 0x98,
     I_CWD           = 0x99,
     I_MOV_R_IMM16   = 0xb8,
+    I_RET           = 0xc3,
+    I_INT           = 0xcd,
     I_SHROT16_CL    = 0xd3,
     I_CALL          = 0xe8,
+    I_JMP           = 0xe9,
 };
 
 enum {
@@ -391,14 +403,27 @@ enum {
     SHROT_SAR = 7,
 };
 
+const char* GetJcc(int CC)
+{
+    if (CC == JZ)  return "JZ";
+    if (CC == JNZ) return "JNZ";
+    if (CC == JL)  return "JL";
+    if (CC == JNL) return "JNL";
+    if (CC == JNG) return "JNG";
+    if (CC == JG)  return "JG";
+    Fatal("Not implemented");
+}
+
 void OutputBytes(int first, ...)
 {
     if (EmitChecks()) return;
     va_list vl;
     va_start(vl, first);
     RawEmit("\tDB %d", first);
+    ++CodeAddress;
     while ((first = va_arg(vl, int)) != -1) {
         RawEmit(", %d", first);
+        ++CodeAddress;
     }
     RawEmit("\n");
     va_end(vl);
@@ -410,7 +435,7 @@ void EmitModrm(int Inst, int Loc, int Val)
         OutputBytes(Inst, MODRM_BP_DISP8, Val & 0xff, -1);
     } else if (Loc == VT_LOCGLOB) {
         OutputBytes(Inst, MODRM_DISP16, -1);
-        RawEmit("\tDW _%s\n", IdText(Val));
+        EmitGlobalRef(Val);
     } else {
         Check(!Loc);
         OutputBytes(Inst, 0x07, -1);
@@ -470,6 +495,23 @@ void EmitLeaStackVar(int r, int off)
 void EmitToBool(void)
 {
     OutputBytes(I_AND|1, MODRM_REG, -1); // AND AX, AX
+}
+
+void EmitJmp(int l)
+{
+    PendingPushAx = 0;
+    if (IsDeadCode) {
+        return;
+    }
+    OutputBytes(I_JMP, -1);
+    EmitLocalRefRel(l);
+    IsDeadCode = 1;
+}
+
+void EmitJcc(int cc, int l)
+{
+    RawEmit("\t%s SHORT .L%d\n", GetJcc(cc), l);
+    CodeAddress += 2;
 }
 
 int EmitChecks(void)
@@ -568,7 +610,8 @@ void GetStringLiteral(void)
     const int WasDeadCode = IsDeadCode;
     const int JL = LocalLabelCounter++;
     EmitJmp(JL);
-    RawEmit(".L%d:\tDB ", TokenNumVal);
+    EmitLocalLabel(TokenNumVal);
+    RawEmit("\tDB ");
     IsDeadCode = WasDeadCode;
 
     char ch;
@@ -594,6 +637,7 @@ void GetStringLiteral(void)
                 }
                 RawEmit("%c", ch);
             }
+            ++CodeAddress;
         }
         SkipWhitespace();
         ch = GetChar();
@@ -604,7 +648,8 @@ void GetStringLiteral(void)
     }
     if (open) RawEmit("', ");
     RawEmit("0\n");
-    RawEmit(".L%d:\n", JL);
+    ++CodeAddress;
+    EmitLocalLabel(JL);
 }
 
 void GetToken(void)
@@ -897,9 +942,9 @@ void LvalToRval(void)
 void DoIncDec(int Op)
 {
     if (Op == TOK_PLUSPLUS)
-        Op = 0x40; // INC AX
+        Op = I_INC;
     else
-        Op = 0x48; // DEC AX
+        Op = I_DEC;
 
     int A2;
     if (CurrentType == VT_CHAR || CurrentType == VT_INT || CurrentType == (VT_CHAR|VT_PTR1)) {
@@ -965,7 +1010,7 @@ void ParsePrimaryExpression(void)
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
         OutputBytes(I_MOV_R_IMM16, -1);
-        RawEmit("\tDW .L%d\n", TokenNumVal);
+        EmitLocalRef(TokenNumVal);
         CurrentType = VT_PTR1 | VT_CHAR;
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
@@ -1028,25 +1073,14 @@ void ParsePrimaryExpression(void)
     }
 }
 
-const char* GetJcc(int CC)
-{
-    if (CC == JZ)  return "JZ";
-    if (CC == JNZ) return "JNZ";
-    if (CC == JL)  return "JL";
-    if (CC == JNL) return "JNL";
-    if (CC == JNG) return "JNG";
-    if (CC == JG)  return "JG";
-    Fatal("Not implemented");
-}
-
 void GetVal(void)
 {
     if (CurrentType == VT_BOOL) {
         int Lab;
         Lab = LocalLabelCounter++;
         EmitMovRImm(R_AX, 1);
-        Emit("%s\t.L%d", GetJcc(CurrentVal), Lab);
-        OutputBytes(0x48, -1); // DEC AX
+        EmitJcc(CurrentVal, Lab);
+        OutputBytes(I_DEC, -1);
         EmitLocalLabel(Lab);
         CurrentType = VT_INT;
         return;
@@ -1098,7 +1132,7 @@ void ParsePostfixExpression(void)
             }
             Expect(TOK_RPAREN);
             OutputBytes(I_CALL, -1);
-            RawEmit("\tDW\t_%s - ($ + 2)\n", IdText(FuncId));
+            EmitGlobalRefRel(FuncId);
             if (NumArgs) {
                 EmitAdjSp(MaxArgs*2);
                 LocalOffset += MaxArgs*2;
@@ -1385,22 +1419,20 @@ void ParseExpr1(int OuterPrecedence)
         LhsVal = CurrentVal;
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
-            const char* JText;
             Temp = LocalLabelCounter++;
             LEnd = LocalLabelCounter++;
             if (CurrentType == VT_BOOL) {
                 if (Op != TOK_ANDAND)
                     CurrentVal ^= 1;
-                Emit("%s\t.L%d", GetJcc(CurrentVal), Temp);
+                EmitJcc(CurrentVal, Temp);
                 EmitMovRImm(R_AX, Op != TOK_ANDAND);
             } else {
                 Check(CurrentType == VT_INT);
                 EmitToBool();
                 if (Op == TOK_ANDAND)
-                    JText = "JNZ";
+                    EmitJcc(JNZ, Temp);
                 else
-                    JText = "JZ";
-                Emit("%s\t.L%d", JText, Temp);
+                    EmitJcc(JZ, Temp);
             }
             EmitJmp(LEnd);
             EmitLocalLabel(Temp);
@@ -1480,7 +1512,7 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
                 if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
-                    Emit("ADD\tAX, AX");
+                    OutputBytes(I_ADD|1, MODRM_REG, -1);
                 }
                 Temp = OpCommutes(Op);
                 if (LhsLoc == VT_LOCLIT) {
@@ -1502,7 +1534,7 @@ void ParseExpr1(int OuterPrecedence)
             }
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
                 if (LhsType != (VT_CHAR|VT_PTR1))
-                    Emit("SAR\tAX, 1");
+                    OutputBytes(0xD1, MODRM_REG | SHROT_SAR<<3, -1); // SAR AX, 1
                 CurrentType = VT_INT;
             }
         }
@@ -1597,13 +1629,13 @@ void DoCond(int TrueLabel, int FalseLabel)
     ParseExpr();
     LvalToRval();
     if (CurrentType == VT_BOOL) {
-        Emit("%s\t.L%d", GetJcc(CurrentVal), TrueLabel);
+        EmitJcc(CurrentVal, TrueLabel);
     } else {
         // Could optimize for constant conditions here
         GetVal();
         Check(CurrentType == VT_INT);
         EmitToBool();
-        Emit("JNZ\t.L%d", TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
+        EmitJcc(JNZ, TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
     }
     EmitJmp(FalseLabel);
 }
@@ -1626,7 +1658,7 @@ void ParseStatement(void)
             LvalToRval();
             GetVal();
             if (CurrentType == VT_CHAR) {
-                Emit("CBW");
+                OutputBytes(I_CBW, -1);
             }
         }
         LocalOffset -= 2;
@@ -1765,7 +1797,7 @@ void ParseCompoundStatement(void)
 void EmitGlobal(int VarDeclIndex, int InitVal)
 {
     EmitGlobalLabel(VarDeclId[VarDeclIndex]);
-    RawEmit("\tDW\t%d\n", InitVal);
+    OutputBytes(InitVal & 0xff, (InitVal>>8) & 0xff, -1);
 }
 
 void ParseExternalDefition(void)
@@ -1842,7 +1874,7 @@ void ParseExternalDefition(void)
         if (ReturnUsed)
             EmitMovRR(R_SP, R_BP);
         EmitPop(R_BP);
-        OutputBytes(0xC3, -1); // RET
+        OutputBytes(I_RET, -1); // RET
     }
     PopScope();
 }
@@ -1869,14 +1901,14 @@ char* malloc(int Size)
 void exit(int retval)
 {
     retval = (retval & 0xff) | 0x4c00;
-    DosCall(&retval, 0, 0, 0);
+    _DosCall(&retval, 0, 0, 0);
 }
 
 void putchar(int ch)
 {
     int ax;
     ax = 0x200;
-    DosCall(&ax, 0, 0, ch);
+    _DosCall(&ax, 0, 0, ch);
 }
 
 int open(const char* filename, int flags, ...)
@@ -1887,7 +1919,7 @@ int open(const char* filename, int flags, ...)
     else
         ax = 0x3d00; // open existing file
 
-    if (DosCall(&ax, 0, 0, filename))
+    if (_DosCall(&ax, 0, 0, filename))
         return -1;
     return ax;
 }
@@ -1896,14 +1928,14 @@ void close(int fd)
 {
     int ax;
     ax = 0x3e00;
-    DosCall(&ax, fd, 0, 0);
+    _DosCall(&ax, fd, 0, 0);
 }
 
 int read(int fd, char* buf, int count)
 {
     int ax;
     ax = 0x3f00;
-    if (DosCall(&ax, fd, count, buf))
+    if (_DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
 }
@@ -1912,7 +1944,7 @@ int write(int fd, const char* buf, int count)
 {
     int ax;
     ax = 0x4000;
-    if (DosCall(&ax, fd, count, buf))
+    if (_DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
 }
@@ -2009,34 +2041,39 @@ int main(int argc, char** argv)
     "\tcpu 8086\n"
     "\torg 0x100\n"
     "Start:\n"
-    "\tXOR\tBP, BP\n"
-    "\tMOV\tWORD [_HeapStart], ProgramEnd\n"
-    "\tMOV\tAX, 0x81\n"
-    "\tPUSH\tAX\n"
-    "\tMOV\tAL, [0x80]\n"
-    "\tPUSH\tAX\n"
-    "\tPUSH\tAX\n"
-    "\tJMP\t_CallMain\n"
-    "\n"
-    "_DosCall:\n"
-    "\tPUSH\tBP\n"
-    "\tMOV\tBP, SP\n"
-    "\tMOV\tBX, [BP+4]\n"
-    "\tMOV\tAX, [BX]\n"
-    "\tMOV\tBX, [BP+6]\n"
-    "\tMOV\tCX, [BP+8]\n"
-    "\tMOV\tDX, [BP+10]\n"
-    "\tINT\t0x21\n"
-    "\tMOV\tBX, [BP+4]\n"
-    "\tMOV\t[BX], AX\n"
-    "\tMOV\tAX, 0\n"
-    "\tSBB\tAX, AX\n"
-    "\tPOP\tBP\n"
-    "\tRET\n"
-    "\n"
     );
+    OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
+    // MOV WORD [_HeapStart], ProgramEnd
+    OutputBytes(0xC7, 0x06, -1);
+    OutputStr("\tDW _HeapStart\n"); CodeAddress += 2;
+    OutputStr("\tDW ProgramEnd\n"); CodeAddress += 2;
+    EmitMovRImm(R_AX, 0x81);
+    EmitPush(R_AX);
+    OutputBytes(0xA0, 0x80, 0x00, -1); // MOV AL, [0x80]
+    EmitPush(R_AX);
+    // CALL _CallMain
+    OutputBytes(I_CALL, -1);
+    OutputStr("\tDW _CallMain - ($+2)\n"); CodeAddress += 2;
+    OutputStr("__DosCall:\n");
+    EmitPush(R_BP);
+    EmitMovRR(R_BP, R_SP);
+    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
+    OutputBytes(I_MOV_RM_R|1, MODRM_BX, -1);
+    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 6, -1);
+    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_CX<<3, 8, -1);
+    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_DX<<3, 10, -1);
+    OutputBytes(I_INT, 0x21, -1);
+    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
+    OutputBytes(I_MOV_R_RM|1, MODRM_BX, -1);
+    EmitMovRImm(R_AX, 0);
+    OutputBytes(I_SBB, MODRM_REG, -1);
+    EmitPop(R_BP);
+    OutputBytes(I_RET, -1);
+    OutputStr("\n");
+    Printf("Address after prelude: %X\n", CodeAddress);
 
     PushScope();
+
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
@@ -2048,6 +2085,8 @@ int main(int argc, char** argv)
 
     close(InFile);
     close(OutFile);
+
+    Printf("Last address: %X\n", CodeAddress);
 
     return 0;
 }
