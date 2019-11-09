@@ -13,6 +13,7 @@
 #define read _read
 #define write _write
 #else
+#define O_BINARY 0
 #include <unistd.h>
 #endif
 
@@ -121,9 +122,10 @@ enum {
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 300,
-    ID_MAX = 400,
+    ID_MAX = 450,
     IDBUFFER_MAX = 4096,
     LABEL_MAX = 300,
+    OUTPUT_MAX = 0x6000,
 };
 
 enum {
@@ -220,7 +222,13 @@ enum {
     TOK_ID
 };
 
-int OutFile;
+enum {
+    CODESTART = 0x100,
+};
+
+char* Output;
+int CodeAddress = CODESTART;
+
 char* LineBuf;
 char* TempBuf;
 
@@ -244,6 +252,7 @@ int IdCount;
 int* VarDeclId;
 int* VarDeclType;
 int* VarDeclOffset;
+int* VarDeclRef; // Actually only needed for globals
 
 int* Scopes; // VarDecl index
 int ScopesCount;
@@ -264,8 +273,6 @@ int CurrentVal;
 int ReturnUsed;
 int PendingPushAx;
 int IsDeadCode;
-
-int CodeAddress = 0x100;
 
 int IsDigit(int ch)
 {
@@ -295,11 +302,6 @@ int StrLen(const char* s)
     while (*s++)
         ++l;
     return l;
-}
-
-void OutputStr(const char* buf)
-{
-    write(OutFile, buf, StrLen(buf));
 }
 
 char* VSPrintf(char* dest, const char* format, va_list vl)
@@ -397,16 +399,6 @@ const char* IdText(int id)
     return IdBuffer + IdOffset[id];
 }
 
-void RawEmit(const char* format, ...)
-{
-    Check(!PendingPushAx);
-    va_list vl;
-    va_start(vl, format);
-    VSPrintf(LineBuf, format, vl);
-    OutputStr(LineBuf);
-    va_end(vl);
-}
-
 enum {
     JO , //  0x0
     JNO, //  0x1
@@ -469,31 +461,18 @@ enum {
     SHROT_SAR = 7,
 };
 
-const char* GetJcc(int CC)
-{
-    if (CC == JZ)  return "JZ";
-    if (CC == JNZ) return "JNZ";
-    if (CC == JL)  return "JL";
-    if (CC == JNL) return "JNL";
-    if (CC == JNG) return "JNG";
-    if (CC == JG)  return "JG";
-    Fatal("Not implemented");
-}
-
 int EmitChecks(void);
 
 void OutputBytes(int first, ...)
 {
     if (EmitChecks()) return;
+    char* o = Output - CODESTART;
     va_list vl;
     va_start(vl, first);
-    RawEmit("\tDB %d", first);
-    ++CodeAddress;
+    o[CodeAddress++] = first;
     while ((first = va_arg(vl, int)) != -1) {
-        RawEmit(", %d", first);
-        ++CodeAddress;
+        o[CodeAddress++] = first;
     }
-    RawEmit("\n");
     va_end(vl);
 }
 
@@ -519,13 +498,32 @@ void ResetLabels(void)
     LocalLabelCounter = 0;
 }
 
+void DoFixups(int r)
+{
+    int f;
+    char* c;
+    while (r) {
+        f  = CodeAddress - r - 2;
+        c = Output + r - CODESTART;
+        r = (c[0]&0xff)|(c[1]&0xff)<<8;
+        c[0] = f;
+        c[1] = f>>8;
+    }
+}
+
+void AddFixup(int* f)
+{
+    OutputWord(*f);
+    *f = CodeAddress - 2;
+}
+
 void EmitLocalLabel(int l)
 {
-    RawEmit(".L%d:\n", l);
     Check(l < LocalLabelCounter && !LabelAddr[l]);
     LabelAddr[l] = CodeAddress;
     IsDeadCode = 0;
-    Check(!LabelRef[l]); // TODO
+    DoFixups(LabelRef[l]);
+    LabelRef[l] = 0;
 }
 
 void EmitLocalRef(int l)
@@ -541,17 +539,16 @@ void EmitLocalRefRel(int l)
     if (Addr) {
         OutputWord(Addr - CodeAddress - 2);
     } else {
-        RawEmit("\tDW .L%d - ($+2)\n", l);
-        CodeAddress += 2;
+        AddFixup(LabelRef + l);
     }
 }
 
 void EmitGlobalLabel(int VarDeclIndex)
 {
-    RawEmit("_%s:\n", IdText(VarDeclId[VarDeclIndex]));
     Check(!VarDeclOffset[VarDeclIndex]);
     VarDeclOffset[VarDeclIndex] = CodeAddress;
     IsDeadCode = 0;
+    DoFixups(VarDeclRef[VarDeclIndex]);
 }
 
 void EmitGlobalRef(int vd)
@@ -567,8 +564,7 @@ void EmitGlobalRefRel(int vd)
     if (Addr) {
         OutputWord(Addr - CodeAddress - 2);
     } else {
-        RawEmit("\tDW _%s - ($+2)\n", IdText(VarDeclId[vd]));
-        CodeAddress += 2;
+        AddFixup(VarDeclRef + vd);
     }
 }
 
@@ -653,8 +649,9 @@ void EmitJmp(int l)
 
 void EmitJcc(int cc, int l)
 {
-    RawEmit("\t%s SHORT .L%d\n", GetJcc(cc), l);
-    CodeAddress += 2;
+    OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
+    OutputBytes(I_JMP, -1);
+    EmitLocalRefRel(l);
 }
 
 void EmitCall(int Func)
@@ -682,8 +679,9 @@ int AddVarDecl(int Type, int Id)
     Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
     vd = ++Scopes[ScopesCount-1];
     VarDeclType[vd]   = Type;
-    VarDeclOffset[vd] = 0;
     VarDeclId[vd]     = Id;
+    VarDeclOffset[vd] = 0;
+    VarDeclRef[vd]    = 0;
     return vd;
 }
 
@@ -801,11 +799,9 @@ void GetStringLiteral(void)
     const int JL = MakeLabel();
     EmitJmp(JL);
     EmitLocalLabel(TokenNumVal);
-    RawEmit("\tDB ");
     IsDeadCode = WasDeadCode;
 
     char ch;
-    int open = 0;
     for (;;) {
         while ((ch = GetChar()) != '"') {
             if (ch == '\\') {
@@ -814,20 +810,7 @@ void GetStringLiteral(void)
             if (!ch) {
                 Fatal("Unterminated string literal");
             }
-            if (ch < ' ' || ch == '\'') {
-                if (open) {
-                    RawEmit("', ");
-                    open = 0;
-                }
-                RawEmit("%d, ", ch);
-            } else {
-                if (!open) {
-                    open = 1;
-                    RawEmit("'");
-                }
-                RawEmit("%c", ch);
-            }
-            ++CodeAddress;
+            OutputBytes(ch, -1);
         }
         SkipWhitespace();
         ch = GetChar();
@@ -836,9 +819,7 @@ void GetStringLiteral(void)
             break;
         }
     }
-    if (open) RawEmit("', ");
-    RawEmit("0\n");
-    ++CodeAddress;
+    OutputBytes(0, -1);
     EmitLocalLabel(JL);
 }
 
@@ -1770,6 +1751,7 @@ int ParseDecl(void)
     return AddVarDecl(Type, Id);
 }
 
+// TODO: Optimize away FalseLabel use?
 void DoCond(int TrueLabel, int FalseLabel)
 {
     ParseExpr();
@@ -1781,7 +1763,7 @@ void DoCond(int TrueLabel, int FalseLabel)
         GetVal();
         Check(CurrentType == VT_INT);
         EmitToBool();
-        EmitJcc(JNZ, TrueLabel); // TODO: Need far jump? (--> JZ $+5 \ JMP FalseLabel \ JMP TrueLabel )
+        EmitJcc(JNZ, TrueLabel);
     }
     EmitJmp(FalseLabel);
 }
@@ -2037,7 +2019,7 @@ void ParseExternalDefition(void)
     PopScope();
 }
 
-#define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC
+#define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC | O_BINARY
 
 void MakeOutputFilename(char* dest, const char* n)
 {
@@ -2049,7 +2031,7 @@ void MakeOutputFilename(char* dest, const char* n)
         *dest++ = *n++;
     }
     if (!LastDot) LastDot = dest;
-    *CopyStr(LastDot, ".asm") = 0;
+    *CopyStr(LastDot, ".com") = 0;
 }
 
 int AddId(const char* s)
@@ -2082,6 +2064,7 @@ void AddBuiltins(const char* s)
 
 int main(int argc, char** argv)
 {
+    Output        = malloc(OUTPUT_MAX);
     LineBuf       = malloc(LINEBUF_MAX);
     TempBuf       = malloc(TMPBUF_MAX);
     InBuf         = malloc(INBUF_MAX);
@@ -2090,6 +2073,7 @@ int main(int argc, char** argv)
     VarDeclId     = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclType   = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclRef    = malloc(sizeof(int)*VARDECL_MAX);
     Scopes        = malloc(sizeof(int)*SCOPE_MAX);
     LabelAddr     = malloc(sizeof(int)*LABEL_MAX);
     LabelRef      = malloc(sizeof(int)*LABEL_MAX);
@@ -2104,22 +2088,11 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    MakeOutputFilename(IdBuffer, argv[1]);
-    OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
-    if (OutFile < 0) {
-        Fatal("Error creating output file");
-    }
-
     AddBuiltins("break char const continue else enum for if int return sizeof void while va_list va_start va_end va_arg");
 
     PushScope();
 
     // Prelude
-    OutputStr(
-    "\tcpu 8086\n"
-    "\torg 0x100\n"
-    "Start:\n"
-    );
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
     EmitMovRImm(R_AX, 0x81);
     EmitPush(R_AX);
@@ -2138,7 +2111,7 @@ int main(int argc, char** argv)
     OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
     OutputBytes(I_MOV_R_RM|1, MODRM_BX, -1);
     EmitMovRImm(R_AX, 0);
-    OutputBytes(I_SBB, MODRM_REG, -1);
+    OutputBytes(I_SBB|1, MODRM_REG, -1);
     EmitPop(R_BP);
     OutputBytes(I_RET, -1);
 
@@ -2158,21 +2131,27 @@ int main(int argc, char** argv)
             OutputBytes(I_RET, -1);
         }
     }
-    PopScope();
 
+    PopScope();
     close(InFile);
-    close(OutFile);
+
 
     int i;
     for (i = 0 ; i < Scopes[0]; ++i) {
         const int Loc = VarDeclType[i] & VT_LOCMASK;
         if (Loc == VT_LOCGLOB && !VarDeclOffset[i]) {
             Printf("%s is undefined (Type: %X)\n", IdText(VarDeclId[i]), VarDeclType[i]);
-            Fatal("Undefined");
+            Fatal("Undefined function");
         }
-        if (Loc == VT_LOCGLOB)
-            Printf("%X %s\n", VarDeclOffset[i], IdText(VarDeclId[i]));
     }
+
+    MakeOutputFilename(IdBuffer, argv[1]);
+    const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
+    if (OutFile < 0) {
+        Fatal("Error creating output file");
+    }
+    write(OutFile, Output, CodeAddress - CODESTART);
+    close(OutFile);
 
     return 0;
 }
