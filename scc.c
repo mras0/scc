@@ -123,6 +123,7 @@ enum {
     VARDECL_MAX = 300,
     ID_MAX = 400,
     IDBUFFER_MAX = 4096,
+    LABEL_MAX = 300,
 };
 
 enum {
@@ -247,8 +248,11 @@ int* VarDeclOffset;
 int* Scopes; // VarDecl index
 int ScopesCount;
 
-int LocalOffset;
 int LocalLabelCounter;
+int* LabelAddr;
+int* LabelRef;
+
+int LocalOffset;
 int ReturnLabel;
 int BCStackLevel; // Break/Continue stack level (== LocalOffset of block)
 int BreakLabel;
@@ -493,10 +497,53 @@ void OutputBytes(int first, ...)
     va_end(vl);
 }
 
+void OutputWord(int w)
+{
+    OutputBytes(w&0xff, (w>>8)&0xff, -1);
+}
+
+int MakeLabel(void)
+{
+    Check(LocalLabelCounter < LABEL_MAX);
+    const int l = LocalLabelCounter++;
+    LabelAddr[l] = 0;
+    LabelRef[l] = 0;
+    return l;
+}
+
+void ResetLabels(void)
+{
+    int l;
+    for (l = 0; l < LocalLabelCounter; ++l)
+        Check(LabelRef[l] == 0);
+    LocalLabelCounter = 0;
+}
+
 void EmitLocalLabel(int l)
 {
     RawEmit(".L%d:\n", l);
+    Check(l < LocalLabelCounter && !LabelAddr[l]);
+    LabelAddr[l] = CodeAddress;
     IsDeadCode = 0;
+    Check(!LabelRef[l]); // TODO
+}
+
+void EmitLocalRef(int l)
+{
+    int Addr = LabelAddr[l];
+    Check(Addr);
+    OutputWord(Addr);
+}
+
+void EmitLocalRefRel(int l)
+{
+    int Addr = LabelAddr[l];
+    if (Addr) {
+        OutputWord(Addr - CodeAddress - 2);
+    } else {
+        RawEmit("\tDW .L%d - ($+2)\n", l);
+        CodeAddress += 2;
+    }
 }
 
 void EmitGlobalLabel(int VarDeclIndex)
@@ -511,31 +558,18 @@ void EmitGlobalRef(int vd)
 {
     int Addr = VarDeclOffset[vd];
     Check(Addr);
-    OutputBytes(Addr&0xff, (Addr>>8)&0xff, -1);
+    OutputWord(Addr);
 }
 
 void EmitGlobalRefRel(int vd)
 {
     int Addr = VarDeclOffset[vd];
     if (Addr) {
-        Addr -= CodeAddress + 2;
-        OutputBytes(Addr&0xff, (Addr>>8)&0xff, -1);
+        OutputWord(Addr - CodeAddress - 2);
     } else {
         RawEmit("\tDW _%s - ($+2)\n", IdText(VarDeclId[vd]));
         CodeAddress += 2;
     }
-}
-
-void EmitLocalRef(int l)
-{
-    RawEmit("\tDW .L%d\n", l);
-    CodeAddress += 2;
-}
-
-void EmitLocalRefRel(int l)
-{
-    RawEmit("\tDW .L%d - ($+2)\n", l);
-    CodeAddress += 2;
 }
 
 void EmitModrm(int Inst, int Loc, int Val)
@@ -762,9 +796,9 @@ char Unescape(void)
 void GetStringLiteral(void)
 {
 
-    TokenNumVal = LocalLabelCounter++;
+    TokenNumVal = MakeLabel();
     const int WasDeadCode = IsDeadCode;
-    const int JL = LocalLabelCounter++;
+    const int JL = MakeLabel();
     EmitJmp(JL);
     EmitLocalLabel(TokenNumVal);
     RawEmit("\tDB ");
@@ -1221,8 +1255,7 @@ void ParsePrimaryExpression(void)
 void GetVal(void)
 {
     if (CurrentType == VT_BOOL) {
-        int Lab;
-        Lab = LocalLabelCounter++;
+        const int Lab = MakeLabel();
         EmitMovRImm(R_AX, 1);
         EmitJcc(CurrentVal, Lab);
         OutputBytes(I_DEC, -1);
@@ -1380,7 +1413,7 @@ void ParseUnaryExpression(void)
                 CurrentVal = !CurrentVal;
             } else {
                 int Lab;
-                Lab = LocalLabelCounter++;
+                Lab = MakeLabel();
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
                 CurrentType = VT_BOOL;
@@ -1563,8 +1596,8 @@ void ParseExpr1(int OuterPrecedence)
         LhsVal = CurrentVal;
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
-            Temp = LocalLabelCounter++;
-            LEnd = LocalLabelCounter++;
+            Temp = MakeLabel();
+            LEnd = MakeLabel();
             if (CurrentType == VT_BOOL) {
                 if (Op != TOK_ANDAND)
                     CurrentVal ^= 1;
@@ -1781,9 +1814,9 @@ void ParseStatement(void)
         EmitPush(R_AX);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
-        const int CondLabel = LocalLabelCounter++;
-        const int BodyLabel = LocalLabelCounter++;
-        const int EndLabel  = LocalLabelCounter++;
+        const int CondLabel = MakeLabel();
+        const int BodyLabel = MakeLabel();
+        const int EndLabel  = MakeLabel();
         int IterLabel       = CondLabel;
         
         Expect(TOK_LPAREN);
@@ -1805,7 +1838,7 @@ void ParseStatement(void)
 
         // Iter
         if (TokenType != TOK_RPAREN) {
-            IterLabel  = LocalLabelCounter++;
+            IterLabel  = MakeLabel();
             EmitLocalLabel(IterLabel);
             ParseExpr();
             EmitJmp(CondLabel);
@@ -1822,9 +1855,9 @@ void ParseStatement(void)
         EmitJmp(IterLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_IF)) {
-        const int IfLabel   = LocalLabelCounter++;
-        const int ElseLabel = LocalLabelCounter++;
-        const int EndLabel  = LocalLabelCounter++;
+        const int IfLabel   = MakeLabel();
+        const int ElseLabel = MakeLabel();
+        const int EndLabel  = MakeLabel();
 
         Accept(TOK_LPAREN);
         DoCond(IfLabel, ElseLabel);
@@ -1848,9 +1881,9 @@ void ParseStatement(void)
         EmitJmp(ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
-        const int StartLabel = LocalLabelCounter++;
-        const int BodyLabel  = LocalLabelCounter++;
-        const int EndLabel   = LocalLabelCounter++;
+        const int StartLabel = MakeLabel();
+        const int BodyLabel  = MakeLabel();
+        const int EndLabel   = MakeLabel();
         EmitLocalLabel(StartLabel);
         Expect(TOK_LPAREN);
         DoCond(BodyLabel, EndLabel);
@@ -1911,7 +1944,7 @@ void ParseCompoundStatement(void)
 void EmitGlobal(int VarDeclIndex, int InitVal)
 {
     EmitGlobalLabel(VarDeclIndex);
-    OutputBytes(InitVal & 0xff, (InitVal>>8) & 0xff, -1);
+    OutputWord(InitVal);
 }
 
 void ParseExternalDefition(void)
@@ -1985,10 +2018,10 @@ void ParseExternalDefition(void)
     }
     Expect(TOK_RPAREN);
     if (!Accept(TOK_SEMICOLON)) {
+        Check(!LocalLabelCounter);
         LocalOffset = 0;
         ReturnUsed = 0;
-        LocalLabelCounter = 0;
-        ReturnLabel = LocalLabelCounter++;
+        ReturnLabel = MakeLabel();
         BreakLabel = ContinueLabel = -1;
         EmitGlobalLabel(fd);
         EmitPush(R_BP);
@@ -1999,6 +2032,7 @@ void ParseExternalDefition(void)
             EmitMovRR(R_SP, R_BP);
         EmitPop(R_BP);
         OutputBytes(I_RET, -1); // RET
+        ResetLabels();
     }
     PopScope();
 }
@@ -2057,6 +2091,8 @@ int main(int argc, char** argv)
     VarDeclType   = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
     Scopes        = malloc(sizeof(int)*SCOPE_MAX);
+    LabelAddr     = malloc(sizeof(int)*LABEL_MAX);
+    LabelRef      = malloc(sizeof(int)*LABEL_MAX);
 
     if (argc < 2) {
         Printf("Usage: %s input-file\n", argv[0]);
