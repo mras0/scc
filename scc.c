@@ -16,6 +16,105 @@
 #include <unistd.h>
 #endif
 
+#if 0
+// Only used when self-compiling
+// Small "standard library"
+
+enum { CREATE_FLAGS = 1 }; // Ugly hack
+
+char* HeapStart;
+
+char* _brk(void);
+int main(int argc, char** argv);
+
+char* malloc(int Size)
+{
+    char* ret;
+    ret = HeapStart;
+    HeapStart += Size;
+    return ret;
+}
+
+void exit(int retval)
+{
+    retval = (retval & 0xff) | 0x4c00;
+    _DosCall(&retval, 0, 0, 0);
+}
+
+void putchar(int ch)
+{
+    int ax;
+    ax = 0x200;
+    _DosCall(&ax, 0, 0, ch);
+}
+
+int open(const char* filename, int flags, ...)
+{
+    int ax;
+    if (flags)
+        ax = 0x3c00; // create or truncate file
+    else
+        ax = 0x3d00; // open existing file
+
+    if (_DosCall(&ax, 0, 0, filename))
+        return -1;
+    return ax;
+}
+
+void close(int fd)
+{
+    int ax;
+    ax = 0x3e00;
+    _DosCall(&ax, fd, 0, 0);
+}
+
+int read(int fd, char* buf, int count)
+{
+    int ax;
+    ax = 0x3f00;
+    if (_DosCall(&ax, fd, count, buf))
+        return 0;
+    return ax;
+}
+
+int write(int fd, const char* buf, int count)
+{
+    int ax;
+    ax = 0x4000;
+    if (_DosCall(&ax, fd, count, buf))
+        return 0;
+    return ax;
+}
+
+void _start(int Len, char* CmdLine)
+{
+    char **Args;
+    int NumArgs;
+    CmdLine[Len] = 0;
+
+    HeapStart = _brk();
+    Args = malloc(sizeof(char*)*10);
+    Args[0] = "scc";
+    NumArgs = 1;
+
+    while (*CmdLine) {
+        while (*CmdLine && *CmdLine <= ' ')
+            ++CmdLine;
+        if (!*CmdLine)
+            break;
+        Args[NumArgs++] = CmdLine;
+        while (*CmdLine && *CmdLine > ' ')
+            ++CmdLine;
+        if (!*CmdLine)
+            break;
+        *CmdLine++ = 0;
+    }
+    Args[NumArgs] = 0;
+    exit(main(NumArgs, Args));
+}
+#endif
+
+
 enum {
     LINEBUF_MAX = 100,
     TMPBUF_MAX = 32,
@@ -304,43 +403,6 @@ void RawEmit(const char* format, ...)
     va_end(vl);
 }
 
-void EmitLocalLabel(int l)
-{
-    RawEmit(".L%d:\n", l);
-    IsDeadCode = 0;
-}
-
-void EmitGlobalLabel(int id)
-{
-    Printf("%s\t%X\n", IdText(id), CodeAddress);
-    RawEmit("_%s:\n", IdText(id));
-    IsDeadCode = 0;
-}
-
-void EmitGlobalRef(int id)
-{
-    RawEmit("\tDW _%s\n", IdText(id));
-    CodeAddress += 2;
-}
-
-void EmitGlobalRefRel(int id)
-{
-    RawEmit("\tDW _%s - ($+2)\n", IdText(id));
-    CodeAddress += 2;
-}
-
-void EmitLocalRef(int l)
-{
-    RawEmit("\tDW .L%d\n", l);
-    CodeAddress += 2;
-}
-
-void EmitLocalRefRel(int l)
-{
-    RawEmit("\tDW .L%d - ($+2)\n", l);
-    CodeAddress += 2;
-}
-
 enum {
     JO , //  0x0
     JNO, //  0x1
@@ -414,6 +476,8 @@ const char* GetJcc(int CC)
     Fatal("Not implemented");
 }
 
+int EmitChecks(void);
+
 void OutputBytes(int first, ...)
 {
     if (EmitChecks()) return;
@@ -427,6 +491,51 @@ void OutputBytes(int first, ...)
     }
     RawEmit("\n");
     va_end(vl);
+}
+
+void EmitLocalLabel(int l)
+{
+    RawEmit(".L%d:\n", l);
+    IsDeadCode = 0;
+}
+
+void EmitGlobalLabel(int VarDeclIndex)
+{
+    RawEmit("_%s:\n", IdText(VarDeclId[VarDeclIndex]));
+    Check(!VarDeclOffset[VarDeclIndex]);
+    VarDeclOffset[VarDeclIndex] = CodeAddress;
+    IsDeadCode = 0;
+}
+
+void EmitGlobalRef(int vd)
+{
+    int Addr = VarDeclOffset[vd];
+    Check(Addr);
+    OutputBytes(Addr&0xff, (Addr>>8)&0xff, -1);
+}
+
+void EmitGlobalRefRel(int vd)
+{
+    int Addr = VarDeclOffset[vd];
+    if (Addr) {
+        Addr -= CodeAddress + 2;
+        OutputBytes(Addr&0xff, (Addr>>8)&0xff, -1);
+    } else {
+        RawEmit("\tDW _%s - ($+2)\n", IdText(VarDeclId[vd]));
+        CodeAddress += 2;
+    }
+}
+
+void EmitLocalRef(int l)
+{
+    RawEmit("\tDW .L%d\n", l);
+    CodeAddress += 2;
+}
+
+void EmitLocalRefRel(int l)
+{
+    RawEmit("\tDW .L%d - ($+2)\n", l);
+    CodeAddress += 2;
 }
 
 void EmitModrm(int Inst, int Loc, int Val)
@@ -514,6 +623,12 @@ void EmitJcc(int cc, int l)
     CodeAddress += 2;
 }
 
+void EmitCall(int Func)
+{
+    OutputBytes(I_CALL, -1);
+    EmitGlobalRefRel(Func);
+}
+
 int EmitChecks(void)
 {
     if (IsDeadCode) {
@@ -524,6 +639,47 @@ int EmitChecks(void)
         EmitPush(R_AX);
     }
     return 0;
+}
+
+int AddVarDecl(int Type, int Id)
+{
+    int vd;
+    Check(ScopesCount);
+    Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
+    vd = ++Scopes[ScopesCount-1];
+    VarDeclType[vd]   = Type;
+    VarDeclOffset[vd] = 0;
+    VarDeclId[vd]     = Id;
+    return vd;
+}
+
+void PushScope(void)
+{
+    int End;
+    Check(ScopesCount < SCOPE_MAX);
+    if (ScopesCount)
+        End = Scopes[ScopesCount-1];
+    else
+        End = -1;
+    Scopes[ScopesCount++] = End;
+}
+
+void PopScope(void)
+{
+    Check(ScopesCount);
+    --ScopesCount;
+}
+
+int Lookup(int id)
+{
+    int vd;
+    Check(ScopesCount);
+    for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
+        if (VarDeclId[vd] == id) {
+            break;
+        }
+    }
+    return vd;
 }
 
 char GetChar(void)
@@ -652,6 +808,17 @@ void GetStringLiteral(void)
     EmitLocalLabel(JL);
 }
 
+int GetStrId(const char* Str)
+{
+    int id = 0;
+    for (; id < IdCount; ++id) {
+        if (StrEqual(IdText(id), Str)) {
+            return id;
+        }
+    }
+    return -1;
+}
+
 void GetToken(void)
 {
     char ch;
@@ -695,7 +862,6 @@ void GetToken(void)
         UnGetChar(ch);
         TokenType = TOK_NUM;
     } else if (IsAlpha(ch) || ch == '_') {
-        int id;
         char* pc;
         char* start;
         start = pc = &IdBuffer[IdBufferIndex];
@@ -709,13 +875,7 @@ void GetToken(void)
         }
         *pc++ = 0;
         UnGetChar(ch);
-        TokenType = -1;
-        for (id = 0; id < IdCount; ++id) {
-            if (StrEqual(IdText(id), start)) {
-                TokenType = id;
-                break;
-            }
-        }
+        TokenType = GetStrId(start);
         if (TokenType < 0) {
             Check(IdCount < ID_MAX);
             TokenType = IdCount++;
@@ -984,18 +1144,6 @@ void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
 int ParseDeclSpecs(void);
 
-int Lookup(int id)
-{
-    int vd;
-    Check(ScopesCount);
-    for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
-        if (VarDeclId[vd] == id) {
-            break;
-        }
-    }
-    return vd;
-}
-
 void ParsePrimaryExpression(void)
 {
     int id;
@@ -1020,7 +1168,7 @@ void ParsePrimaryExpression(void)
         Expect(TOK_LPAREN);
         id = ExpectId();
         vd = Lookup(id);
-        if (vd < 0 || VarDeclType[vd] != (VT_CHAR|VT_PTR1)) {
+        if (vd < 0 || VarDeclType[vd] != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
             Fatal("Invalid va_list");
         }
         const int offset = VarDeclOffset[vd];
@@ -1028,7 +1176,7 @@ void ParsePrimaryExpression(void)
             Expect(TOK_COMMA);
             id = ExpectId();
             vd = Lookup(id);
-            if (vd < 0 || !VarDeclOffset[vd]) {
+            if (vd < 0 || (VarDeclType[vd] & VT_LOCMASK) != VT_LOCOFF) {
                 Fatal("Invalid argument to va_start");
             }
             EmitLeaStackVar(R_AX, VarDeclOffset[vd]);
@@ -1048,26 +1196,23 @@ void ParsePrimaryExpression(void)
         id = ExpectId();
         vd = Lookup(id);
         if (vd < 0) {
-            // Lookup failed. Assume function returning int.
-            CurrentType = VT_LOCLIT|VT_FUN|VT_INT;
-            CurrentVal  = id;
-        } else {
-            CurrentType = VarDeclType[vd];
-            CurrentVal = VarDeclOffset[vd];
-            if (CurrentType & VT_LOCMASK) {
-                Check(CurrentType == (VT_LOCLIT | VT_INT));
-                return;
-            }
-            CurrentType |= VT_LVAL;
-            if (CurrentVal) {
-                CurrentType |= VT_LOCOFF;
-            } else {
-                CurrentVal  = id;
-                if (CurrentType & VT_FUN) {
-                    CurrentType = (CurrentType & ~VT_LVAL) | VT_LOCLIT;
-                } else {
-                    CurrentType |= VT_LOCGLOB;
-                }
+            // Lookup failed. TODO: Assume function returning int. (Needs to be global...)
+            Printf("Undefined identifier: \"%s\"\n", IdText(id));
+            Fatal("TODO");
+        }
+        CurrentType = VarDeclType[vd];
+        CurrentVal = VarDeclOffset[vd];
+        const int Loc = CurrentType & VT_LOCMASK;
+        if (Loc == VT_LOCLIT) {
+            Check(CurrentType == (VT_LOCLIT | VT_INT));
+            return;
+        }
+        CurrentType |= VT_LVAL;
+        if (Loc != VT_LOCOFF) {
+            Check(Loc == VT_LOCGLOB);
+            CurrentVal = vd;
+            if (CurrentType & VT_FUN) {
+                CurrentType &= ~VT_LVAL;
             }
         }
     }
@@ -1103,8 +1248,8 @@ void ParsePostfixExpression(void)
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
             }
-            Check((CurrentType & VT_LOCMASK) == VT_LOCLIT);
-            const int FuncId  = CurrentVal;
+            Check((CurrentType & VT_LOCMASK) == VT_LOCGLOB);
+            const int Func    = CurrentVal;
             const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
             int NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
@@ -1131,8 +1276,7 @@ void ParsePostfixExpression(void)
                 }
             }
             Expect(TOK_RPAREN);
-            OutputBytes(I_CALL, -1);
-            EmitGlobalRefRel(FuncId);
+            EmitCall(Func);
             if (NumArgs) {
                 EmitAdjSp(MaxArgs*2);
                 LocalOffset += MaxArgs*2;
@@ -1586,42 +1730,11 @@ int ParseDeclSpecs(void)
     return t;
 }
 
-int AddVarDecl(int Type, int Id)
-{
-    int vd;
-    Check(ScopesCount);
-    Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
-    vd = ++Scopes[ScopesCount-1];
-    VarDeclType[vd]   = Type;
-    VarDeclOffset[vd] = 0;
-    VarDeclId[vd]     = Id;
-    return vd;
-}
-
 int ParseDecl(void)
 {
-    int Type;
-    int Id;
-    Type = ParseDeclSpecs();
-    Id   = ExpectId();
+    const int Type = ParseDeclSpecs();
+    const int Id   = ExpectId();
     return AddVarDecl(Type, Id);
-}
-
-void PushScope(void)
-{
-    int End;
-    Check(ScopesCount < SCOPE_MAX);
-    if (ScopesCount)
-        End = Scopes[ScopesCount-1];
-    else
-        End = -1;
-    Scopes[ScopesCount++] = End;
-}
-
-void PopScope(void)
-{
-    Check(ScopesCount);
-    --ScopesCount;
 }
 
 void DoCond(int TrueLabel, int FalseLabel)
@@ -1653,6 +1766,7 @@ void ParseStatement(void)
     } else if (IsTypeStart()) {
         int vd;
         vd = ParseDecl();
+        VarDeclType[vd] |= VT_LOCOFF;
         if (Accept(TOK_EQ)) {
             ParseAssignmentExpression();
             LvalToRval();
@@ -1796,7 +1910,7 @@ void ParseCompoundStatement(void)
 
 void EmitGlobal(int VarDeclIndex, int InitVal)
 {
-    EmitGlobalLabel(VarDeclId[VarDeclIndex]);
+    EmitGlobalLabel(VarDeclIndex);
     OutputBytes(InitVal & 0xff, (InitVal>>8) & 0xff, -1);
 }
 
@@ -1826,7 +1940,18 @@ void ParseExternalDefition(void)
         return;
     }
 
-    const int fd = ParseDecl();
+    const int Type = ParseDeclSpecs();
+    const int Id   = ExpectId();
+
+    int fd = Lookup(Id);
+    if (fd < 0) {
+        fd = AddVarDecl(Type | VT_LOCGLOB, Id);
+    } else {
+        Check(VarDeclOffset[fd] == 0);
+        Check((VarDeclType[fd] & VT_LOCMASK) == VT_LOCGLOB);
+    }
+
+    VarDeclType[fd] |= VT_LOCGLOB;
 
     // Variable?
     if (Accept(TOK_EQ)) {
@@ -1840,8 +1965,6 @@ void ParseExternalDefition(void)
         return;
     }
 
-    // Note: We don't actually care that we might end up
-    // with multiple VarDecl's for functions with prototypes.
     Expect(TOK_LPAREN);
     VarDeclType[fd] |= VT_FUN;
     PushScope();
@@ -1853,6 +1976,7 @@ void ParseExternalDefition(void)
             break;
         }
         vd = ParseDecl();
+        VarDeclType[vd] |= VT_LOCOFF;
         VarDeclOffset[vd] = ArgOffset;
         ArgOffset += 2;
         if (!Accept(TOK_COMMA)) {
@@ -1866,7 +1990,7 @@ void ParseExternalDefition(void)
         LocalLabelCounter = 0;
         ReturnLabel = LocalLabelCounter++;
         BreakLabel = ContinueLabel = -1;
-        EmitGlobalLabel(VarDeclId[fd]);
+        EmitGlobalLabel(fd);
         EmitPush(R_BP);
         EmitMovRR(R_BP, R_SP);
         ParseCompoundStatement();
@@ -1881,101 +2005,6 @@ void ParseExternalDefition(void)
 
 #define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC
 
-#if 0
-// Only used when self-compiling
-// Small "standard library"
-
-enum { CREATE_FLAGS = 1 }; // Ugly hack
-
-char* HeapStart; // Initialized in "Start"
-
-char* malloc(int Size)
-{
-    char* ret;
-    ret = HeapStart;
-    HeapStart += Size;
-    Check(HeapStart < 32767); // FIXME
-    return ret;
-}
-
-void exit(int retval)
-{
-    retval = (retval & 0xff) | 0x4c00;
-    _DosCall(&retval, 0, 0, 0);
-}
-
-void putchar(int ch)
-{
-    int ax;
-    ax = 0x200;
-    _DosCall(&ax, 0, 0, ch);
-}
-
-int open(const char* filename, int flags, ...)
-{
-    int ax;
-    if (flags)
-        ax = 0x3c00; // create or truncate file
-    else
-        ax = 0x3d00; // open existing file
-
-    if (_DosCall(&ax, 0, 0, filename))
-        return -1;
-    return ax;
-}
-
-void close(int fd)
-{
-    int ax;
-    ax = 0x3e00;
-    _DosCall(&ax, fd, 0, 0);
-}
-
-int read(int fd, char* buf, int count)
-{
-    int ax;
-    ax = 0x3f00;
-    if (_DosCall(&ax, fd, count, buf))
-        return 0;
-    return ax;
-}
-
-int write(int fd, const char* buf, int count)
-{
-    int ax;
-    ax = 0x4000;
-    if (_DosCall(&ax, fd, count, buf))
-        return 0;
-    return ax;
-}
-
-void CallMain(int Len, char* CmdLine)
-{
-    char **Args;
-    int NumArgs;
-    CmdLine[Len] = 0;
-
-    Args = malloc(sizeof(char*)*10);
-    Args[0] = "scc";
-    NumArgs = 1;
-
-    while (*CmdLine) {
-        while (*CmdLine && *CmdLine <= ' ')
-            ++CmdLine;
-        if (!*CmdLine)
-            break;
-        Args[NumArgs++] = CmdLine;
-        while (*CmdLine && *CmdLine > ' ')
-            ++CmdLine;
-        if (!*CmdLine)
-            break;
-        *CmdLine++ = 0;
-    }
-    Args[NumArgs] = 0;
-    exit(main(NumArgs, Args));
-}
-#endif
-
 void MakeOutputFilename(char* dest, const char* n)
 {
     char* LastDot;
@@ -1987,6 +2016,17 @@ void MakeOutputFilename(char* dest, const char* n)
     }
     if (!LastDot) LastDot = dest;
     *CopyStr(LastDot, ".asm") = 0;
+}
+
+int AddId(const char* s)
+{
+    const int id = IdCount++;
+    IdOffset[id] = IdBufferIndex;
+    while (1) {
+        if (!(IdBuffer[IdBufferIndex++] = *s++))
+            break;
+    }
+    return id;
 }
 
 void AddBuiltins(const char* s)
@@ -2036,6 +2076,8 @@ int main(int argc, char** argv)
 
     AddBuiltins("break char const continue else enum for if int return sizeof void while va_list va_start va_end va_arg");
 
+    PushScope();
+
     // Prelude
     OutputStr(
     "\tcpu 8086\n"
@@ -2043,18 +2085,12 @@ int main(int argc, char** argv)
     "Start:\n"
     );
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
-    // MOV WORD [_HeapStart], ProgramEnd
-    OutputBytes(0xC7, 0x06, -1);
-    OutputStr("\tDW _HeapStart\n"); CodeAddress += 2;
-    OutputStr("\tDW ProgramEnd\n"); CodeAddress += 2;
     EmitMovRImm(R_AX, 0x81);
     EmitPush(R_AX);
     OutputBytes(0xA0, 0x80, 0x00, -1); // MOV AL, [0x80]
     EmitPush(R_AX);
-    // CALL _CallMain
-    OutputBytes(I_CALL, -1);
-    OutputStr("\tDW _CallMain - ($+2)\n"); CodeAddress += 2;
-    OutputStr("__DosCall:\n");
+    EmitCall(AddVarDecl(VT_FUN|VT_VOID|VT_LOCGLOB, AddId("_start")));
+    EmitGlobalLabel(AddVarDecl(VT_FUN|VT_INT|VT_LOCGLOB, AddId("_DosCall")));
     EmitPush(R_BP);
     EmitMovRR(R_BP, R_SP);
     OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
@@ -2069,24 +2105,38 @@ int main(int argc, char** argv)
     OutputBytes(I_SBB, MODRM_REG, -1);
     EmitPop(R_BP);
     OutputBytes(I_RET, -1);
-    OutputStr("\n");
-    Printf("Address after prelude: %X\n", CodeAddress);
-
-    PushScope();
 
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
     }
-    PopScope();
 
     // Postlude
-    OutputStr("\nProgramEnd:\n");
+    int id = GetStrId("_brk");
+    if (id >= 0) {
+        int vd = Lookup(id);
+        if (vd >= 0) {
+            Check(VarDeclType[vd] == (VT_FUN|VT_CHAR|VT_PTR1|VT_LOCGLOB));
+            EmitGlobalLabel(vd);
+            EmitMovRImm(R_AX, CodeAddress+4);
+            OutputBytes(I_RET, -1);
+        }
+    }
+    PopScope();
 
     close(InFile);
     close(OutFile);
 
-    Printf("Last address: %X\n", CodeAddress);
+    int i;
+    for (i = 0 ; i < Scopes[0]; ++i) {
+        const int Loc = VarDeclType[i] & VT_LOCMASK;
+        if (Loc == VT_LOCGLOB && !VarDeclOffset[i]) {
+            Printf("%s is undefined (Type: %X)\n", IdText(VarDeclId[i]), VarDeclType[i]);
+            Fatal("Undefined");
+        }
+        if (Loc == VT_LOCGLOB)
+            Printf("%X %s\n", VarDeclOffset[i], IdText(VarDeclId[i]));
+    }
 
     return 0;
 }
