@@ -793,7 +793,6 @@ char Unescape(void)
 
 void GetStringLiteral(void)
 {
-
     TokenNumVal = MakeLabel();
     const int WasDeadCode = IsDeadCode;
     const int JL = MakeLabel();
@@ -1202,7 +1201,7 @@ void ParsePrimaryExpression(void)
         } else if (func == TOK_VA_ARG) {
             Expect(TOK_COMMA);
             EmitLoadAx(2, VT_LOCOFF, offset);
-            OutputBytes(0x40, 0x40, -1); // INC AX \ INC AX
+            OutputBytes(I_INC, I_INC, -1); // INC AX \ INC AX
             EmitStoreAx(2, VT_LOCOFF, offset);
             CurrentType = VT_LVAL | ParseDeclSpecs();
         }
@@ -1577,23 +1576,23 @@ void ParseExpr1(int OuterPrecedence)
         LhsVal = CurrentVal;
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
-            Temp = MakeLabel();
             LEnd = MakeLabel();
             if (CurrentType == VT_BOOL) {
+                Temp = MakeLabel();
                 if (Op != TOK_ANDAND)
                     CurrentVal ^= 1;
                 EmitJcc(CurrentVal, Temp);
                 EmitMovRImm(R_AX, Op != TOK_ANDAND);
+                EmitJmp(LEnd);
+                EmitLocalLabel(Temp);
             } else {
                 Check(CurrentType == VT_INT);
                 EmitToBool();
                 if (Op == TOK_ANDAND)
-                    EmitJcc(JNZ, Temp);
+                    EmitJcc(JZ, LEnd);
                 else
-                    EmitJcc(JZ, Temp);
+                    EmitJcc(JNZ, LEnd);
             }
-            EmitJmp(LEnd);
-            EmitLocalLabel(Temp);
         } else {
             LEnd = -1;
             if (!(LhsType & VT_LOCMASK)) {
@@ -1751,21 +1750,19 @@ int ParseDecl(void)
     return AddVarDecl(Type, Id);
 }
 
-// TODO: Optimize away FalseLabel use?
-void DoCond(int TrueLabel, int FalseLabel)
+void DoJumpFalse(int FalseLabel)
 {
     ParseExpr();
     LvalToRval();
     if (CurrentType == VT_BOOL) {
-        EmitJcc(CurrentVal, TrueLabel);
+        EmitJcc(CurrentVal^1, FalseLabel);
     } else {
         // Could optimize for constant conditions here
         GetVal();
         Check(CurrentType == VT_INT);
         EmitToBool();
-        EmitJcc(JNZ, TrueLabel);
+        EmitJcc(JZ, FalseLabel);
     }
-    EmitJmp(FalseLabel);
 }
 
 void ParseCompoundStatement(void);
@@ -1812,14 +1809,13 @@ void ParseStatement(void)
         // Cond
         EmitLocalLabel(CondLabel);
         if (TokenType != TOK_SEMICOLON) {
-            DoCond(BodyLabel, EndLabel);
-        } else {
-            EmitJmp(BodyLabel);
+            DoJumpFalse(EndLabel);
         }
         Expect(TOK_SEMICOLON);
 
         // Iter
         if (TokenType != TOK_RPAREN) {
+            EmitJmp(BodyLabel);
             IterLabel  = MakeLabel();
             EmitLocalLabel(IterLabel);
             ParseExpr();
@@ -1837,21 +1833,21 @@ void ParseStatement(void)
         EmitJmp(IterLabel);
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_IF)) {
-        const int IfLabel   = MakeLabel();
         const int ElseLabel = MakeLabel();
-        const int EndLabel  = MakeLabel();
 
         Accept(TOK_LPAREN);
-        DoCond(IfLabel, ElseLabel);
+        DoJumpFalse(ElseLabel);
         Accept(TOK_RPAREN);
-        EmitLocalLabel(IfLabel);
         ParseStatement();
-        EmitJmp(EndLabel);
-        EmitLocalLabel(ElseLabel);
         if (Accept(TOK_ELSE)) {
+            const int EndLabel  = MakeLabel();
+            EmitJmp(EndLabel);
+            EmitLocalLabel(ElseLabel);
             ParseStatement();
+            EmitLocalLabel(EndLabel);
+        } else {
+            EmitLocalLabel(ElseLabel);
         }
-        EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_RETURN)) {
         if (TokenType != TOK_SEMICOLON) {
             ParseExpr();
@@ -1864,13 +1860,11 @@ void ParseStatement(void)
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
         const int StartLabel = MakeLabel();
-        const int BodyLabel  = MakeLabel();
         const int EndLabel   = MakeLabel();
         EmitLocalLabel(StartLabel);
         Expect(TOK_LPAREN);
-        DoCond(BodyLabel, EndLabel);
+        DoJumpFalse(EndLabel);
         Expect(TOK_RPAREN);
-        EmitLocalLabel(BodyLabel);
         BreakLabel = EndLabel;
         ContinueLabel = StartLabel;
         const int OldBCStack = BCStackLevel;
