@@ -88,6 +88,11 @@ int write(int fd, const char* buf, int count)
 
 void _start(int Len, char* CmdLine)
 {
+    // Clear BSS
+    char* bss = &_SBSS;
+    while (bss != &_EBSS)
+        *bss++ = 0;
+
     char **Args;
     int NumArgs;
     CmdLine[Len] = 0;
@@ -234,6 +239,7 @@ enum {
 
 char* Output;
 int CodeAddress = CODESTART;
+int BssSize;
 
 char* LineBuf;
 char* TempBuf;
@@ -1725,7 +1731,7 @@ void ParseExpr1(int OuterPrecedence)
                 CurrentType = VT_INT;
                 DoRhsConstBinOp(Op);
             } else {
-                Check(CurrentType == VT_INT || (Op == TOK_MINUS && (CurrentType & VT_PTRMASK)));
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
                     OutputBytes(I_ADD|1, MODRM_REG, -1);
                 }
@@ -2031,7 +2037,7 @@ void ParseExternalDefition(void)
         Expect(TOK_SEMICOLON);
         return;
     } else if (Accept(TOK_SEMICOLON)) {
-        EmitGlobal(fd, 0);
+        BssSize += 2;
         return;
     }
 
@@ -2179,33 +2185,41 @@ int main(int argc, char** argv)
     EmitPop(R_BP);
     OutputBytes(I_RET, -1);
 
+    const int SBSS = AddVarDecl(VT_CHAR|VT_LOCGLOB, AddId("_SBSS"));
     const int EBSS = AddVarDecl(VT_CHAR|VT_LOCGLOB, AddId("_EBSS"));
 
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
     }
+    close(InFile);
 
-    // Postlude
+    EmitGlobalLabel(SBSS);
+    for (i = 0 ; i <= Scopes[0]; ++i) {
+        int T = VarDeclType[i];
+        const int Loc = T & VT_LOCMASK;
+        if (Loc == VT_LOCGLOB && !VarDeclOffset[i]) {
+            T &= ~VT_LOCMASK;
+            if (T & VT_FUN) {
+                Printf("%s is undefined (Type: %X)\n", IdText(VarDeclId[i]), T);
+                Fatal("Undefined function");
+            }
+            if (i == EBSS) continue;
+            EmitGlobalLabel(i);
+            CodeAddress += 2;
+        }
+    }
+    Check(CodeAddress-VarDeclOffset[SBSS] == BssSize);
     EmitGlobalLabel(EBSS);
 
     PopScope();
-    close(InFile);
-
-    for (i = 0 ; i < Scopes[0]; ++i) {
-        const int Loc = VarDeclType[i] & VT_LOCMASK;
-        if (Loc == VT_LOCGLOB && !VarDeclOffset[i]) {
-            Printf("%s is undefined (Type: %X)\n", IdText(VarDeclId[i]), VarDeclType[i]);
-            Fatal("Undefined function");
-        }
-    }
 
     MakeOutputFilename(IdBuffer, argv[1]);
     const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
     if (OutFile < 0) {
         Fatal("Error creating output file");
     }
-    write(OutFile, Output, CodeAddress - CODESTART);
+    write(OutFile, Output, VarDeclOffset[SBSS] - CODESTART);
     close(OutFile);
 
     return 0;
