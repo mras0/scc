@@ -125,12 +125,14 @@ enum {
     TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
-    VARDECL_MAX = 300,
+    VARDECL_MAX = 350,
     ID_MAX = 450,
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 4096,
     LABEL_MAX = 300,
     OUTPUT_MAX = 0x6000,
+    STRUCT_MAX = 4,
+    STRUCT_MEMBER_MAX = 32,
 };
 
 enum {
@@ -144,19 +146,20 @@ enum {
     VT_BOOL,        // CurrentValue holds condition code for "true"
     VT_CHAR,
     VT_INT,
+    VT_STRUCT,
 
-    VT_BASEMASK = 3,
+    VT_BASEMASK = 7,
 
-    VT_LVAL    = 1<<2,
-    VT_FUN     = 1<<3,
+    VT_LVAL    = 1<<3,
+    VT_FUN     = 1<<4,
 
-    VT_PTR1    = 1<<4,
-    VT_PTRMASK = 3<<4, // 3 levels of indirection should be enough..
+    VT_PTR1    = 1<<5,
+    VT_PTRMASK = 3<<5, // 3 levels of indirection should be enough..
 
-    VT_LOCLIT  = 1<<6,    // CurrentVal holds a literal value (or label)
-    VT_LOCOFF  = 2<<6,    // CurrentVal holds BP offset
-    VT_LOCGLOB = 3<<6,    // CurrentVal holds the VarDecl index of a global
-    VT_LOCMASK = 3<<6,
+    VT_LOCLIT  = 1<<7,    // CurrentVal holds a literal value (or label)
+    VT_LOCOFF  = 2<<7,    // CurrentVal holds BP offset
+    VT_LOCGLOB = 3<<7,    // CurrentVal holds the VarDecl index of a global
+    VT_LOCMASK = 3<<7,
 };
 
 enum {
@@ -208,6 +211,7 @@ enum {
     TOK_TILDE,
     TOK_DOT,
     TOK_ELLIPSIS,
+    TOK_ARROW,
 
     // NOTE: Must match order of registration in main
     //       TOK_BREAK must be first
@@ -222,6 +226,7 @@ enum {
     TOK_INT,
     TOK_RETURN,
     TOK_SIZEOF,
+    TOK_STRUCT,
     TOK_VOID,
     TOK_WHILE,
 
@@ -262,8 +267,18 @@ int* IdOffset;
 int* IdHashTab;
 int IdCount;
 
+int* StructMemId;
+int* StructMemType;
+int StructMemCount;
+
+int* StructId;
+int* StructFirstMem;
+int* StructNumMem;
+int StructCount;
+
 int* VarDeclId;
 int* VarDeclType;
+int* VarDeclTypeExtra;
 int* VarDeclOffset;
 int* VarDeclRef; // Actually only needed for globals
 
@@ -282,6 +297,7 @@ int ContinueLabel;
 
 int CurrentType;
 int CurrentVal;
+int CurrentStruct;
 
 int ReturnUsed;
 int PendingPushAx;
@@ -618,9 +634,10 @@ void EmitStoreConst(int Size, int Loc, int Val)
         OutputBytes((CurrentVal >> 8) & 0xff, - 1);
 }
 
-void EmitAdjSp(int Amm)
+void EmitAddRegConst(int r, int Amm)
 {
-    OutputBytes(0x83, 0xC4, Amm & 0xff, -1);
+    if (!Amm) return;
+    OutputBytes(0x83, MODRM_REG|r, Amm & 0xff, -1);
 }
 
 void EmitPush(int r)
@@ -689,16 +706,20 @@ int EmitChecks(void)
     return 0;
 }
 
-int AddVarDecl(int Type, int Id)
+int AddVarDecl(int Id)
 {
     int vd;
     Check(ScopesCount);
     Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
     vd = ++Scopes[ScopesCount-1];
-    VarDeclType[vd]   = Type;
-    VarDeclId[vd]     = Id;
-    VarDeclOffset[vd] = 0;
-    VarDeclRef[vd]    = 0;
+    VarDeclType[vd]      = CurrentType;
+    if ((CurrentType & VT_BASEMASK) == VT_STRUCT)
+        VarDeclTypeExtra[vd] = CurrentStruct;
+    else
+        VarDeclTypeExtra[vd] = -1;
+    VarDeclId[vd]        = Id;
+    VarDeclOffset[vd]    = 0;
+    VarDeclRef[vd]       = 0;
     return vd;
 }
 
@@ -1036,6 +1057,8 @@ void GetToken(void)
             TokenType = TOK_MINUSMINUS;
         } else if (TryGetChar('=')) {
             TokenType = TOK_MINUSEQ;
+        } else if (TryGetChar('>')) {
+            TokenType = TOK_ARROW;
         }
     } else if (ch == '*') {
         TokenType = TOK_STAR;
@@ -1107,6 +1130,31 @@ int OperatorPrecedence(int tok)
     }
 }
 
+int SizeofType(void)
+{
+    if (CurrentType == VT_CHAR)
+        return 1;
+    else if (CurrentType == VT_STRUCT)
+        return 2*StructNumMem[CurrentStruct]; // Eww
+    else
+        return 2;
+}
+
+int StructMemberIndex(int Id)
+{
+    Check(CurrentStruct >= 0 && CurrentStruct < StructCount);
+    int b = StructFirstMem[CurrentStruct];
+    int e = b + StructNumMem[CurrentStruct];
+    int i;
+    for (i = b; i != e; ++i) {
+        if (StructMemId[i] == Id) {
+            return i - b;
+        }
+    }
+    Printf("\"%s\" not found in struct %s\n", IdText(Id), IdText(StructId[CurrentStruct]));
+    Fatal("Invalid struct member");
+}
+
 void Unexpected(void)
 {
     Printf("token type %d\n", TokenType);
@@ -1148,6 +1196,7 @@ int IsTypeStart(void)
         || TokenType == TOK_VOID
         || TokenType == TOK_CHAR
         || TokenType == TOK_INT
+        || TokenType == TOK_STRUCT
         || TokenType == TOK_VA_LIST;
 }
 
@@ -1210,7 +1259,7 @@ void DoIncDecOp(int Op, int Post)
 void ParseExpr(void);
 void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
-int ParseDeclSpecs(void);
+void ParseDeclSpecs(void);
 
 void ParsePrimaryExpression(void)
 {
@@ -1257,7 +1306,8 @@ void ParsePrimaryExpression(void)
             EmitLoadAx(2, VT_LOCOFF, offset);
             OutputBytes(I_INC, I_INC, -1); // INC AX \ INC AX
             EmitStoreAx(2, VT_LOCOFF, offset);
-            CurrentType = VT_LVAL | ParseDeclSpecs();
+            ParseDeclSpecs();
+            CurrentType |= VT_LVAL;
         }
         Expect(TOK_RPAREN);
     } else {
@@ -1274,8 +1324,9 @@ void ParsePrimaryExpression(void)
             Printf("Undefined identifier: \"%s\"\n", IdText(id));
             Fatal("TODO");
         }
-        CurrentType = VarDeclType[vd];
-        CurrentVal = VarDeclOffset[vd];
+        CurrentType   = VarDeclType[vd];
+        CurrentStruct = VarDeclTypeExtra[vd];
+        CurrentVal    = VarDeclOffset[vd];
         const int Loc = CurrentType & VT_LOCMASK;
         if (Loc == VT_LOCLIT) {
             Check(CurrentType == (VT_LOCLIT | VT_INT));
@@ -1312,6 +1363,22 @@ void GetVal(void)
     }
 }
 
+void HandleStructMember(void)
+{
+    const int MemId = ExpectId();
+    const int Idx = StructMemberIndex(MemId);
+    const int Off = 2*(Idx - StructFirstMem[CurrentStruct]); // HACK
+    const int Loc = CurrentType & VT_LOCMASK;
+    CurrentType = StructMemType[Idx] | VT_LVAL | Loc;
+    if (!Loc) {
+        EmitAddRegConst(R_AX, Off);
+    } else if (Loc == VT_LOCOFF) {
+        CurrentVal += Off;
+    } else {
+        Check(0);
+    }
+}
+
 enum { MaxArgs = 4 }; // TODO: Handle this better...
 void ParsePostfixExpression(void)
 {
@@ -1327,7 +1394,7 @@ void ParsePostfixExpression(void)
             int NumArgs = 0;
             while (TokenType != TOK_RPAREN) {
                 if (!NumArgs) {
-                    EmitAdjSp(-MaxArgs*2);
+                    EmitAddRegConst(R_SP, -MaxArgs*2);
                     LocalOffset -= MaxArgs*2;
                 }
                 Check(NumArgs < MaxArgs);
@@ -1351,7 +1418,7 @@ void ParsePostfixExpression(void)
             Expect(TOK_RPAREN);
             EmitCall(Func);
             if (NumArgs) {
-                EmitAdjSp(MaxArgs*2);
+                EmitAddRegConst(R_SP, MaxArgs*2);
                 LocalOffset += MaxArgs*2;
             }
             CurrentType = RetType;
@@ -1386,6 +1453,14 @@ void ParsePostfixExpression(void)
                 OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
             }
             CurrentType = AType | VT_LVAL;
+        } else if (Accept(TOK_DOT)) {
+            Check((CurrentType & ~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
+            HandleStructMember();
+        } else if (Accept(TOK_ARROW)) {
+            LvalToRval();
+            Check((CurrentType & ~VT_LOCMASK) == (VT_STRUCT|VT_PTR1));
+            CurrentType -= VT_PTR1;
+            HandleStructMember();
         } else {
             const int Op = TokenType;
             if (Op != TOK_PLUSPLUS && Op != TOK_MINUSMINUS) {
@@ -1469,16 +1544,8 @@ void ParseUnaryExpression(void)
     } else if (Op == TOK_SIZEOF) {
         GetToken();
         Expect(TOK_LPAREN);
-        if (Accept(TOK_CHAR)) {
-            CurrentVal = 1;
-        } else if (Accept(TOK_INT)) {
-            CurrentVal = 2;
-        } else {
-            Fatal("sizeof not implemented for this type");
-        }
-        while (Accept(TOK_STAR)) {
-            CurrentVal = 2;
-        }
+        ParseDeclSpecs();
+        CurrentVal = SizeofType();
         Expect(TOK_RPAREN);
         CurrentType = VT_LOCLIT | VT_INT;
     } else {
@@ -1778,7 +1845,19 @@ void ParseAssignmentExpression(void)
     ParseExpr0(PRED_EQ);
 }
 
-int ParseDeclSpecs(void)
+int ParseStructMember(void)
+{
+    Check(StructMemCount < STRUCT_MEMBER_MAX);
+    const int id = StructMemCount++;
+    ParseDeclSpecs();
+    Check(CurrentType != VT_STRUCT); // Not supported yet
+    StructMemType[id] = CurrentType;
+    StructMemId[id]   = ExpectId();
+    Expect(TOK_SEMICOLON);
+    return id;
+}
+
+void ParseDeclSpecs(void)
 {
     Check(IsTypeStart());
     if (TokenType == TOK_CONST) {
@@ -1787,31 +1866,55 @@ int ParseDeclSpecs(void)
         Check(IsTypeStart());
     }
     int t;
-    if (TokenType == TOK_VOID) {
-        t = VT_VOID;
-    } else if (TokenType == TOK_CHAR) {
-        t = VT_CHAR;
-    } else if (TokenType == TOK_INT) {
-        t = VT_INT;
-    } else if (TokenType == TOK_VA_LIST) {
+    if (TokenType == TOK_STRUCT) {
+        t = VT_STRUCT;
         GetToken();
-        return VT_CHAR | VT_PTR1;
+        const int id = ExpectId();
+        CurrentStruct = -1;
+        int i;
+        for (i = 0; i < StructCount; ++i) {
+            if (StructId[i] == id) {
+                CurrentStruct = i;
+                break;
+            }
+        }
+        if (CurrentStruct < 0) {
+            Check(StructCount < STRUCT_MAX);
+            CurrentStruct = StructCount++;
+            StructId[CurrentStruct] = id;
+            StructFirstMem[CurrentStruct] = StructMemCount;
+            // TODO: Lookup StructName
+            Expect(TOK_LBRACE);
+            while (!Accept(TOK_RBRACE)) {
+                ParseStructMember();
+            }
+            StructNumMem[CurrentStruct] = StructMemCount - StructFirstMem[CurrentStruct];
+        }
     } else {
-        Unexpected();
+        if (TokenType == TOK_VOID) {
+            t = VT_VOID;
+        } else if (TokenType == TOK_CHAR) {
+            t = VT_CHAR;
+        } else if (TokenType == TOK_INT) {
+            t = VT_INT;
+        } else if (TokenType == TOK_VA_LIST) {
+            t = VT_CHAR | VT_PTR1;
+        } else {
+            Unexpected();
+        }
+        GetToken();
     }
-    GetToken();
     while (TokenType == TOK_STAR) {
         t += VT_PTR1;
         GetToken();
     }
-    return t;
+    CurrentType = t;
 }
 
 int ParseDecl(void)
 {
-    const int Type = ParseDeclSpecs();
-    const int Id   = ExpectId();
-    return AddVarDecl(Type, Id);
+    ParseDeclSpecs();
+    return AddVarDecl(ExpectId());
 }
 
 void DoJumpFalse(int FalseLabel)
@@ -1844,9 +1947,12 @@ void ParseStatement(void)
         ParseCompoundStatement();
     } else if (IsTypeStart()) {
         int vd;
+        int size = 2;
         vd = ParseDecl();
         VarDeclType[vd] |= VT_LOCOFF;
-        if (Accept(TOK_EQ)) {
+        if (CurrentType == VT_STRUCT) {
+            size = SizeofType();
+        } else if (Accept(TOK_EQ)) {
             ParseAssignmentExpression();
             LvalToRval();
             GetVal();
@@ -1854,10 +1960,14 @@ void ParseStatement(void)
                 OutputBytes(I_CBW, -1);
             }
         }
-        LocalOffset -= 2;
+        LocalOffset -= size;
         VarDeclOffset[vd] = LocalOffset;
-        // Note: AX contains "random" garbage at first if the variable isn't initialized
-        EmitPush(R_AX);
+        if (size == 2) {
+            // Note: AX contains "random" garbage at first if the variable isn't initialized
+            EmitPush(R_AX);
+        } else {
+            EmitAddRegConst(R_SP, -size);
+        }
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_FOR)) {
         const int CondLabel = MakeLabel();
@@ -1943,13 +2053,13 @@ void ParseStatement(void)
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
         if (LocalOffset != BCStackLevel)
-            EmitAdjSp(BCStackLevel - LocalOffset);
+            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
         EmitJmp(BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
         if (LocalOffset != BCStackLevel)
-            EmitAdjSp(BCStackLevel - LocalOffset);
+            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else {
@@ -1972,7 +2082,7 @@ void ParseCompoundStatement(void)
     }
     PopScope();
     if (InitialOffset != LocalOffset) {
-        EmitAdjSp(InitialOffset - LocalOffset);
+        EmitAddRegConst(R_SP, InitialOffset - LocalOffset);
         LocalOffset = InitialOffset;
     }
 }
@@ -2004,7 +2114,8 @@ void ParseExternalDefition(void)
                 Check(CurrentType == (VT_INT|VT_LOCLIT));
                 EnumVal = CurrentVal;
             }
-            vd = AddVarDecl(VT_INT|VT_LOCLIT, id);
+            CurrentType = VT_INT|VT_LOCLIT;
+            vd = AddVarDecl(id);
             VarDeclOffset[vd] = EnumVal;
             if (!Accept(TOK_COMMA)) {
                 break;
@@ -2016,18 +2127,24 @@ void ParseExternalDefition(void)
         return;
     }
 
-    const int Type = ParseDeclSpecs();
-    const int Id   = ExpectId();
+    ParseDeclSpecs();
 
+    if (CurrentType == VT_STRUCT && Accept(TOK_SEMICOLON)) {
+        return;
+    }
+
+    Check(SizeofType() <= 2); // Not implemented
+
+    const int Id = ExpectId();
+
+    CurrentType |= VT_LOCGLOB;
     int fd = Lookup(Id);
     if (fd < 0) {
-        fd = AddVarDecl(Type | VT_LOCGLOB, Id);
+        fd = AddVarDecl(Id);
     } else {
         Check(VarDeclOffset[fd] == 0);
         Check((VarDeclType[fd] & VT_LOCMASK) == VT_LOCGLOB);
     }
-
-    VarDeclType[fd] |= VT_LOCGLOB;
 
     // Variable?
     if (Accept(TOK_EQ)) {
@@ -2127,20 +2244,26 @@ int main(int argc, char** argv)
 {
     int i;
 
-    Output        = malloc(OUTPUT_MAX);
-    LineBuf       = malloc(LINEBUF_MAX);
-    TempBuf       = malloc(TMPBUF_MAX);
-    InBuf         = malloc(INBUF_MAX);
-    IdBuffer      = malloc(IDBUFFER_MAX);
-    IdOffset      = malloc(sizeof(int)*ID_MAX);
-    IdHashTab     = malloc(sizeof(int)*ID_HASHMAX);
-    VarDeclId     = malloc(sizeof(int)*VARDECL_MAX);
-    VarDeclType   = malloc(sizeof(int)*VARDECL_MAX);
-    VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
-    VarDeclRef    = malloc(sizeof(int)*VARDECL_MAX);
-    Scopes        = malloc(sizeof(int)*SCOPE_MAX);
-    LabelAddr     = malloc(sizeof(int)*LABEL_MAX);
-    LabelRef      = malloc(sizeof(int)*LABEL_MAX);
+    Output           = malloc(OUTPUT_MAX);
+    LineBuf          = malloc(LINEBUF_MAX);
+    TempBuf          = malloc(TMPBUF_MAX);
+    InBuf            = malloc(INBUF_MAX);
+    IdBuffer         = malloc(IDBUFFER_MAX);
+    IdOffset         = malloc(sizeof(int)*ID_MAX);
+    IdHashTab        = malloc(sizeof(int)*ID_HASHMAX);
+    VarDeclId        = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclType      = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclTypeExtra = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclOffset    = malloc(sizeof(int)*VARDECL_MAX);
+    VarDeclRef       = malloc(sizeof(int)*VARDECL_MAX);
+    Scopes           = malloc(sizeof(int)*SCOPE_MAX);
+    LabelAddr        = malloc(sizeof(int)*LABEL_MAX);
+    LabelRef         = malloc(sizeof(int)*LABEL_MAX);
+    StructMemId      = malloc(sizeof(int)*STRUCT_MEMBER_MAX);
+    StructMemType    = malloc(sizeof(int)*STRUCT_MEMBER_MAX);
+    StructId         = malloc(sizeof(int)*STRUCT_MAX);
+    StructFirstMem   = malloc(sizeof(int)*STRUCT_MAX);
+    StructNumMem     = malloc(sizeof(int)*STRUCT_MAX);
 
     for (i = 0; i < ID_HASHMAX; ++i)
         IdHashTab[i] = -1;
@@ -2155,7 +2278,7 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    AddBuiltins("break char const continue else enum for if int return sizeof void while va_list va_start va_end va_arg");
+    AddBuiltins("break char const continue else enum for if int return sizeof struct void while va_list va_start va_end va_arg");
 
     PushScope();
 
@@ -2165,11 +2288,12 @@ int main(int argc, char** argv)
     EmitPush(R_AX);
     OutputBytes(0xA0, 0x80, 0x00, -1); // MOV AL, [0x80]
     EmitPush(R_AX);
-    EmitCall(AddVarDecl(VT_FUN|VT_VOID|VT_LOCGLOB, AddId("_start")));
-    EmitAdjSp(4);
+    CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
+    EmitCall(AddVarDecl(AddId("_start")));
+    EmitAddRegConst(R_SP, 4);
     OutputBytes(I_RET, -1);
-
-    EmitGlobalLabel(AddVarDecl(VT_FUN|VT_INT|VT_LOCGLOB, AddId("_DosCall")));
+    CurrentType = VT_FUN|VT_INT|VT_LOCGLOB;
+    EmitGlobalLabel(AddVarDecl(AddId("_DosCall")));
     EmitPush(R_BP);
     EmitMovRR(R_BP, R_SP);
     OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
@@ -2185,8 +2309,9 @@ int main(int argc, char** argv)
     EmitPop(R_BP);
     OutputBytes(I_RET, -1);
 
-    const int SBSS = AddVarDecl(VT_CHAR|VT_LOCGLOB, AddId("_SBSS"));
-    const int EBSS = AddVarDecl(VT_CHAR|VT_LOCGLOB, AddId("_EBSS"));
+    CurrentType = VT_CHAR|VT_LOCGLOB;
+    const int SBSS = AddVarDecl(AddId("_SBSS"));
+    const int EBSS = AddVarDecl(AddId("_EBSS"));
 
     GetToken();
     while (TokenType != TOK_EOF) {
