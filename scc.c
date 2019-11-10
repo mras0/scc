@@ -23,10 +23,9 @@
 
 enum { CREATE_FLAGS = 1 }; // Ugly hack
 
-char* HeapStart;
-
-char* _brk(void);
 int main(int argc, char** argv);
+
+char* HeapStart;
 
 char* malloc(int Size)
 {
@@ -93,7 +92,7 @@ void _start(int Len, char* CmdLine)
     int NumArgs;
     CmdLine[Len] = 0;
 
-    HeapStart = _brk();
+    HeapStart = &_EBSS;
     Args = malloc(sizeof(char*)*10);
     Args[0] = "scc";
     NumArgs = 1;
@@ -506,12 +505,14 @@ void ResetLabels(void)
     LocalLabelCounter = 0;
 }
 
-void DoFixups(int r)
+void DoFixups(int r, int relative)
 {
     int f;
     char* c;
     while (r) {
-        f  = CodeAddress - r - 2;
+        f  = CodeAddress;
+        if (relative)
+            f -= r + 2;
         c = Output + r - CODESTART;
         r = (c[0]&0xff)|(c[1]&0xff)<<8;
         c[0] = f;
@@ -530,7 +531,7 @@ void EmitLocalLabel(int l)
     Check(l < LocalLabelCounter && !LabelAddr[l]);
     LabelAddr[l] = CodeAddress;
     IsDeadCode = 0;
-    DoFixups(LabelRef[l]);
+    DoFixups(LabelRef[l], 1);
     LabelRef[l] = 0;
 }
 
@@ -556,14 +557,16 @@ void EmitGlobalLabel(int VarDeclIndex)
     Check(!VarDeclOffset[VarDeclIndex]);
     VarDeclOffset[VarDeclIndex] = CodeAddress;
     IsDeadCode = 0;
-    DoFixups(VarDeclRef[VarDeclIndex]);
+    DoFixups(VarDeclRef[VarDeclIndex], VarDeclType[VarDeclIndex] & VT_FUN);
 }
 
 void EmitGlobalRef(int vd)
 {
     int Addr = VarDeclOffset[vd];
-    Check(Addr);
-    OutputWord(Addr);
+    if (Addr)
+        OutputWord(Addr);
+    else
+        AddFixup(VarDeclRef + vd);
 }
 
 void EmitGlobalRefRel(int vd)
@@ -1411,10 +1414,14 @@ void ParseUnaryExpression(void)
             }
             const int loc = CurrentType & VT_LOCMASK;
             if (loc) {
-                if (loc == VT_LOCOFF)
+                if (loc == VT_LOCOFF) {
                     EmitLeaStackVar(R_AX, CurrentVal);
-                else
+                } else if (loc == VT_LOCGLOB) {
+                    OutputBytes(I_MOV_R_IMM16, -1);
+                    EmitGlobalRef(CurrentVal);
+                } else {
                     Check(0);
+                }
                 CurrentType &= ~VT_LOCMASK;
             }
             CurrentType = (CurrentType&~VT_LVAL) + VT_PTR1;
@@ -2153,6 +2160,9 @@ int main(int argc, char** argv)
     OutputBytes(0xA0, 0x80, 0x00, -1); // MOV AL, [0x80]
     EmitPush(R_AX);
     EmitCall(AddVarDecl(VT_FUN|VT_VOID|VT_LOCGLOB, AddId("_start")));
+    EmitAdjSp(4);
+    OutputBytes(I_RET, -1);
+
     EmitGlobalLabel(AddVarDecl(VT_FUN|VT_INT|VT_LOCGLOB, AddId("_DosCall")));
     EmitPush(R_BP);
     EmitMovRR(R_BP, R_SP);
@@ -2169,22 +2179,15 @@ int main(int argc, char** argv)
     EmitPop(R_BP);
     OutputBytes(I_RET, -1);
 
+    const int EBSS = AddVarDecl(VT_CHAR|VT_LOCGLOB, AddId("_EBSS"));
+
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
     }
 
     // Postlude
-    int id = GetStrId("_brk");
-    if (id >= 0) {
-        int vd = Lookup(id);
-        if (vd >= 0) {
-            Check(VarDeclType[vd] == (VT_FUN|VT_CHAR|VT_PTR1|VT_LOCGLOB));
-            EmitGlobalLabel(vd);
-            EmitMovRImm(R_AX, CodeAddress+4);
-            OutputBytes(I_RET, -1);
-        }
-    }
+    EmitGlobalLabel(EBSS);
 
     PopScope();
     close(InFile);
