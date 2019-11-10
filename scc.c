@@ -122,10 +122,16 @@ enum {
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 300,
-    ID_MAX = 450,
+    ID_MAX = 512, // Must be power of 2
     IDBUFFER_MAX = 4096,
     LABEL_MAX = 300,
     OUTPUT_MAX = 0x6000,
+};
+
+enum {
+    //DJB2
+    HASHINIT = 5381,
+    HASHMUL  = 33,
 };
 
 enum {
@@ -247,6 +253,7 @@ char* IdBuffer;
 int IdBufferIndex;
 
 int* IdOffset;
+int* IdHashTab;
 int IdCount;
 
 int* VarDeclId;
@@ -822,15 +829,46 @@ void GetStringLiteral(void)
     EmitLocalLabel(JL);
 }
 
-int GetStrId(const char* Str)
+void AddIdHash(int Id, int Hash)
 {
-    int id = 0;
-    for (; id < IdCount; ++id) {
-        if (StrEqual(IdText(id), Str)) {
-            return id;
+    for (;;) {
+        Hash &= ID_MAX-1;
+        if (IdHashTab[Hash] == -1) {
+            break;
+        }
+        ++Hash;
+    }
+    IdHashTab[Hash] = Id;
+}
+
+int GetStrIdHash(const char* Str, int Hash)
+{
+    int Id;
+    for (;; ++Hash) {
+        Hash &= ID_MAX-1;
+        Id = IdHashTab[Hash];
+        if (Id == -1) {
+            break;
+        }
+        if (StrEqual(Str, IdText(Id))) {
+            break;
         }
     }
-    return -1;
+    return Id;
+}
+
+int HashStr(const char* Str)
+{
+    int Hash = HASHINIT;
+    while (*Str) {
+        Hash = Hash*HASHMUL + *Str++;
+    }
+    return Hash;
+}
+
+int GetStrId(const char* Str)
+{
+    return GetStrIdHash(Str, HashStr(Str));
 }
 
 void GetToken(void)
@@ -880,21 +918,24 @@ void GetToken(void)
         char* start;
         start = pc = &IdBuffer[IdBufferIndex];
         *pc++ = ch;
+        int Hash = HASHINIT*HASHMUL+ch;
         for (;;) {
             ch = GetChar();
             if (ch != '_' && !IsDigit(ch) && !IsAlpha(ch)) {
                 break;
             }
             *pc++ = ch;
+            Hash = Hash*HASHMUL+ch;
         }
         *pc++ = 0;
         UnGetChar(ch);
-        TokenType = GetStrId(start);
+        TokenType = GetStrIdHash(start, Hash);
         if (TokenType < 0) {
             Check(IdCount < ID_MAX);
             TokenType = IdCount++;
             IdOffset[TokenType] = IdBufferIndex;
             IdBufferIndex += pc - start;
+            AddIdHash(TokenType, Hash);
         }
         TokenType += TOK_BREAK;
     } else if (ch == '\'') {
@@ -1211,6 +1252,12 @@ void ParsePrimaryExpression(void)
         vd = Lookup(id);
         if (vd < 0) {
             // Lookup failed. TODO: Assume function returning int. (Needs to be global...)
+            if (IsDeadCode) {
+                // Hack: Allow undefined functions in dead code
+                CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
+                CurrentVal  = 0;
+                return;
+            }
             Printf("Undefined identifier: \"%s\"\n", IdText(id));
             Fatal("TODO");
         }
@@ -1756,8 +1803,11 @@ void DoJumpFalse(int FalseLabel)
     LvalToRval();
     if (CurrentType == VT_BOOL) {
         EmitJcc(CurrentVal^1, FalseLabel);
+    } else if (CurrentType == (VT_LOCLIT|VT_INT)) {
+        // Constant condition
+        if (!CurrentVal)
+            EmitJmp(FalseLabel);
     } else {
-        // Could optimize for constant conditions here
         GetVal();
         Check(CurrentType == VT_INT);
         EmitToBool();
@@ -2030,40 +2080,43 @@ void MakeOutputFilename(char* dest, const char* n)
 
 int AddId(const char* s)
 {
-    const int id = IdCount++;
-    IdOffset[id] = IdBufferIndex;
+    const int Id = IdCount++;
+    int Hash = HASHINIT;
+    char ch;
+    IdOffset[Id] = IdBufferIndex;
     while (1) {
-        if (!(IdBuffer[IdBufferIndex++] = *s++))
+        if ((ch = *s++) <= ' ')
             break;
+        IdBuffer[IdBufferIndex++] = ch;
+        Hash = Hash*HASHMUL+ch;
     }
-    return id;
+    IdBuffer[IdBufferIndex++] = 0;
+    AddIdHash(Id, Hash);
+    return Id;
 }
 
 void AddBuiltins(const char* s)
 {
-    char ch;
-    IdOffset[0] = 0;
     for (;;) {
-        ch = *s++;
-        if (ch <= ' ') {
-            IdBuffer[IdBufferIndex++] = 0;
-            IdOffset[++IdCount] = IdBufferIndex;
-            if (!ch) break;
-        } else {
-            IdBuffer[IdBufferIndex++] = ch;
-        }
+        AddId(s);
+        while (*s > ' ')
+            ++s;
+        if (!*s++) break;
     }
     Check(IdCount+TOK_BREAK-1 == TOK_VA_ARG);
 }
 
 int main(int argc, char** argv)
 {
+    int i;
+
     Output        = malloc(OUTPUT_MAX);
     LineBuf       = malloc(LINEBUF_MAX);
     TempBuf       = malloc(TMPBUF_MAX);
     InBuf         = malloc(INBUF_MAX);
     IdBuffer      = malloc(IDBUFFER_MAX);
     IdOffset      = malloc(sizeof(int)*ID_MAX);
+    IdHashTab     = malloc(sizeof(int)*ID_MAX);
     VarDeclId     = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclType   = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
@@ -2071,6 +2124,9 @@ int main(int argc, char** argv)
     Scopes        = malloc(sizeof(int)*SCOPE_MAX);
     LabelAddr     = malloc(sizeof(int)*LABEL_MAX);
     LabelRef      = malloc(sizeof(int)*LABEL_MAX);
+
+    for (i = 0; i < ID_MAX; ++i)
+        IdHashTab[i] = -1;
 
     if (argc < 2) {
         Printf("Usage: %s input-file\n", argv[0]);
@@ -2129,8 +2185,6 @@ int main(int argc, char** argv)
     PopScope();
     close(InFile);
 
-
-    int i;
     for (i = 0 ; i < Scopes[0]; ++i) {
         const int Loc = VarDeclType[i] & VT_LOCMASK;
         if (Loc == VT_LOCGLOB && !VarDeclOffset[i]) {
