@@ -122,16 +122,17 @@ enum {
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 300,
-    ID_MAX = 512, // Must be power of 2
+    ID_MAX = 450,
+    ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 4096,
     LABEL_MAX = 300,
     OUTPUT_MAX = 0x6000,
 };
 
 enum {
-    //DJB2
-    HASHINIT = 5381,
-    HASHMUL  = 33,
+    // Brute forced best values (when change was made)
+    HASHINIT = 17,
+    HASHMUL  = 89,
 };
 
 enum {
@@ -831,12 +832,13 @@ void GetStringLiteral(void)
 
 void AddIdHash(int Id, int Hash)
 {
+    int i = 0;
     for (;;) {
-        Hash &= ID_MAX-1;
+        Hash &= ID_HASHMAX-1;
         if (IdHashTab[Hash] == -1) {
             break;
         }
-        ++Hash;
+        Hash += 1 + i++;
     }
     IdHashTab[Hash] = Id;
 }
@@ -844,8 +846,9 @@ void AddIdHash(int Id, int Hash)
 int GetStrIdHash(const char* Str, int Hash)
 {
     int Id;
-    for (;; ++Hash) {
-        Hash &= ID_MAX-1;
+    int i = 0;
+    for (;;) {
+        Hash &= ID_HASHMAX-1;
         Id = IdHashTab[Hash];
         if (Id == -1) {
             break;
@@ -853,6 +856,7 @@ int GetStrIdHash(const char* Str, int Hash)
         if (StrEqual(Str, IdText(Id))) {
             break;
         }
+        Hash += 1 + i++;
     }
     return Id;
 }
@@ -2116,7 +2120,7 @@ int main(int argc, char** argv)
     InBuf         = malloc(INBUF_MAX);
     IdBuffer      = malloc(IDBUFFER_MAX);
     IdOffset      = malloc(sizeof(int)*ID_MAX);
-    IdHashTab     = malloc(sizeof(int)*ID_MAX);
+    IdHashTab     = malloc(sizeof(int)*ID_HASHMAX);
     VarDeclId     = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclType   = malloc(sizeof(int)*VARDECL_MAX);
     VarDeclOffset = malloc(sizeof(int)*VARDECL_MAX);
@@ -2125,7 +2129,7 @@ int main(int argc, char** argv)
     LabelAddr     = malloc(sizeof(int)*LABEL_MAX);
     LabelRef      = malloc(sizeof(int)*LABEL_MAX);
 
-    for (i = 0; i < ID_MAX; ++i)
+    for (i = 0; i < ID_HASHMAX; ++i)
         IdHashTab[i] = -1;
 
     if (argc < 2) {
