@@ -26,6 +26,7 @@
 enum { CREATE_FLAGS = 1 }; // Ugly hack
 
 int main(int argc, char** argv);
+int DosCall(int* ax, int bx, int cx, int dx);
 
 char* HeapStart;
 
@@ -40,14 +41,14 @@ char* malloc(int Size)
 void exit(int retval)
 {
     retval = (retval & 0xff) | 0x4c00;
-    _DosCall(&retval, 0, 0, 0);
+    DosCall(&retval, 0, 0, 0);
 }
 
 void putchar(int ch)
 {
     int ax;
     ax = 0x200;
-    _DosCall(&ax, 0, 0, ch);
+    DosCall(&ax, 0, 0, ch);
 }
 
 int open(const char* filename, int flags, ...)
@@ -58,7 +59,7 @@ int open(const char* filename, int flags, ...)
     else
         ax = 0x3d00; // open existing file
 
-    if (_DosCall(&ax, 0, 0, filename))
+    if (DosCall(&ax, 0, 0, filename))
         return -1;
     return ax;
 }
@@ -67,14 +68,14 @@ void close(int fd)
 {
     int ax;
     ax = 0x3e00;
-    _DosCall(&ax, fd, 0, 0);
+    DosCall(&ax, fd, 0, 0);
 }
 
 int read(int fd, char* buf, int count)
 {
     int ax;
     ax = 0x3f00;
-    if (_DosCall(&ax, fd, count, buf))
+    if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
 }
@@ -83,7 +84,7 @@ int write(int fd, const char* buf, int count)
 {
     int ax;
     ax = 0x4000;
-    if (_DosCall(&ax, fd, count, buf))
+    if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
 }
@@ -131,7 +132,7 @@ enum {
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 350,
-    ID_MAX = 450,
+    ID_MAX = 500,
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 4096,
     LABEL_MAX = 300,
@@ -239,6 +240,8 @@ enum {
     TOK_VA_START,
     TOK_VA_END,
     TOK_VA_ARG,
+
+    TOK__EMIT,
 
     TOK_ID
 };
@@ -963,10 +966,10 @@ void GetToken(void)
         for (;;) {
             if (IsDigit(ch)) {
                 ch -= '0';
-            } else if (ch >= 'A' && ch <= 'F') {
-                ch -= 'A'-10;
-            } else if (ch >= 'a' && ch <= 'f') {
-                ch -= 'a'-10;
+            } else if (IsAlpha(ch)) {
+                ch = (ch & 0xdf) - ('A'-10);
+            } else {
+                break;
             }
             if (ch < 0 || ch >= base)
                 break;
@@ -2111,6 +2114,10 @@ void ParseStatement(void)
             EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
+    } else if(Accept(TOK__EMIT)) {
+        ParseExpr();
+        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
+        OutputBytes(CurrentVal & 0xff, -1);
     } else {
         // Expression statement
         ParseExpr();
@@ -2286,8 +2293,23 @@ void AddBuiltins(const char* s)
             ++s;
         if (!*s++) break;
     }
-    Check(IdCount+TOK_BREAK-1 == TOK_VA_ARG);
 }
+
+#if 0
+int DosCall(int* ax, int bx, int cx, int dx)
+{
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0X4]
+    _emit I_MOV_RM_R|1          _emit MODRM_BX                       // 8B07              MOV AX,[BX]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 6 // 8B5E06            MOV BX,[BP+0X6]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // 8B4E08            MOV CX,[BP+0X8]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_DX<<3 _emit 10// 8B560A            MOV DX,[BP+0XA]
+    _emit I_INT                 _emit 0x21                           // CD21              INT 0X21
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0X4]
+    _emit I_MOV_R_RM|1          _emit MODRM_BX                       // 8907              MOV [BX],AX
+    _emit I_MOV_R_IMM16|R_AX    _emit 0x00                   _emit 0 // B80000            MOV AX,0X0
+    _emit I_SBB|1               _emit MODRM_REG                      // 19C0              SBB AX,AX
+}
+#endif
 
 int main(int argc, char** argv)
 {
@@ -2319,31 +2341,16 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    AddBuiltins("break char const continue else enum for if int return sizeof struct void while va_list va_start va_end va_arg");
+    AddBuiltins("break char const continue else enum for if int return sizeof struct void while va_list va_start va_end va_arg _emit");
+    Check(IdCount+TOK_BREAK-1 == TOK__EMIT);
 
     PushScope();
 
     // Prelude
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
-    EmitCall(AddVarDecl(AddId("_start")));
-    OutputBytes(I_RET, -1);
-    CurrentType = VT_FUN|VT_INT|VT_LOCGLOB;
-    EmitGlobalLabel(AddVarDecl(AddId("_DosCall")));
-    EmitPush(R_BP);
-    EmitMovRR(R_BP, R_SP);
-    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
-    OutputBytes(I_MOV_RM_R|1, MODRM_BX, -1);
-    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 6, -1);
-    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_CX<<3, 8, -1);
-    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_DX<<3, 10, -1);
-    OutputBytes(I_INT, 0x21, -1);
-    OutputBytes(I_MOV_RM_R|1, MODRM_BP_DISP8|R_BX<<3, 4, -1);
-    OutputBytes(I_MOV_R_RM|1, MODRM_BX, -1);
-    EmitMovRImm(R_AX, 0);
-    OutputBytes(I_SBB|1, MODRM_REG, -1);
-    EmitPop(R_BP);
-    OutputBytes(I_RET, -1);
+    OutputBytes(I_JMP, -1);
+    EmitGlobalRefRel(AddVarDecl(AddId("_start")));
 
     CurrentType = VT_CHAR|VT_LOCGLOB;
     struct VarDecl* SBSS = AddVarDecl(AddId("_SBSS"));
