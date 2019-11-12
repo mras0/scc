@@ -88,16 +88,19 @@ int write(int fd, const char* buf, int count)
     return ax;
 }
 
-void _start(int Len, char* CmdLine)
+void _start(void)
 {
     // Clear BSS
     char* bss = &_SBSS;
     while (bss != &_EBSS)
         *bss++ = 0;
 
+    char* CmdLine = (char*)0x80;
+    int Len = *CmdLine++ & 0xff;
+    CmdLine[Len] = 0;
+
     char **Args;
     int NumArgs;
-    CmdLine[Len] = 0;
 
     HeapStart = &_EBSS;
     Args = malloc(sizeof(char*)*10);
@@ -363,7 +366,7 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
         if (ch == 's') {
             dest = CopyStr(dest, va_arg(vl, char*));
         } else if(ch == 'c') {
-            *dest++ = va_arg(vl, int);
+            *dest++ = (char)va_arg(vl, int);
         } else if ((ch == '+' && *format == 'd') || ch == 'd') {
             char* buf;
             int n;
@@ -516,9 +519,9 @@ void OutputBytes(int first, ...)
     char* o = Output - CODESTART;
     va_list vl;
     va_start(vl, first);
-    o[CodeAddress++] = first;
+    o[CodeAddress++] = (char)first;
     while ((first = va_arg(vl, int)) != -1) {
-        o[CodeAddress++] = first;
+        o[CodeAddress++] = (char)first;
     }
     va_end(vl);
 }
@@ -555,8 +558,8 @@ void DoFixups(int r, int relative)
             f -= r + 2;
         c = Output + r - CODESTART;
         r = (c[0]&0xff)|(c[1]&0xff)<<8;
-        c[0] = f;
-        c[1] = f>>8;
+        c[0] = (char)(f);
+        c[1] = (char)(f>>8);
     }
 }
 
@@ -940,7 +943,7 @@ void GetToken(void)
     if (!ch) {
         TokenType = TOK_EOF;
         return;
-    }
+      }
 
     if (ch == '#') {
         SkipLine();
@@ -993,7 +996,7 @@ void GetToken(void)
             Check(IdCount < ID_MAX);
             TokenType = IdCount++;
             IdOffset[TokenType] = IdBufferIndex;
-            IdBufferIndex += pc - start;
+            IdBufferIndex += (int)(pc - start);
             AddIdHash(TokenType, Hash);
         }
         TokenType += TOK_BREAK;
@@ -1559,8 +1562,6 @@ void ParseUnaryExpression(void)
             if (IsConst) {
                 CurrentVal = !CurrentVal;
             } else {
-                int Lab;
-                Lab = MakeLabel();
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
                 CurrentType = VT_BOOL;
@@ -1584,7 +1585,25 @@ void ParseUnaryExpression(void)
 
 void ParseCastExpression(void)
 {
-    ParseUnaryExpression();
+    if (Accept(TOK_LPAREN)) {
+        if (IsTypeStart()) {
+            ParseDeclSpecs();
+            Expect(TOK_RPAREN);
+            const int T = CurrentType;
+            const int S = CurrentStruct;
+            Check(!(T & VT_LOCMASK));
+            ParseCastExpression();
+            LvalToRval();
+            GetVal(); // TODO: could optimize some constant expressions here
+            CurrentType = T;
+            CurrentStruct = S;
+        } else {
+            ParseExpr();
+            Expect(TOK_RPAREN);
+        }
+    } else {
+        ParseUnaryExpression();
+    }
 }
 
 int RelOpToCC(int Op)
@@ -1894,7 +1913,7 @@ void ParseDeclSpecs(void)
         GetToken();
         Check(IsTypeStart());
     }
-    int t;
+    int t = VT_VOID;
     if (TokenType == TOK_STRUCT) {
         t = VT_STRUCT;
         GetToken();
@@ -2306,13 +2325,8 @@ int main(int argc, char** argv)
 
     // Prelude
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
-    EmitMovRImm(R_AX, 0x81);
-    EmitPush(R_AX);
-    OutputBytes(0xA0, 0x80, 0x00, -1); // MOV AL, [0x80]
-    EmitPush(R_AX);
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
     EmitCall(AddVarDecl(AddId("_start")));
-    EmitAddRegConst(R_SP, 4);
     OutputBytes(I_RET, -1);
     CurrentType = VT_FUN|VT_INT|VT_LOCGLOB;
     EmitGlobalLabel(AddVarDecl(AddId("_DosCall")));
@@ -2346,7 +2360,7 @@ int main(int argc, char** argv)
         struct VarDecl* vd = &VarDecls[i];
         int T = vd->Type;
         const int Loc = T & VT_LOCMASK;
-        if (Loc == VT_LOCGLOB && !VarDecls[i].Offset) {
+        if (Loc == VT_LOCGLOB && !vd->Offset) {
             T &= ~VT_LOCMASK;
             if (T & VT_FUN) {
                 Printf("%s is undefined (Type: %X)\n", IdText(vd->Id), T);
