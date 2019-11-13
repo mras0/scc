@@ -17,3 +17,14 @@ add_executable(scc scc.c)
 if (MSVC)
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT scc)
 endif()
+
+add_custom_command(
+    OUTPUT scc.com
+    COMMAND $<TARGET_FILE:scc> scc.c
+    COMMAND ${CMAKE_COMMAND} -E copy scc.com "${CMAKE_CURRENT_BINARY_DIR}"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+add_custom_target(scc_com DEPENDS scc.com)
+
+add_subdirectory(test)
