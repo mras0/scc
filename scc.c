@@ -307,6 +307,8 @@ int StructCount;
 
 struct VarDecl* VarDecls;
 
+struct VarDecl* MemcpyDecl;
+
 int* Scopes; // VarDecl index
 int ScopesCount;
 
@@ -1415,7 +1417,7 @@ void HandleStructMember(void)
     }
 }
 
-enum { MaxArgs = 4 }; // TODO: Handle this better...
+enum { MaxArgs = 4 }; // Maximum number of arguments per "chunk"
 void ParsePostfixExpression(void)
 {
     for (;;) {
@@ -1428,12 +1430,24 @@ void ParsePostfixExpression(void)
             struct VarDecl* Func = &VarDecls[CurrentVal];
             const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
             int NumArgs = 0;
+            int StackAdj = 0;
             while (TokenType != TOK_RPAREN) {
-                if (!NumArgs) {
-                    EmitAddRegConst(R_SP, -MaxArgs*2);
+                if (NumArgs % MaxArgs == 0) {
+                    StackAdj += MaxArgs*2;
                     LocalOffset -= MaxArgs*2;
+                    EmitAddRegConst(R_SP, -MaxArgs*2);
+                    if (NumArgs) {
+                        // Move arguments to new stack top
+                        EmitMovRImm(R_AX, NumArgs*2);
+                        EmitPush(R_AX);
+                        EmitLeaStackVar(R_AX, LocalOffset + MaxArgs*2);
+                        EmitPush(R_AX);
+                        EmitAddRegConst(R_AX, -MaxArgs*2);
+                        EmitPush(R_AX);
+                        EmitCall(MemcpyDecl);
+                        EmitAddRegConst(R_SP, 6);
+                    }
                 }
-                Check(NumArgs < MaxArgs);
                 ParseAssignmentExpression();
                 LvalToRval();
                 const int off = LocalOffset + NumArgs*2;
@@ -1453,9 +1467,9 @@ void ParsePostfixExpression(void)
             }
             Expect(TOK_RPAREN);
             EmitCall(Func);
-            if (NumArgs) {
-                EmitAddRegConst(R_SP, MaxArgs*2);
-                LocalOffset += MaxArgs*2;
+            if (StackAdj) {
+                EmitAddRegConst(R_SP, StackAdj);
+                LocalOffset += StackAdj;
             }
             CurrentType = RetType;
             if (CurrentType == VT_CHAR) {
@@ -2298,16 +2312,28 @@ void AddBuiltins(const char* s)
 #if 0
 int DosCall(int* ax, int bx, int cx, int dx)
 {
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0X4]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0x4]
     _emit I_MOV_RM_R|1          _emit MODRM_BX                       // 8B07              MOV AX,[BX]
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 6 // 8B5E06            MOV BX,[BP+0X6]
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // 8B4E08            MOV CX,[BP+0X8]
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_DX<<3 _emit 10// 8B560A            MOV DX,[BP+0XA]
-    _emit I_INT                 _emit 0x21                           // CD21              INT 0X21
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0X4]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 6 // 8B5E06            MOV BX,[BP+0x6]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // 8B4E08            MOV CX,[BP+0x8]
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_DX<<3 _emit 10// 8B560A            MOV DX,[BP+0xA]
+    _emit I_INT                 _emit 0x21                           // CD21              INT 0x21
+    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0x4]
     _emit I_MOV_R_RM|1          _emit MODRM_BX                       // 8907              MOV [BX],AX
-    _emit I_MOV_R_IMM16|R_AX    _emit 0x00                   _emit 0 // B80000            MOV AX,0X0
+    _emit I_MOV_R_IMM16|R_AX    _emit 0x00                   _emit 0 // B80000            MOV AX,0x0
     _emit I_SBB|1               _emit MODRM_REG                      // 19C0              SBB AX,AX
+}
+
+void memcpy(char* dst, const char* src, int size)
+{
+    _emit I_PUSH|R_SI                                       // PUSH SI
+    _emit I_PUSH|R_DI                                       // PUSH DI
+    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_DI<<3 _emit 4 // MOV DI,[BP+0x4]
+    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_SI<<3 _emit 6 // MOV SI,[BP+0x6]
+    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // MOV CX,[BP+0x8]
+    _emit 0xF3         _emit 0xA4                           // REP MOVSB
+    _emit I_POP|R_DI                                        // POP DI
+    _emit I_POP|R_SI                                        // POP SI
 }
 #endif
 
@@ -2355,6 +2381,9 @@ int main(int argc, char** argv)
     CurrentType = VT_CHAR|VT_LOCGLOB;
     struct VarDecl* SBSS = AddVarDecl(AddId("_SBSS"));
     struct VarDecl* EBSS = AddVarDecl(AddId("_EBSS"));
+
+    CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
+    MemcpyDecl = AddVarDecl(AddId("memcpy"));
 
     GetToken();
     while (TokenType != TOK_EOF) {
