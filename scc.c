@@ -1792,7 +1792,7 @@ void ParseExpr1(int OuterPrecedence)
             LEnd = -1;
             if (!(LhsType & VT_LOCMASK)) {
                 Check(!PendingPushAx);
-                PendingPushAx = 1;
+                PendingPushAx = Op != TOK_COMMA;
             }
         }
 
@@ -1801,10 +1801,15 @@ void ParseExpr1(int OuterPrecedence)
         for (;;) {
             const int LookAheadOp         = TokenType;
             const int LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
-            if (LookAheadPrecedence > Prec || (LookAheadPrecedence == Prec && LookAheadPrecedence < PRED_EQ)) // LookAheadOp < PRED_EQ => !IsRightAssociative
+            if (LookAheadPrecedence > Prec || (LookAheadPrecedence == Prec && LookAheadPrecedence != PRED_EQ)) // LookAheadOp != PRED_EQ => !IsRightAssociative
                 break;
             ParseExpr1(LookAheadPrecedence);
         }
+
+        if (Op == TOK_COMMA) {
+            continue;
+        }
+
         LvalToRval();
         LhsLoc = LhsType & VT_LOCMASK;
         LhsType &= ~VT_LOCMASK;
