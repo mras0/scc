@@ -1,5 +1,6 @@
 set(TESTS
     comma
+    dowhile
     )
 
 set(TESTCMDS "scc.com scc.c\nscc.com scc.c\n")

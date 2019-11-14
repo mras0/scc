@@ -225,6 +225,7 @@ enum {
     TOK_CHAR,
     TOK_CONST,
     TOK_CONTINUE,
+    TOK_DO,
     TOK_ELSE,
     TOK_ENUM,
     TOK_FOR,
@@ -719,9 +720,15 @@ void EmitJmp(int l)
 
 void EmitJcc(int cc, int l)
 {
-    OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
-    OutputBytes(I_JMP, -1);
-    EmitLocalRefRel(l);
+    int a = Labels[l].Addr;
+    if (a && CodeAddress+2-a <= 0x80) {
+        Check(a < CodeAddress);
+        OutputBytes(0x70 | cc, (a-CodeAddress-2)&0xff, -1);
+    } else {
+        OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
+        OutputBytes(I_JMP, -1);
+        EmitLocalRefRel(l);
+    }
 }
 
 void EmitCall(struct VarDecl* Func)
@@ -1989,31 +1996,43 @@ struct VarDecl* ParseDecl(void)
     return AddVarDecl(ExpectId());
 }
 
-void DoJumpFalse(int FalseLabel)
+void DoCond(int Label, int Forward) // forward => jump if label is false
 {
     ParseExpr();
     LvalToRval();
     if (CurrentType == VT_BOOL) {
-        EmitJcc(CurrentVal^1, FalseLabel);
+        EmitJcc(CurrentVal^Forward, Label);
     } else if (CurrentType == (VT_LOCLIT|VT_INT)) {
         // Constant condition
-        if (!CurrentVal)
-            EmitJmp(FalseLabel);
+        if (CurrentVal != Forward)
+            EmitJmp(Label);
     } else {
         GetVal();
         Check(CurrentType == VT_INT);
         EmitToBool();
-        EmitJcc(JZ, FalseLabel);
+        EmitJcc(JNZ^Forward, Label);
     }
 }
 
 void ParseCompoundStatement(void);
+void ParseStatement(void);
 
-void ParseStatement(void)
+void DoLoopStatements(int BLabel, int CLabel)
 {
     const int OldBreak    = BreakLabel;
     const int OldContinue = ContinueLabel;
+    const int OldBCStack = BCStackLevel;
+    BreakLabel    = BLabel;
+    ContinueLabel = CLabel;
+    BCStackLevel  = LocalOffset;
+    ParseStatement();
+    BCStackLevel  = OldBCStack;
+    BreakLabel    = OldBreak;
+    ContinueLabel = OldContinue;
+}
 
+void ParseStatement(void)
+{
     if (Accept(TOK_SEMICOLON)) {
     } else if (TokenType == TOK_LBRACE) {
         ParseCompoundStatement();
@@ -2040,6 +2059,48 @@ void ParseStatement(void)
             EmitAddRegConst(R_SP, -size);
         }
         Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_RETURN)) {
+        if (TokenType != TOK_SEMICOLON) {
+            ParseExpr();
+            LvalToRval();
+            GetVal();
+        }
+        if (LocalOffset)
+            ReturnUsed = 1;
+        EmitJmp(ReturnLabel);
+        Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_BREAK)) {
+        Check(BreakLabel >= 0);
+        if (LocalOffset != BCStackLevel)
+            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
+        EmitJmp(BreakLabel);
+        Expect(TOK_SEMICOLON);
+    } else if (Accept(TOK_CONTINUE)) {
+        Check(ContinueLabel >= 0);
+        if (LocalOffset != BCStackLevel)
+            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
+        EmitJmp(ContinueLabel);
+        Expect(TOK_SEMICOLON);
+    } else if(Accept(TOK__EMIT)) {
+        ParseExpr();
+        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
+        OutputBytes(CurrentVal & 0xff, -1);
+    } else if (Accept(TOK_IF)) {
+        const int ElseLabel = MakeLabel();
+
+        Accept(TOK_LPAREN);
+        DoCond(ElseLabel, 1);
+        Accept(TOK_RPAREN);
+        ParseStatement();
+        if (Accept(TOK_ELSE)) {
+            const int EndLabel  = MakeLabel();
+            EmitJmp(EndLabel);
+            EmitLocalLabel(ElseLabel);
+            ParseStatement();
+            EmitLocalLabel(EndLabel);
+        } else {
+            EmitLocalLabel(ElseLabel);
+        }
     } else if (Accept(TOK_FOR)) {
         const int CondLabel = MakeLabel();
         const int BodyLabel = MakeLabel();
@@ -2057,7 +2118,7 @@ void ParseStatement(void)
         // Cond
         EmitLocalLabel(CondLabel);
         if (TokenType != TOK_SEMICOLON) {
-            DoJumpFalse(EndLabel);
+            DoCond(EndLabel, 1);
         }
         Expect(TOK_SEMICOLON);
 
@@ -2072,79 +2133,37 @@ void ParseStatement(void)
         Expect(TOK_RPAREN);
 
         EmitLocalLabel(BodyLabel);
-        BreakLabel    = EndLabel;
-        ContinueLabel = IterLabel;
-        const int OldBCStack = BCStackLevel;
-        BCStackLevel  = LocalOffset;
-        ParseStatement();
-        BCStackLevel  = OldBCStack;
+        DoLoopStatements(EndLabel, IterLabel);
         EmitJmp(IterLabel);
         EmitLocalLabel(EndLabel);
-    } else if (Accept(TOK_IF)) {
-        const int ElseLabel = MakeLabel();
-
-        Accept(TOK_LPAREN);
-        DoJumpFalse(ElseLabel);
-        Accept(TOK_RPAREN);
-        ParseStatement();
-        if (Accept(TOK_ELSE)) {
-            const int EndLabel  = MakeLabel();
-            EmitJmp(EndLabel);
-            EmitLocalLabel(ElseLabel);
-            ParseStatement();
-            EmitLocalLabel(EndLabel);
-        } else {
-            EmitLocalLabel(ElseLabel);
-        }
-    } else if (Accept(TOK_RETURN)) {
-        if (TokenType != TOK_SEMICOLON) {
-            ParseExpr();
-            LvalToRval();
-            GetVal();
-        }
-        if (LocalOffset)
-            ReturnUsed = 1;
-        EmitJmp(ReturnLabel);
-        Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_WHILE)) {
         const int StartLabel = MakeLabel();
         const int EndLabel   = MakeLabel();
         EmitLocalLabel(StartLabel);
         Expect(TOK_LPAREN);
-        DoJumpFalse(EndLabel);
+        DoCond(EndLabel, 1);
         Expect(TOK_RPAREN);
-        BreakLabel = EndLabel;
-        ContinueLabel = StartLabel;
-        const int OldBCStack = BCStackLevel;
-        BCStackLevel  = LocalOffset;
-        ParseStatement();
-        BCStackLevel  = OldBCStack;
+        DoLoopStatements(EndLabel, StartLabel);
         EmitJmp(StartLabel);
         EmitLocalLabel(EndLabel);
-    } else if (Accept(TOK_BREAK)) {
-        Check(BreakLabel >= 0);
-        if (LocalOffset != BCStackLevel)
-            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
-        EmitJmp(BreakLabel);
+    } else if (Accept(TOK_DO)) {
+        const int StartLabel = MakeLabel();
+        const int CondLabel  = MakeLabel();
+        const int EndLabel   = MakeLabel();
+        EmitLocalLabel(StartLabel);
+        DoLoopStatements(EndLabel, CondLabel);
+        EmitLocalLabel(CondLabel);
+        Expect(TOK_WHILE);
+        Expect(TOK_LPAREN);
+        DoCond(StartLabel, 0);
+        Expect(TOK_RPAREN);
         Expect(TOK_SEMICOLON);
-    } else if (Accept(TOK_CONTINUE)) {
-        Check(ContinueLabel >= 0);
-        if (LocalOffset != BCStackLevel)
-            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
-        EmitJmp(ContinueLabel);
-        Expect(TOK_SEMICOLON);
-    } else if(Accept(TOK__EMIT)) {
-        ParseExpr();
-        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
-        OutputBytes(CurrentVal & 0xff, -1);
+        EmitLocalLabel(EndLabel);
     } else {
         // Expression statement
         ParseExpr();
         Expect(TOK_SEMICOLON);
     }
-
-    BreakLabel    = OldBreak;
-    ContinueLabel = OldContinue;
 }
 
 void ParseCompoundStatement(void)
@@ -2372,7 +2391,7 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    AddBuiltins("break char const continue else enum for if int return sizeof struct void while va_list va_start va_end va_arg _emit");
+    AddBuiltins("break char const continue do else enum for if int return sizeof struct void while va_list va_start va_end va_arg _emit");
     Check(IdCount+TOK_BREAK-1 == TOK__EMIT);
 
     PushScope();
