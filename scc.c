@@ -338,7 +338,7 @@ int CurrentVal;
 int CurrentStruct;
 
 int ReturnUsed;
-int PendingPushAx;
+int PendingPushAx; // Remember to adjsust LocalOffset!
 int IsDeadCode;
 
 int IsDigit(int ch)
@@ -788,6 +788,7 @@ int EmitChecks(void)
     if (PendingPushAx) {
         PendingPushAx = 0;
         EmitPush(R_AX);
+        LocalOffset -= 2;
     }
     return 0;
 }
@@ -1534,18 +1535,26 @@ void ParsePostfixExpression(void)
             const int Scale    = SizeofType();
             const int ResType  = CurrentType | VT_LVAL;
             const int ResExtra = CurrentStruct;
-            EmitPush(R_AX);
+            Check(!PendingPushAx);
+            PendingPushAx = 1;
             ParseExpr();
             Expect(TOK_RBRACKET);
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 CurrentVal *= Scale;
-                EmitPop(R_AX);
+                if (PendingPushAx) {
+                    PendingPushAx = 0;
+                } else {
+                    EmitPop(R_AX);
+                    LocalOffset += 2;
+                }
                 OutputBytes(I_ADD|5, CurrentVal&0xff, (CurrentVal>>8)&0xff, -1);
             } else {
                 LvalToRval();
                 Check(CurrentType == VT_INT);
                 EmitScaleAx(Scale);
+                Check(!PendingPushAx);
                 EmitPop(R_CX);
+                LocalOffset += 2;
                 OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
             }
             CurrentType   = ResType;
@@ -1886,6 +1895,7 @@ void ParseExpr1(int OuterPrecedence)
                     EmitMovRR(R_BX, R_AX);
                 } else {
                     EmitPop(R_BX);
+                    LocalOffset += 2;
                 }
             } else {
                 Check(LhsLoc == VT_LOCOFF || LhsLoc == VT_LOCGLOB);
@@ -1935,6 +1945,8 @@ void ParseExpr1(int OuterPrecedence)
                 } else {
                     Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
                     EmitPop(R_CX);
+                    Check(!PendingPushAx);
+                    LocalOffset += 2;
                 }
                 if (!Temp)
                     OutputBytes(I_XCHG_AX | R_CX, -1);

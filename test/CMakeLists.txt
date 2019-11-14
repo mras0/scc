@@ -2,6 +2,7 @@ set(TESTS
     comma
     dowhile
     lgoto # goto would clash with DOS goto builtin
+    struct
     )
 
 set(TESTCMDS "scc.com scc.c\nscc.com scc.c\n")
