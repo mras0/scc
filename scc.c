@@ -136,8 +136,9 @@ enum {
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 4096,
     LABEL_MAX = 300,
+    NAMED_LABEL_MAX = 10,
     OUTPUT_MAX = 0x6000,
-    STRUCT_MAX = 4,
+    STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
 };
 
@@ -181,6 +182,7 @@ enum {
     TOK_LBRACKET,
     TOK_RBRACKET,
     TOK_COMMA,
+    TOK_COLON,
     TOK_SEMICOLON,
     TOK_EQ,
     TOK_EQEQ,
@@ -229,6 +231,7 @@ enum {
     TOK_ELSE,
     TOK_ENUM,
     TOK_FOR,
+    TOK_GOTO,
     TOK_IF,
     TOK_INT,
     TOK_RETURN,
@@ -254,6 +257,11 @@ enum {
 struct Label {
     int Addr;
     int Ref;
+};
+
+struct NamedLabel {
+    int Id;
+    int LabelId;
 };
 
 struct StructMember {
@@ -315,6 +323,9 @@ int ScopesCount;
 
 struct Label* Labels;
 int LocalLabelCounter;
+
+struct NamedLabel* NamedLabels;
+int NamedLabelCount;
 
 int LocalOffset;
 int ReturnLabel;
@@ -434,8 +445,23 @@ int StrEqual(const char* a, const char* b)
     return !*a && !*b;
 }
 
+#if 0
+int* GetBP(void)
+{
+    _emit 0x8B _emit 0x46 _emit 0x00 // MOV AX, [BP]
+}
+#endif
+
 void Fatal(const char* Msg)
 {
+#if 0
+    int* BP = GetBP();
+    Printf("BP   Return address\n");
+    while (*BP) {
+        Printf("%X %X\n", BP[0], BP[1]);
+        BP = (int*)BP[0];
+    }
+#endif
     Printf("In line %d: %s\n", Line, Msg);
     exit(1);
 }
@@ -546,12 +572,28 @@ int MakeLabel(void)
     return l;
 }
 
+int GetNamedLabel(int Id)
+{
+    int l;
+    for (l = 0; l < NamedLabelCount; ++l) {
+        if (NamedLabels[l].Id == Id) {
+            return l;
+        }
+    }
+    Check(NamedLabelCount < NAMED_LABEL_MAX);
+    l = NamedLabelCount++;
+    NamedLabels[l].Id = Id;
+    NamedLabels[l].LabelId = MakeLabel();
+    return l;
+}
+
 void ResetLabels(void)
 {
     int l;
     for (l = 0; l < LocalLabelCounter; ++l)
         Check(Labels[l].Ref == 0);
     LocalLabelCounter = 0;
+    NamedLabelCount = 0;
 }
 
 void DoFixups(int r, int relative)
@@ -864,7 +906,6 @@ char Unescape(void)
     } else if (ch == '\\') {
         return '\\';
     } else {
-        Printf("TODO: Escaped character literal \\%c\n", ch);
         Fatal("Unsupported character literal");
     }
 }
@@ -1026,13 +1067,15 @@ void GetToken(void)
     } else if (ch == '"') {
         GetStringLiteral();
         TokenType = TOK_STRLIT;
-    } else if (ch == '(') { TokenType = TOK_LPAREN;    }
+    }
+    else if (ch == '(') { TokenType = TOK_LPAREN;    }
     else if (ch == ')') { TokenType = TOK_RPAREN;    }
     else if (ch == '{') { TokenType = TOK_LBRACE;    }
     else if (ch == '}') { TokenType = TOK_RBRACE;    }
     else if (ch == '[') { TokenType = TOK_LBRACKET;  }
     else if (ch == ']') { TokenType = TOK_RBRACKET;  }
     else if (ch == ',') { TokenType = TOK_COMMA;     }
+    else if (ch == ':') { TokenType = TOK_COLON;     }
     else if (ch == ';') { TokenType = TOK_SEMICOLON; }
     else if (ch == '~') { TokenType = TOK_TILDE;     }
     else if (ch == '=') {
@@ -1129,7 +1172,6 @@ void GetToken(void)
             TokenType = TOK_ELLIPSIS;
         }
     } else {
-        Printf("Unknown token start '%c' (%d)\n", ch, ch);
         Fatal("Unknown token encountered");
     }
 }
@@ -1194,7 +1236,6 @@ int StructMemberIndex(int Id)
             return i;
         }
     }
-    Printf("\"%s\" not found in struct %s\n", IdText(Id), IdText(StructDecls[CurrentStruct].Id));
     Fatal("Invalid struct member");
 }
 
@@ -1305,10 +1346,40 @@ void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
 void ParseDeclSpecs(void);
 
+void HandlePrimaryId(int id)
+{
+    const int vd = Lookup(id);
+    if (vd < 0) {
+        // Lookup failed. TODO: Assume function returning int. (Needs to be global...)
+        if (IsDeadCode) {
+            // Hack: Allow undefined functions in dead code
+            CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
+            CurrentVal  = 0;
+            return;
+        }
+        Printf("Undefined identifier: \"%s\"\n", IdText(id));
+        Fatal("TODO");
+    }
+    CurrentType   = VarDecls[vd].Type;
+    CurrentStruct = VarDecls[vd].TypeExtra;
+    CurrentVal    = VarDecls[vd].Offset;
+    const int Loc = CurrentType & VT_LOCMASK;
+    if (Loc == VT_LOCLIT) {
+        Check(CurrentType == (VT_LOCLIT | VT_INT));
+        return;
+    }
+    CurrentType |= VT_LVAL;
+    if (Loc != VT_LOCOFF) {
+        Check(Loc == VT_LOCGLOB);
+        CurrentVal = vd;
+        if (CurrentType & VT_FUN) {
+            CurrentType &= ~VT_LVAL;
+        }
+    }
+}
+
 void ParsePrimaryExpression(void)
 {
-    int id;
-    int vd;
     if (TokenType == TOK_LPAREN) {
         GetToken();
         ParseExpr();
@@ -1327,8 +1398,8 @@ void ParsePrimaryExpression(void)
         const int func = TokenType;
         GetToken();
         Expect(TOK_LPAREN);
-        id = ExpectId();
-        vd = Lookup(id);
+        int id = ExpectId();
+        int vd = Lookup(id);
         if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
             Fatal("Invalid va_list");
         }
@@ -1355,35 +1426,7 @@ void ParsePrimaryExpression(void)
         }
         Expect(TOK_RPAREN);
     } else {
-        id = ExpectId();
-        vd = Lookup(id);
-        if (vd < 0) {
-            // Lookup failed. TODO: Assume function returning int. (Needs to be global...)
-            if (IsDeadCode) {
-                // Hack: Allow undefined functions in dead code
-                CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
-                CurrentVal  = 0;
-                return;
-            }
-            Printf("Undefined identifier: \"%s\"\n", IdText(id));
-            Fatal("TODO");
-        }
-        CurrentType   = VarDecls[vd].Type;
-        CurrentStruct = VarDecls[vd].TypeExtra;
-        CurrentVal    = VarDecls[vd].Offset;
-        const int Loc = CurrentType & VT_LOCMASK;
-        if (Loc == VT_LOCLIT) {
-            Check(CurrentType == (VT_LOCLIT | VT_INT));
-            return;
-        }
-        CurrentType |= VT_LVAL;
-        if (Loc != VT_LOCOFF) {
-            Check(Loc == VT_LOCGLOB);
-            CurrentVal = vd;
-            if (CurrentType & VT_FUN) {
-                CurrentType &= ~VT_LVAL;
-            }
-        }
+        HandlePrimaryId(ExpectId());
     }
 }
 
@@ -2008,7 +2051,7 @@ void DoCond(int Label, int Forward) // forward => jump if label is false
             EmitJmp(Label);
     } else {
         GetVal();
-        Check(CurrentType == VT_INT);
+        Check(CurrentType == VT_INT || (CurrentType&VT_PTRMASK));
         EmitToBool();
         EmitJcc(JNZ^Forward, Label);
     }
@@ -2081,7 +2124,11 @@ void ParseStatement(void)
             EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
-    } else if(Accept(TOK__EMIT)) {
+    } else if (Accept(TOK_GOTO)) {
+        int nlc = GetNamedLabel(ExpectId());
+        struct NamedLabel* nl = &NamedLabels[nlc];
+        EmitJmp(nl->LabelId);
+    } else if (Accept(TOK__EMIT)) {
         ParseExpr();
         Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
         OutputBytes(CurrentVal & 0xff, -1);
@@ -2160,8 +2207,25 @@ void ParseStatement(void)
         Expect(TOK_SEMICOLON);
         EmitLocalLabel(EndLabel);
     } else {
-        // Expression statement
-        ParseExpr();
+        // Expression statement / Labelled statement
+        if (TokenType >= TOK_ID) {
+            const int id = TokenType - TOK_BREAK;
+            GetToken();
+            if (Accept(TOK_COLON)) {
+                const int nlc = GetNamedLabel(id);
+                struct NamedLabel* nl = &NamedLabels[nlc];
+                EmitLocalLabel(nl->LabelId);
+                EmitLeaStackVar(R_SP, LocalOffset);
+                ParseStatement();
+                return;
+            } else {
+                HandlePrimaryId(id);
+                ParsePostfixExpression();
+                ParseExpr1(PRED_COMMA);
+            }
+        } else {
+            ParseExpr();
+        }
         Expect(TOK_SEMICOLON);
     }
 }
@@ -2375,6 +2439,7 @@ int main(int argc, char** argv)
     VarDecls         = malloc(sizeof(struct VarDecl)*VARDECL_MAX);
     Scopes           = malloc(sizeof(int)*SCOPE_MAX);
     Labels           = malloc(sizeof(struct Label)*LABEL_MAX);
+    NamedLabels      = malloc(sizeof(struct NamedLabel)*NAMED_LABEL_MAX);
     StructMembers    = malloc(sizeof(struct StructMember)*STRUCT_MEMBER_MAX);
     StructDecls      = malloc(sizeof(struct StructDecl)*STRUCT_MAX);
 
@@ -2382,7 +2447,7 @@ int main(int argc, char** argv)
         IdHashTab[i] = -1;
 
     if (argc < 2) {
-        Printf("Usage: %s input-file\n", argv[0]);
+        Printf("Usage: %s input-file [output-file]\n", argv[0]);
         return 1;
     }
 
@@ -2391,7 +2456,7 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    AddBuiltins("break char const continue do else enum for if int return sizeof struct void while va_list va_start va_end va_arg _emit");
+    AddBuiltins("break char const continue do else enum for goto if int return sizeof struct void while va_list va_start va_end va_arg _emit");
     Check(IdCount+TOK_BREAK-1 == TOK__EMIT);
 
     PushScope();
@@ -2430,13 +2495,17 @@ int main(int argc, char** argv)
             EmitGlobalLabel(vd);
             CodeAddress += 2;
         }
+        //if (Loc == VT_LOCGLOB && (T&VT_FUN)) Printf("%X %s\n", vd->Offset, IdText(vd->Id));
     }
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);
 
     PopScope();
 
-    MakeOutputFilename(IdBuffer, argv[1]);
+    if (argv[2])
+        *CopyStr(IdBuffer, argv[2]) = 0;
+    else
+        MakeOutputFilename(IdBuffer, argv[1]);
     const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
     if (OutFile < 0) {
         Fatal("Error creating output file");

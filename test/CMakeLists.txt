@@ -1,6 +1,7 @@
 set(TESTS
     comma
     dowhile
+    lgoto # goto would clash with DOS goto builtin
     )
 
 set(TESTCMDS "scc.com scc.c\nscc.com scc.c\n")
@@ -26,7 +27,7 @@ add_custom_target(test
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/../scc.com" ./
     COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_SOURCE_DIR}/scc.c" ./
     COMMAND dosbox runtests.bat
-    DEPENDS scc_com ${TEST_SOURCES}
+    DEPENDS scc_com ${TEST_SOURCES} "${PROJECT_SOURCE_DIR}/scc.c"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT Running tests
     )
