@@ -317,6 +317,7 @@ int StructCount;
 struct VarDecl* VarDecls;
 
 struct VarDecl* MemcpyDecl;
+int MemcpyUsed;
 
 int* Scopes; // VarDecl index
 int ScopesCount;
@@ -360,6 +361,7 @@ void PutStr(const char* s)
 char* CopyStr(char* dst, const char* src)
 {
     while (*src) *dst++ = *src++;
+    *dst = 0;
     return dst;
 }
 
@@ -403,11 +405,10 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
             }
             buf = TempBuf + TMPBUF_MAX;
             *--buf = 0;
-            for (;;) {
+            do {
                 *--buf = '0' + n % 10;
                 n/=10;
-                if (!n) break;
-            }
+            } while (n);
             if (s) *--buf = '-';
             else if (always) *--buf = '+';
             dest  = CopyStr(dest, buf);
@@ -1497,6 +1498,7 @@ void ParsePostfixExpression(void)
                         EmitPush(R_AX);
                         EmitCall(MemcpyDecl);
                         EmitAddRegConst(R_SP, 6);
+                        MemcpyUsed = 1;
                     }
                 }
                 ParseAssignmentExpression();
@@ -2137,8 +2139,7 @@ void ParseStatement(void)
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_GOTO)) {
-        int nlc = GetNamedLabel(ExpectId());
-        struct NamedLabel* nl = &NamedLabels[nlc];
+        struct NamedLabel* nl = &NamedLabels[GetNamedLabel(ExpectId())];
         EmitJmp(nl->LabelId);
     } else if (Accept(TOK__EMIT)) {
         ParseExpr();
@@ -2224,8 +2225,7 @@ void ParseStatement(void)
             const int id = TokenType - TOK_BREAK;
             GetToken();
             if (Accept(TOK_COLON)) {
-                const int nlc = GetNamedLabel(id);
-                struct NamedLabel* nl = &NamedLabels[nlc];
+                struct NamedLabel* nl = &NamedLabels[GetNamedLabel(id)];
                 EmitLocalLabel(nl->LabelId);
                 EmitLeaStackVar(R_SP, LocalOffset);
                 ParseStatement();
@@ -2379,7 +2379,7 @@ void MakeOutputFilename(char* dest, const char* n)
         *dest++ = *n++;
     }
     if (!LastDot) LastDot = dest;
-    *CopyStr(LastDot, ".com") = 0;
+    CopyStr(LastDot, ".com");
 }
 
 int AddId(const char* s)
@@ -2388,9 +2388,7 @@ int AddId(const char* s)
     int Hash = HASHINIT;
     char ch;
     IdOffset[Id] = IdBufferIndex;
-    while (1) {
-        if ((ch = *s++) <= ' ')
-            break;
+    while ((ch = *s++) > ' ') {
         IdBuffer[IdBufferIndex++] = ch;
         Hash = Hash*HASHMUL+ch;
     }
@@ -2401,12 +2399,11 @@ int AddId(const char* s)
 
 void AddBuiltins(const char* s)
 {
-    for (;;) {
+    do {
         AddId(s);
         while (*s > ' ')
             ++s;
-        if (!*s++) break;
-    }
+    } while(*s++);
 }
 
 #if 0
@@ -2498,12 +2495,13 @@ int main(int argc, char** argv)
         int T = vd->Type;
         const int Loc = T & VT_LOCMASK;
         if (Loc == VT_LOCGLOB && !vd->Offset) {
+            if (vd == EBSS || (vd == MemcpyDecl && !MemcpyUsed))
+                continue;
             T &= ~VT_LOCMASK;
             if (T & VT_FUN) {
                 Printf("%s is undefined (Type: %X)\n", IdText(vd->Id), T);
                 Fatal("Undefined function");
             }
-            if (vd == EBSS) continue;
             EmitGlobalLabel(vd);
             CodeAddress += 2;
         }
@@ -2515,7 +2513,7 @@ int main(int argc, char** argv)
     PopScope();
 
     if (argv[2])
-        *CopyStr(IdBuffer, argv[2]) = 0;
+       CopyStr(IdBuffer, argv[2]);
     else
         MakeOutputFilename(IdBuffer, argv[1]);
     const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
