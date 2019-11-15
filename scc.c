@@ -134,7 +134,7 @@ enum {
     VARDECL_MAX = 350,
     ID_MAX = 500,
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
-    IDBUFFER_MAX = 4096,
+    IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
     OUTPUT_MAX = 0x6000,
@@ -224,9 +224,11 @@ enum {
     // NOTE: Must match order of registration in main
     //       TOK_BREAK must be first
     TOK_BREAK,
+    TOK_CASE,
     TOK_CHAR,
     TOK_CONST,
     TOK_CONTINUE,
+    TOK_DEFAULT,
     TOK_DO,
     TOK_ELSE,
     TOK_ENUM,
@@ -237,6 +239,7 @@ enum {
     TOK_RETURN,
     TOK_SIZEOF,
     TOK_STRUCT,
+    TOK_SWITCH,
     TOK_VOID,
     TOK_WHILE,
 
@@ -329,8 +332,10 @@ struct NamedLabel* NamedLabels;
 int NamedLabelCount;
 
 int LocalOffset;
+// Break/Continue stack level (== LocalOffset of block)
+int BStackLevel;
+int CStackLevel;
 int ReturnLabel;
-int BCStackLevel; // Break/Continue stack level (== LocalOffset of block)
 int BreakLabel;
 int ContinueLabel;
 
@@ -549,6 +554,7 @@ int EmitChecks(void);
 void OutputBytes(int first, ...)
 {
     if (EmitChecks()) return;
+    Check(CodeAddress < OUTPUT_MAX+CODESTART);
     char* o = Output - CODESTART;
     va_list vl;
     va_start(vl, first);
@@ -1052,6 +1058,7 @@ void GetToken(void)
             TokenType = IdCount++;
             IdOffset[TokenType] = IdBufferIndex;
             IdBufferIndex += (int)(pc - start);
+            Check(IdBufferIndex <= IDBUFFER_MAX);
             AddIdHash(TokenType, Hash);
         }
         TokenType += TOK_BREAK;
@@ -2098,12 +2105,15 @@ void DoLoopStatements(int BLabel, int CLabel)
 {
     const int OldBreak    = BreakLabel;
     const int OldContinue = ContinueLabel;
-    const int OldBCStack = BCStackLevel;
+    const int OldBStack   = BStackLevel;
+    const int OldCStack   = CStackLevel;
     BreakLabel    = BLabel;
     ContinueLabel = CLabel;
-    BCStackLevel  = LocalOffset;
+    BStackLevel   = LocalOffset;
+    CStackLevel   = LocalOffset;
     ParseStatement();
-    BCStackLevel  = OldBCStack;
+    BStackLevel   = OldBStack;
+    CStackLevel   = OldCStack;
     BreakLabel    = OldBreak;
     ContinueLabel = OldContinue;
 }
@@ -2148,14 +2158,14 @@ void ParseStatement(void)
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
-        if (LocalOffset != BCStackLevel)
-            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
+        if (LocalOffset != BStackLevel)
+            EmitAddRegConst(R_SP, BStackLevel - LocalOffset);
         EmitJmp(BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
-        if (LocalOffset != BCStackLevel)
-            EmitAddRegConst(R_SP, BCStackLevel - LocalOffset);
+        if (LocalOffset != CStackLevel)
+            EmitAddRegConst(R_SP, CStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_GOTO)) {
@@ -2485,7 +2495,9 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    AddBuiltins("break char const continue do else enum for goto if int return sizeof struct void while va_list va_start va_end va_arg _emit");
+    AddBuiltins("break case char const continue default do else enum for goto if"
+        " int return sizeof struct switch void while"
+        " va_list va_start va_end va_arg _emit");
     Check(IdCount+TOK_BREAK-1 == TOK__EMIT);
 
     PushScope();
