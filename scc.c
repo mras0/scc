@@ -1469,6 +1469,13 @@ void HandleStructMember(void)
     }
 }
 
+void EmitCallMemcpy(void)
+{
+    EmitCall(MemcpyDecl);
+    EmitAddRegConst(R_SP, 6);
+    MemcpyUsed = 1;
+}
+
 enum { MaxArgs = 4 }; // Maximum number of arguments per "chunk"
 void ParsePostfixExpression(void)
 {
@@ -1496,9 +1503,7 @@ void ParsePostfixExpression(void)
                         EmitPush(R_AX);
                         EmitAddRegConst(R_AX, -MaxArgs*2);
                         EmitPush(R_AX);
-                        EmitCall(MemcpyDecl);
-                        EmitAddRegConst(R_SP, 6);
-                        MemcpyUsed = 1;
+                        EmitCallMemcpy();
                     }
                 }
                 ParseAssignmentExpression();
@@ -1867,13 +1872,28 @@ void ParseExpr1(int OuterPrecedence)
             ParseExpr1(LookAheadPrecedence);
         }
 
+        LhsLoc = LhsType & VT_LOCMASK;
+        LhsType &= ~VT_LOCMASK;
+
         if (Op == TOK_COMMA) {
+            continue;
+        } else if (Op == TOK_EQ && LhsType == VT_STRUCT) {
+            // Struct assignment
+            // TODO: Verify CurrentStruct matches Lhs struct
+            Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
+            EmitMovRImm(R_CX, SizeofType());
+            EmitPush(R_CX);
+            Check((CurrentType&VT_LOCMASK) == VT_LOCOFF);
+            EmitLeaStackVar(R_CX, CurrentVal);
+            EmitPush(R_CX);
+            Check(LhsLoc == VT_LOCOFF);
+            EmitLeaStackVar(R_CX, LhsVal);
+            EmitPush(R_CX);
+            EmitCallMemcpy();
             continue;
         }
 
         LvalToRval();
-        LhsLoc = LhsType & VT_LOCMASK;
-        LhsType &= ~VT_LOCMASK;
 
         if (LhsLoc == VT_LOCLIT && CurrentType == (VT_LOCLIT|VT_INT)) {
             Check(LhsType == VT_INT);
