@@ -1,4 +1,4 @@
-void _start(void)
+void main(void)
 {
     int x = 0;
     for (;;) {

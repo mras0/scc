@@ -99,7 +99,7 @@ void test5()
     assert_eq(sw5(5),  -6);
 }
 
-void _start()
+void main()
 {
     test1();
     test2();

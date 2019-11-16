@@ -716,8 +716,16 @@ void EmitStoreConst(int Size, int Loc, int Val)
 
 void EmitAddRegConst(int r, int Amm)
 {
-    if (!Amm) return;
-    OutputBytes(0x83, MODRM_REG|r, Amm & 0xff, -1);
+    // TODO: Possibly optimize Amm==-1 and Amm==-2
+    if (!Amm) {
+    } else if (Amm == 1) {
+        OutputBytes(I_INC|r, -1);
+    } else if (Amm == 2) {
+        r |= I_INC;
+        OutputBytes(r, r, -1);
+    } else {
+        OutputBytes(0x83, MODRM_REG|r, Amm & 0xff, -1);
+    }
 }
 
 void EmitPush(int r)
@@ -1433,7 +1441,7 @@ void ParsePrimaryExpression(void)
         } else if (func == TOK_VA_ARG) {
             Expect(TOK_COMMA);
             EmitLoadAx(2, VT_LOCOFF, offset);
-            OutputBytes(I_INC, I_INC, -1); // INC AX \ INC AX
+            EmitAddRegConst(R_AX, 2);
             EmitStoreAx(2, VT_LOCOFF, offset);
             ParseDeclSpecs();
             CurrentType |= VT_LVAL;
@@ -1470,8 +1478,12 @@ void HandleStructMember(void)
     const int Idx = StructMemberIndex(MemId);
     const int Off = 2*(Idx - StructDecls[CurrentStruct].FirstMem); // HACK
     Check(Off >= 0 && Off < SizeofType());
-    const int Loc = CurrentType & VT_LOCMASK;
-    CurrentType = StructMembers[Idx].Type | VT_LVAL | Loc;
+    int Loc = CurrentType & VT_LOCMASK;
+    if (Loc == VT_LOCGLOB) {
+        OutputBytes(I_MOV_R_IMM16 | R_AX, -1);
+        EmitGlobalRef(&VarDecls[CurrentVal]);
+        Loc = 0;
+    }
     if (!Loc) {
         EmitAddRegConst(R_AX, Off);
     } else if (Loc == VT_LOCOFF) {
@@ -1479,6 +1491,7 @@ void HandleStructMember(void)
     } else {
         Check(0);
     }
+    CurrentType = StructMembers[Idx].Type | VT_LVAL | Loc;
 }
 
 void EmitCallMemcpy(void)
@@ -2380,12 +2393,6 @@ void ParseCompoundStatement(void)
 // Local 1            BP - 2
 // Local 2            BP - 4  <-- SP
 
-void EmitGlobal(struct VarDecl* Var, int InitVal)
-{
-    EmitGlobalLabel(Var);
-    OutputWord(InitVal);
-}
-
 void ParseExternalDefition(void)
 {
     if (Accept(TOK_ENUM)) {
@@ -2417,8 +2424,6 @@ void ParseExternalDefition(void)
         return;
     }
 
-    Check(CurrentType == VT_VOID || SizeofType() <= 2); // Not implemented
-
     const int Id = ExpectId();
 
     CurrentType |= VT_LOCGLOB;
@@ -2436,12 +2441,15 @@ void ParseExternalDefition(void)
     // Variable?
     if (Accept(TOK_EQ)) {
         ParseAssignmentExpression();
-        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Expecct constant expressions
-        EmitGlobal(vd, CurrentVal);
         Expect(TOK_SEMICOLON);
+        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Expecct constant expressions
+        // TODO: Could save one byte per global char...
+        //       Handle this if/when implementing complex initializers
+        EmitGlobalLabel(vd);
+        OutputWord(CurrentVal);
         return;
     } else if (Accept(TOK_SEMICOLON)) {
-        BssSize += 2;
+        BssSize += SizeofType();
         return;
     }
 
@@ -2612,20 +2620,20 @@ int main(int argc, char** argv)
     EmitGlobalLabel(SBSS);
     for (i = 0 ; i <= Scopes[0]; ++i) {
         struct VarDecl* vd = &VarDecls[i];
-        int T = vd->Type;
-        const int Loc = T & VT_LOCMASK;
+        CurrentType = vd->Type;
+        CurrentStruct = vd->TypeExtra;
+        const int Loc = CurrentType & VT_LOCMASK;
         if (Loc == VT_LOCGLOB && !vd->Offset) {
             if (vd == EBSS || (vd == MemcpyDecl && !MemcpyUsed))
                 continue;
-            T &= ~VT_LOCMASK;
-            if (T & VT_FUN) {
-                Printf("%s is undefined (Type: %X)\n", IdText(vd->Id), T);
+            CurrentType &= ~VT_LOCMASK;
+            if (CurrentType & VT_FUN) {
+                Printf("%s is undefined\n", IdText(vd->Id));
                 Fatal("Undefined function");
             }
             EmitGlobalLabel(vd);
-            CodeAddress += 2;
+            CodeAddress += SizeofType();
         }
-        //if (Loc == VT_LOCGLOB && (T&VT_FUN)) Printf("%X %s\n", vd->Offset, IdText(vd->Id));
     }
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);

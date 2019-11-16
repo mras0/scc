@@ -13,7 +13,7 @@ int c() {
     return b;
 }
 
-void _start(void) {
+void main(void) {
     assert_eq(a(), 3);
     assert_eq(b(), 42);
     assert_eq(c(), 1);

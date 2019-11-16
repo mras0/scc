@@ -30,3 +30,13 @@ void assert_eq(int a, int b) {
     _emit 0xB8 _emit 0xFF _emit 0x4C // MOV AX, 0x4CFF
     _emit 0xcd _emit 0x21            // INT 0x21
 }
+
+void main(void);
+void _start(void)
+{
+    // Clear BSS
+    char* bss = &_SBSS;
+    while (bss != &_EBSS)
+        *bss++ = 0;
+    main();
+}

@@ -27,7 +27,18 @@ void assign() {
     assert_eq(s2.b, 2);
 }
 
-void _start() {
+struct S gs;
+
+void global() {
+    assert_eq(gs.a, 0);
+    assert_eq(gs.b, 0);
+    gs.b = 2;
+    assert_eq(gs.a, 0);
+    assert_eq(gs.b, 2);
+}
+
+void main() {
     bug1();
     assign();
+    global();
 }

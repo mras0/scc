@@ -1,4 +1,4 @@
-void _start(void)
+void main(void)
 {
     int x = 0;
     do assert_eq(x <= 5, 1); while (x++ != 4);
