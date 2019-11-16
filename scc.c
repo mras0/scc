@@ -137,7 +137,7 @@ enum {
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6000,
+    OUTPUT_MAX = 0x6500, // Decrease this if increasing/adding other buffers..
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
 };
@@ -534,7 +534,8 @@ enum {
     I_DEC           = 0x48,
     I_PUSH          = 0x50,
     I_POP           = 0x58,
-    I_ALU_R_IMM16   = 0x81,
+    I_ALU_R16_IMM16 = 0x81,
+    I_ALU_R16_IMM8  = 0x83,
     I_MOV_R_RM      = 0x88,
     I_MOV_RM_R      = 0x8a,
     I_LEA           = 0x8d,
@@ -716,15 +717,24 @@ void EmitStoreConst(int Size, int Loc, int Val)
 
 void EmitAddRegConst(int r, int Amm)
 {
-    // TODO: Possibly optimize Amm==-1 and Amm==-2
-    if (!Amm) {
-    } else if (Amm == 1) {
-        OutputBytes(I_INC|r, -1);
-    } else if (Amm == 2) {
-        r |= I_INC;
-        OutputBytes(r, r, -1);
+    if (!Amm) return;
+    int Op = I_ADD;
+    if (Amm < 0) {
+        Amm = -Amm;
+        Op = I_SUB;
+    }
+    if (Amm <= 2) {
+        if (Op == I_ADD)
+            Op = I_INC;
+        else
+            Op = I_DEC;
+        Op |= r;
+        OutputBytes(Op, -1);
+        if (Amm > 1)
+            OutputBytes(Op, -1);
     } else {
-        OutputBytes(0x83, MODRM_REG|r, Amm & 0xff, -1);
+        Check(Amm < 256);
+        OutputBytes(I_ALU_R16_IMM8, MODRM_REG|Op|r, Amm & 0xff, -1);
     }
 }
 
@@ -1322,23 +1332,6 @@ void LvalToRval(void)
     }
 }
 
-void DoIncDec(int Op)
-{
-    if (Op == TOK_PLUSPLUS)
-        Op = I_INC;
-    else
-        Op = I_DEC;
-
-    int A2;
-    if (CurrentType == VT_CHAR || CurrentType == VT_INT || CurrentType == (VT_CHAR|VT_PTR1)) {
-        A2 = -1;
-    } else {
-        Check(CurrentType == (VT_INT|VT_PTR1));
-        A2 = Op; // Repeat Op
-    }
-    OutputBytes(Op, A2, -1);
-}
-
 void DoIncDecOp(int Op, int Post)
 {
     Check(CurrentType & VT_LVAL);
@@ -1355,7 +1348,14 @@ void DoIncDecOp(int Op, int Post)
     }
     EmitLoadAx(Sz, loc, CurrentVal);
     if (Post) EmitPush(R_AX);
-    DoIncDec(Op);
+    int Amm = 1;
+    if (CurrentType != VT_CHAR && CurrentType != VT_INT && CurrentType != (VT_CHAR|VT_PTR1)) {
+        Check(CurrentType == (VT_INT|VT_PTR1));
+        Amm = 2;
+    }
+    if (Op == TOK_MINUSMINUS)
+        Amm = -Amm;
+    EmitAddRegConst(R_AX, Amm);
     EmitStoreAx(Sz, loc, CurrentVal);
     if (Sz == 1) {
         CurrentType = VT_INT;
@@ -2162,7 +2162,7 @@ Redo:
             ParseExpr();
             Expect(TOK_COLON);
             Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
-            OutputBytes(I_ALU_R_IMM16, MODRM_REG|I_CMP|R_SI, -1);
+            OutputBytes(I_ALU_R16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
             OutputWord(CurrentVal);
             EmitJcc(JZ, NextSwitchStmt);
             goto Redo;
