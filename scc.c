@@ -767,19 +767,21 @@ void EmitLeaStackVar(int r, int off)
 
 void EmitScaleAx(int Scale)
 {
-    if (Scale == 1) {
-    } else if (Scale == 2) {
-        OutputBytes(I_ADD|1, MODRM_REG, -1);
-    } else {
+    if (Scale & (Scale-1)) {
         EmitMovRImm(R_CX, Scale);
         OutputBytes(0xF7, MODRM_REG | (5<<3) | R_CX, -1); // IMUL CX
+    } else {
+        while (Scale >>= 1) {
+            OutputBytes(I_ADD|1, MODRM_REG, -1);
+        }
     }
 }
 
 void EmitDivAxConst(int Amm)
 {
     if (Amm & (Amm-1)) {
-        Fatal("TODO: Non power of 2 div");
+        EmitMovRImm(R_CX, Amm);
+        OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1); // IDIV CX
     } else {
         while (Amm >>= 1) {
             OutputBytes(0xD1, MODRM_REG | SHROT_SAR<<3, -1); // SAR AX, 1
@@ -1720,6 +1722,10 @@ void ParseCastExpression(void)
             GetVal(); // TODO: could optimize some constant expressions here
             CurrentType = T;
             CurrentStruct = S;
+            if (CurrentType == VT_CHAR) {
+                OutputBytes(I_CBW, -1);
+                CurrentType = VT_INT;
+            }
         } else {
             ParseExpr();
             Expect(TOK_RPAREN);
@@ -1803,17 +1809,35 @@ void DoBinOp(int Op)
 void DoRhsConstBinOp(int Op)
 {
     int NextVal = CurrentVal;
+
     if (IsRelOp(Op)) {
         CurrentType = VT_BOOL;
         NextVal = RelOpToCC(Op);
         Op = I_CMP;
-    }
-    else if (Op == TOK_PLUS)  Op = I_ADD;
-    else if (Op == TOK_MINUS) Op = I_SUB;
-    else if (Op == TOK_AND)   Op = I_AND;
-    else if (Op == TOK_XOR)   Op = I_XOR;
-    else if (Op == TOK_OR)    Op = I_OR;
-    else {
+    } else if (Op == TOK_PLUS)  {
+Plus:
+        if (CurrentVal == (char)CurrentVal) {
+            EmitAddRegConst(R_AX, CurrentVal);
+            return;
+        }
+        Op = I_ADD;
+    } else if (Op == TOK_MINUS) {
+        // Ease optimizations
+        CurrentVal = -CurrentVal;
+        goto Plus;
+    } else if (Op == TOK_AND) {
+        Op = I_AND;
+    } else if (Op == TOK_XOR) {
+        Op = I_XOR;
+    } else if (Op == TOK_OR) {
+        Op = I_OR;
+    } else if (Op == TOK_STAR) {
+        EmitScaleAx(CurrentVal);
+        return;
+    } else if (Op == TOK_SLASH) {
+        EmitDivAxConst(CurrentVal);
+        return;
+    } else {
         EmitMovRImm(R_CX, CurrentVal);
         DoBinOp(Op);
         return;
