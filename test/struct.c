@@ -13,8 +13,17 @@ void bug1() {
     struct S* ss = &s[foo(x)];
     ss->a = 42;
     ss->b = 60;
+    assert_eq(ss, s+2);
+    assert_eq(ss-s, 2);
     assert_eq(s[2].a, 42);
     assert_eq(s[2].b, 60);
+    struct S* s2 = s;
+    assert_eq(++s2, s+1);
+    s2++;
+    assert_eq(s2, ss);
+    assert_eq(--s2, s+1);
+    s2--;
+    assert_eq(s2, s);
 }
 
 void assign() {

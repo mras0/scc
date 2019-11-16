@@ -522,32 +522,33 @@ enum {
 };
 
 enum {
-    I_ADD           = 0x00,
-    I_OR            = 0x08,
-    I_ADC           = 0x10,
-    I_SBB           = 0x18,
-    I_AND           = 0x20,
-    I_SUB           = 0x28,
-    I_XOR           = 0x30,
-    I_CMP           = 0x38,
-    I_INC           = 0x40,
-    I_DEC           = 0x48,
-    I_PUSH          = 0x50,
-    I_POP           = 0x58,
-    I_ALU_R16_IMM16 = 0x81,
-    I_ALU_R16_IMM8  = 0x83,
-    I_MOV_R_RM      = 0x88,
-    I_MOV_RM_R      = 0x8a,
-    I_LEA           = 0x8d,
-    I_XCHG_AX       = 0x90,
-    I_CBW           = 0x98,
-    I_CWD           = 0x99,
-    I_MOV_R_IMM16   = 0xb8,
-    I_RET           = 0xc3,
-    I_INT           = 0xcd,
-    I_SHROT16_CL    = 0xd3,
-    I_CALL          = 0xe8,
-    I_JMP           = 0xe9,
+    I_ADD            = 0x00,
+    I_OR             = 0x08,
+    I_ADC            = 0x10,
+    I_SBB            = 0x18,
+    I_AND            = 0x20,
+    I_SUB            = 0x28,
+    I_XOR            = 0x30,
+    I_CMP            = 0x38,
+    I_INC            = 0x40,
+    I_DEC            = 0x48,
+    I_PUSH           = 0x50,
+    I_POP            = 0x58,
+    I_ALU_RM16_IMM16 = 0x81,
+    I_ALU_RM16_IMM8  = 0x83,
+    I_MOV_R_RM       = 0x88,
+    I_MOV_RM_R       = 0x8a,
+    I_LEA            = 0x8d,
+    I_XCHG_AX        = 0x90,
+    I_CBW            = 0x98,
+    I_CWD            = 0x99,
+    I_MOV_R_IMM16    = 0xb8,
+    I_RET            = 0xc3,
+    I_INT            = 0xcd,
+    I_SHROT16_CL     = 0xd3,
+    I_CALL           = 0xe8,
+    I_JMP            = 0xe9,
+    I_INCDEC_RM      = 0xfe,
 };
 
 enum {
@@ -682,34 +683,35 @@ void EmitGlobalRefRel(struct VarDecl* vd)
         AddFixup(&vd->Ref);
 }
 
-void EmitModrm(int Inst, int Loc, int Val)
+void EmitModrm(int Inst, int R, int Loc, int Val)
 {
+    R <<= 3;
     if (Loc == VT_LOCOFF) {
-        OutputBytes(Inst, MODRM_BP_DISP8, Val & 0xff, -1);
+        OutputBytes(Inst, MODRM_BP_DISP8|R, Val & 0xff, -1);
     } else if (Loc == VT_LOCGLOB) {
-        OutputBytes(Inst, MODRM_DISP16, -1);
+        OutputBytes(Inst, MODRM_DISP16|R, -1);
         EmitGlobalRef(&VarDecls[Val]);
     } else {
         Check(!Loc);
-        OutputBytes(Inst, 0x07, -1);
+        OutputBytes(Inst, MODRM_BX|R, -1);
     }
 }
 
 void EmitLoadAx(int Size, int Loc, int Val)
 {
-    EmitModrm(I_MOV_RM_R-1+Size, Loc, Val);
+    EmitModrm(I_MOV_RM_R-1+Size, R_AX, Loc, Val);
     if (Size == 1)
         OutputBytes(I_CBW, -1);
 }
 
 void EmitStoreAx(int Size, int Loc, int Val)
 {
-    EmitModrm(I_MOV_R_RM-1+Size, Loc, Val);
+    EmitModrm(I_MOV_R_RM-1+Size, R_AX, Loc, Val);
 }
 
 void EmitStoreConst(int Size, int Loc, int Val)
 {
-    EmitModrm(0xc6-1+Size, Loc, Val);
+    EmitModrm(0xc6-1+Size, 0, Loc, Val);
     OutputBytes(CurrentVal & 0xff, - 1);
     if (Size == 2)
         OutputBytes((CurrentVal >> 8) & 0xff, - 1);
@@ -734,7 +736,7 @@ void EmitAddRegConst(int r, int Amm)
             OutputBytes(Op, -1);
     } else {
         Check(Amm < 256);
-        OutputBytes(I_ALU_R16_IMM8, MODRM_REG|Op|r, Amm & 0xff, -1);
+        OutputBytes(I_ALU_RM16_IMM8, MODRM_REG|Op|r, Amm & 0xff, -1);
     }
 }
 
@@ -771,6 +773,17 @@ void EmitScaleAx(int Scale)
     } else {
         EmitMovRImm(R_CX, Scale);
         OutputBytes(0xF7, MODRM_REG | (5<<3) | R_CX, -1); // IMUL CX
+    }
+}
+
+void EmitDivAxConst(int Amm)
+{
+    if (Amm & (Amm-1)) {
+        Fatal("TODO: Non power of 2 div");
+    } else {
+        while (Amm >>= 1) {
+            OutputBytes(0xD1, MODRM_REG | SHROT_SAR<<3, -1); // SAR AX, 1
+        }
     }
 }
 
@@ -1244,17 +1257,22 @@ int OperatorPrecedence(int tok)
     }
 }
 
-int SizeofType(void)
+int SizeofType(int Type, int Extra)
 {
-    const int T = CurrentType & (VT_BASEMASK|VT_PTRMASK);
-    if (T == VT_CHAR)
+    Type &= VT_BASEMASK|VT_PTRMASK;
+    if (Type == VT_CHAR)
         return 1;
-    else if (T == VT_STRUCT)
-        return 2*StructDecls[CurrentStruct].NumMem; // Eww
+    else if (Type == VT_STRUCT)
+        return 2*StructDecls[Extra].NumMem; // Eww
     else {
-        Check(T == VT_INT || (T & VT_PTRMASK));
+        Check(Type == VT_INT || (Type & VT_PTRMASK));
         return 2;
     }
+}
+
+int SizeofCurrentType(void)
+{
+    return SizeofType(CurrentType, CurrentStruct);
 }
 
 int StructMemberIndex(int Id)
@@ -1268,6 +1286,7 @@ int StructMemberIndex(int Id)
             return i;
         }
     }
+    Printf("%s\n", IdText(Id));
     Fatal("Invalid struct member");
 }
 
@@ -1335,32 +1354,28 @@ void LvalToRval(void)
 void DoIncDecOp(int Op, int Post)
 {
     Check(CurrentType & VT_LVAL);
-    CurrentType &= ~VT_LVAL;
-    const int loc = CurrentType & VT_LOCMASK;
-    if (loc) {
-        CurrentType &= ~VT_LOCMASK;
-    } else {
+    const int WordOp = ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR);
+    const int Loc = CurrentType & VT_LOCMASK;
+    if (!Loc) {
         EmitMovRR(R_BX, R_AX);
     }
-    int Sz = 2;
-    if (CurrentType == VT_CHAR) {
-        Sz = 1;
+    if (Post) {
+        EmitLoadAx(1+WordOp, Loc, CurrentVal);
+        if (WordOp)
+            CurrentType &= ~(VT_LVAL|VT_LOCMASK);
+        else
+            CurrentType = VT_INT;
     }
-    EmitLoadAx(Sz, loc, CurrentVal);
-    if (Post) EmitPush(R_AX);
-    int Amm = 1;
-    if (CurrentType != VT_CHAR && CurrentType != VT_INT && CurrentType != (VT_CHAR|VT_PTR1)) {
-        Check(CurrentType == (VT_INT|VT_PTR1));
-        Amm = 2;
+    if (CurrentType & VT_PTRMASK) {
+        if (Op == TOK_MINUSMINUS)
+            Op = I_SUB>>3;
+        else
+            Op = I_ADD>>3;
+        EmitModrm(I_ALU_RM16_IMM8, Op, Loc, CurrentVal);
+        OutputBytes(SizeofType(CurrentType-VT_PTR1, CurrentStruct), -1);
+    }  else {
+        EmitModrm(I_INCDEC_RM|WordOp, Op == TOK_MINUSMINUS, Loc, CurrentVal);
     }
-    if (Op == TOK_MINUSMINUS)
-        Amm = -Amm;
-    EmitAddRegConst(R_AX, Amm);
-    EmitStoreAx(Sz, loc, CurrentVal);
-    if (Sz == 1) {
-        CurrentType = VT_INT;
-    }
-    if (Post) EmitPop(R_AX);
 }
 
 void ParseExpr(void);
@@ -1477,7 +1492,7 @@ void HandleStructMember(void)
     const int MemId = ExpectId();
     const int Idx = StructMemberIndex(MemId);
     const int Off = 2*(Idx - StructDecls[CurrentStruct].FirstMem); // HACK
-    Check(Off >= 0 && Off < SizeofType());
+    Check(Off >= 0 && Off < SizeofCurrentType());
     int Loc = CurrentType & VT_LOCMASK;
     if (Loc == VT_LOCGLOB) {
         OutputBytes(I_MOV_R_IMM16 | R_AX, -1);
@@ -1564,7 +1579,7 @@ void ParsePostfixExpression(void)
                 Fatal("Expected pointer");
             }
             CurrentType -= VT_PTR1;
-            const int Scale    = SizeofType();
+            const int Scale    = SizeofCurrentType();
             const int ResType  = CurrentType | VT_LVAL;
             const int ResExtra = CurrentStruct;
             Check(!PendingPushAx);
@@ -1682,7 +1697,7 @@ void ParseUnaryExpression(void)
         GetToken();
         Expect(TOK_LPAREN);
         ParseDeclSpecs();
-        CurrentVal = SizeofType();
+        CurrentVal = SizeofCurrentType();
         Expect(TOK_RPAREN);
         CurrentType = VT_LOCLIT | VT_INT;
     } else {
@@ -1836,6 +1851,7 @@ void ParseExpr1(int OuterPrecedence)
     int Prec;
     int IsAssign;
     int LhsType;
+    int LhsPointeeSize;
     int LhsVal;
     int LhsLoc;
     for (;;) {
@@ -1860,6 +1876,9 @@ void ParseExpr1(int OuterPrecedence)
         }
         LhsType = CurrentType;
         LhsVal = CurrentVal;
+        if (LhsType & VT_PTRMASK) {
+            LhsPointeeSize = SizeofType(CurrentType-VT_PTR1, CurrentStruct);
+        }
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
             LEnd = MakeLabel();
@@ -1906,7 +1925,7 @@ void ParseExpr1(int OuterPrecedence)
             // Struct assignment
             // TODO: Verify CurrentStruct matches Lhs struct
             Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
-            EmitMovRImm(R_CX, SizeofType());
+            EmitMovRImm(R_CX, SizeofCurrentType());
             EmitPush(R_CX);
             Check((CurrentType&VT_LOCMASK) == VT_LOCOFF);
             EmitLeaStackVar(R_CX, CurrentVal);
@@ -1955,10 +1974,12 @@ void ParseExpr1(int OuterPrecedence)
                     EmitMovRR(R_CX, R_AX);
                 }
                 EmitLoadAx(2, LhsLoc, LhsVal);
-                if (Temp)
+                if (Temp) {
                     DoRhsConstBinOp(Op);
-                else
+                    CurrentType &= ~VT_LOCMASK;
+                } else {
                     DoBinOp(Op);
+                }
             } else if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 // Constant assignment
                 EmitStoreConst(Size, LhsLoc, LhsVal);
@@ -1972,12 +1993,15 @@ void ParseExpr1(int OuterPrecedence)
                 Check(PendingPushAx);
                 PendingPushAx = 0;
                 CurrentType = VT_INT;
+                if (LhsType & VT_PTRMASK) {
+                    CurrentVal *= LhsPointeeSize;
+                }
                 DoRhsConstBinOp(Op);
             } else {
+                GetVal();
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                if (Op == TOK_PLUS && (LhsType & VT_PTRMASK) && LhsType != (VT_CHAR|VT_PTR1)) {
-                    Check((LhsType&VT_BASEMASK) != VT_STRUCT);
-                    OutputBytes(I_ADD|1, MODRM_REG, -1);
+                if (Op == TOK_PLUS && (LhsType & VT_PTRMASK)) {
+                    EmitScaleAx(LhsPointeeSize);
                 }
                 Temp = OpCommutes(Op);
                 if (LhsLoc == VT_LOCLIT) {
@@ -2000,8 +2024,7 @@ void ParseExpr1(int OuterPrecedence)
                 DoBinOp(Op);
             }
             if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
-                if (LhsType != (VT_CHAR|VT_PTR1))
-                    Check(0);//OutputBytes(0xD1, MODRM_REG | SHROT_SAR<<3, -1); // SAR AX, 1
+                EmitDivAxConst(LhsPointeeSize);
                 CurrentType = VT_INT;
             }
         }
@@ -2162,7 +2185,7 @@ Redo:
             ParseExpr();
             Expect(TOK_COLON);
             Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
-            OutputBytes(I_ALU_R16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
+            OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
             OutputWord(CurrentVal);
             EmitJcc(JZ, NextSwitchStmt);
             goto Redo;
@@ -2185,7 +2208,7 @@ Redo:
         vd->Type |= VT_LOCOFF;
         int size = 2;
         if (CurrentType == VT_STRUCT) {
-            size = SizeofType();
+            size = SizeofCurrentType();
         } else if (Accept(TOK_EQ)) {
             ParseAssignmentExpression();
             LvalToRval();
@@ -2449,7 +2472,7 @@ void ParseExternalDefition(void)
         OutputWord(CurrentVal);
         return;
     } else if (Accept(TOK_SEMICOLON)) {
-        BssSize += SizeofType();
+        BssSize += SizeofCurrentType();
         return;
     }
 
@@ -2632,8 +2655,9 @@ int main(int argc, char** argv)
                 Fatal("Undefined function");
             }
             EmitGlobalLabel(vd);
-            CodeAddress += SizeofType();
+            CodeAddress += SizeofCurrentType();
         }
+        //if (Loc == VT_LOCGLOB && (CurrentType&VT_FUN)) Printf("%X %s\n", vd->Offset, IdText(vd->Id));
     }
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);
