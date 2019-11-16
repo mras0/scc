@@ -3,6 +3,7 @@ set(TESTS
     dowhile
     lgoto # goto would clash with DOS goto builtin
     struct
+    switch
     )
 
 set(TESTCMDS "scc.com scc.c\nscc.com scc.c\n")

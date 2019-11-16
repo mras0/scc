@@ -347,6 +347,10 @@ int ReturnUsed;
 int PendingPushAx; // Remember to adjsust LocalOffset!
 int IsDeadCode;
 
+int NextSwitchCase; // Where to go if we haven't matched
+int NextSwitchStmt; // Where to go if we've matched (-1 if already emitted)
+int SwitchDefault;  // Optional switch default label
+
 int IsDigit(int ch)
 {
     return ch >= '0' && ch <= '9';
@@ -530,6 +534,7 @@ enum {
     I_DEC           = 0x48,
     I_PUSH          = 0x50,
     I_POP           = 0x58,
+    I_ALU_R_IMM16   = 0x81,
     I_MOV_R_RM      = 0x88,
     I_MOV_RM_R      = 0x8a,
     I_LEA           = 0x8d,
@@ -2120,9 +2125,48 @@ void DoLoopStatements(int BLabel, int CLabel)
 
 void ParseStatement(void)
 {
-    if (Accept(TOK_SEMICOLON)) {
-    } else if (TokenType == TOK_LBRACE) {
+Redo:
+
+    // Get compund statements out of the way to simplify switch handling
+    if (TokenType == TOK_LBRACE) {
         ParseCompoundStatement();
+        return;
+    }
+
+    if (NextSwitchCase >= 0) {
+        // switch is active
+
+        if ((TokenType == TOK_CASE || TokenType == TOK_DEFAULT)
+            && NextSwitchStmt < 0) {
+            // Continue execution after the case
+            NextSwitchStmt = MakeLabel();
+            EmitJmp(NextSwitchStmt);
+        }
+
+        if (Accept(TOK_CASE)) {
+            EmitLocalLabel(NextSwitchCase);
+            NextSwitchCase = MakeLabel();
+            ParseExpr();
+            Expect(TOK_COLON);
+            Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
+            OutputBytes(I_ALU_R_IMM16, MODRM_REG|I_CMP|R_SI, -1);
+            OutputWord(CurrentVal);
+            EmitJcc(JZ, NextSwitchStmt);
+            goto Redo;
+        } else if (Accept(TOK_DEFAULT)) {
+            Expect(TOK_COLON);
+            Check(SwitchDefault == -1);
+            SwitchDefault = NextSwitchStmt;
+            goto Redo;
+        } else if (NextSwitchStmt >= 0) {
+            EmitJmp(NextSwitchCase);
+            EmitLocalLabel(NextSwitchStmt);
+            NextSwitchStmt = -1;
+            goto Redo;
+        }
+    }
+
+    if (Accept(TOK_SEMICOLON)) {
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseDecl();
         vd->Type |= VT_LOCOFF;
@@ -2249,6 +2293,49 @@ void ParseStatement(void)
         Expect(TOK_RPAREN);
         Expect(TOK_SEMICOLON);
         EmitLocalLabel(EndLabel);
+    } else if (Accept(TOK_SWITCH)) {
+        Expect(TOK_LPAREN);
+        ParseExpr();
+        LvalToRval();
+        GetVal();
+        Expect(TOK_RPAREN);
+
+        const int OldBreakLevel  = BStackLevel;
+        const int OldBreakLabel  = BreakLabel;
+        const int LastSwitchCase = NextSwitchCase;
+        const int LastSwitchStmt = NextSwitchStmt;
+        const int LastSwitchDef  = SwitchDefault;
+        EmitPush(R_SI);
+        EmitMovRR(R_SI, R_AX);
+        LocalOffset -= 2;
+        BStackLevel    = LocalOffset;
+        BreakLabel     = MakeLabel();
+        NextSwitchCase = MakeLabel();
+        NextSwitchStmt = MakeLabel();
+        SwitchDefault  = -1;
+        ParseStatement();
+        if (SwitchDefault >= 0) {
+            if (NextSwitchStmt < 0) {
+                // We exited the switch by falling through, make sure we don't go to the default case
+                NextSwitchStmt = MakeLabel();
+                EmitJmp(NextSwitchStmt);
+            }
+            EmitLocalLabel(NextSwitchCase);
+            EmitJmp(SwitchDefault);
+        } else {
+            EmitLocalLabel(NextSwitchCase);
+        }
+        if (NextSwitchStmt >= 0)
+            EmitLocalLabel(NextSwitchStmt);
+        EmitLocalLabel(BreakLabel);
+        EmitPop(R_SI);
+        LocalOffset += 2;
+
+        NextSwitchCase = LastSwitchCase;
+        NextSwitchStmt = LastSwitchStmt;
+        SwitchDefault  = LastSwitchDef;
+        BStackLevel    = OldBreakLevel;
+        BreakLabel     = OldBreakLabel;
     } else {
         // Expression statement / Labelled statement
         if (TokenType >= TOK_ID) {
@@ -2258,8 +2345,7 @@ void ParseStatement(void)
                 struct NamedLabel* nl = &NamedLabels[GetNamedLabel(id)];
                 EmitLocalLabel(nl->LabelId);
                 EmitLeaStackVar(R_SP, LocalOffset);
-                ParseStatement();
-                return;
+                goto Redo;
             } else {
                 HandlePrimaryId(id);
                 ParsePostfixExpression();
@@ -2482,9 +2568,6 @@ int main(int argc, char** argv)
     StructMembers    = malloc(sizeof(struct StructMember)*STRUCT_MEMBER_MAX);
     StructDecls      = malloc(sizeof(struct StructDecl)*STRUCT_MAX);
 
-    for (i = 0; i < ID_HASHMAX; ++i)
-        IdHashTab[i] = -1;
-
     if (argc < 2) {
         Printf("Usage: %s input-file [output-file]\n", argv[0]);
         return 1;
@@ -2494,6 +2577,11 @@ int main(int argc, char** argv)
     if (InFile < 0) {
         Fatal("Error opening input file");
     }
+
+    for (i = 0; i < ID_HASHMAX; ++i)
+        IdHashTab[i] = -1;
+    NextSwitchCase = -1;
+    NextSwitchStmt = -1;
 
     AddBuiltins("break case char const continue default do else enum for goto if"
         " int return sizeof struct switch void while"
