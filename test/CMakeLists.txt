@@ -1,6 +1,7 @@
 set(TESTS
     comma
     dowhile
+    enum
     lgoto # goto would clash with DOS goto builtin
     struct
     switch
