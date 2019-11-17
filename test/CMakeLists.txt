@@ -5,6 +5,7 @@ set(TESTS
     lgoto # goto would clash with DOS goto builtin
     struct
     switch
+    union
     )
 
 set(TESTCMDS "scc.com scc.c\nscc.com scc.c\n")

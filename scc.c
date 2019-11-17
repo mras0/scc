@@ -242,6 +242,7 @@ enum {
     TOK_SIZEOF,
     TOK_STRUCT,
     TOK_SWITCH,
+    TOK_UNION,
     TOK_VOID,
     TOK_WHILE,
 
@@ -274,6 +275,10 @@ struct StructMember {
     int Type;
     int TypeExtra;
     struct StructMember* Next;
+};
+
+enum {
+    IS_UNION_FLAG = 0x8000,
 };
 
 struct StructDecl {
@@ -1277,10 +1282,15 @@ int SizeofType(int Type, int Extra)
     if (Type == VT_CHAR) {
         return 1;
     } else if (Type == VT_STRUCT) {
+        const int IsUnion = StructDecls[Extra].Id & IS_UNION_FLAG;
         int Size = 0;
         struct StructMember* SM = StructDecls[Extra].Members;
         for (; SM; SM = SM->Next) {
-            Size += SizeofType(SM->Type, SM->TypeExtra);
+            const int MSize = SizeofType(SM->Type, SM->TypeExtra);
+            if (!IsUnion)
+                Size += MSize;
+            else if (MSize > Size)
+                Size = MSize;
         }
         return Size;
     } else {
@@ -1294,10 +1304,16 @@ int SizeofCurrentType(void)
     return SizeofType(CurrentType, CurrentStruct);
 }
 
+void PrintTokenType(int T)
+{
+    if (T >= TOK_BREAK) Printf("%s ", IdText(T-TOK_BREAK));
+    else Printf("%d ", T);
+}
+
 void Unexpected(void)
 {
-    Printf("token type %d\n", TokenType);
-    Fatal("Unexpected token");
+    PrintTokenType(TokenType);
+    Fatal(" Unexpected token");
 }
 
 int Accept(int type)
@@ -1312,7 +1328,8 @@ int Accept(int type)
 void Expect(int type)
 {
     if (!Accept(type)) {
-        Printf("Token type %d expected got ", type);
+        PrintTokenType(type);
+        Printf("expected got ");
         Unexpected();
     }
 }
@@ -1337,6 +1354,7 @@ int IsTypeStart(void)
         || TokenType == TOK_INT
         || TokenType == TOK_ENUM
         || TokenType == TOK_STRUCT
+        || TokenType == TOK_UNION
         || TokenType == TOK_VA_LIST;
 }
 
@@ -1527,8 +1545,10 @@ void HandleStructMember(void)
     int Off = 0;
     Check(CurrentStruct >= 0 && CurrentStruct < StructCount);
     struct StructMember* SM = StructDecls[CurrentStruct].Members;
+    const int IsUnion = StructDecls[CurrentStruct].Id & IS_UNION_FLAG;
     for (; SM && SM->Id != MemId; SM = SM->Next) {
-        Off += SizeofType(SM->Type, SM->TypeExtra);
+        if (!IsUnion)
+            Off += SizeofType(SM->Type, SM->TypeExtra);
     }
     if (!SM) {
         Fatal("Invalid struct member");
@@ -1722,6 +1742,8 @@ void ParseUnaryExpression(void)
         } else if (Op == TOK_NOT) {
             if (IsConst) {
                 CurrentVal = !CurrentVal;
+            } else if (CurrentType == VT_BOOL) {
+                CurrentVal ^= 1;
             } else {
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
@@ -2151,10 +2173,13 @@ void ParseDeclSpecs(void)
             }
             Expect(TOK_RBRACE);
         }
-    } else if (TokenType == TOK_STRUCT) {
-        t = VT_STRUCT;
+    } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
+        t = TokenType;
         GetToken();
-        const int id = ExpectId();
+        int id = ExpectId();
+        if (t == TOK_UNION) {
+            id |= IS_UNION_FLAG;
+        }
         CurrentStruct = -1;
         int i;
         for (i = 0; i < StructCount; ++i) {
@@ -2184,6 +2209,7 @@ void ParseDeclSpecs(void)
             *Last = 0;
             CurrentStruct = SI;
         }
+        t = VT_STRUCT;
     } else {
         if (TokenType == TOK_VOID) {
             t = VT_VOID;
@@ -2673,7 +2699,7 @@ int main(int argc, char** argv)
         IdHashTab[i] = -1;
 
     AddBuiltins("break case char const continue default do else enum for goto if"
-        " int return sizeof struct switch void while"
+        " int return sizeof struct switch union void while"
         " va_list va_start va_end va_arg _emit");
     Check(IdCount+TOK_BREAK-1 == TOK__EMIT);
 
