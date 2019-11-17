@@ -1613,6 +1613,7 @@ void ParsePostfixExpression(void)
             if (CurrentType == VT_CHAR) {
                 CurrentType = VT_INT;
             }
+            CurrentStruct = Func->TypeExtra;
         } else if (Accept(TOK_LBRACKET)) {
             LvalToRval();
             if (!(CurrentType & VT_PTRMASK)) {
@@ -2459,8 +2460,7 @@ Redo:
             const int id = TokenType - TOK_BREAK;
             GetToken();
             if (Accept(TOK_COLON)) {
-                struct NamedLabel* NL = GetNamedLabel(id);
-                EmitLocalLabel(NL->LabelId);
+                EmitLocalLabel(GetNamedLabel(id)->LabelId);
                 EmitLeaStackVar(R_SP, LocalOffset);
                 goto Redo;
             } else {
