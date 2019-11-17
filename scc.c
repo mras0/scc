@@ -1407,16 +1407,17 @@ void DoIncDecOp(int Op, int Post)
         else
             CurrentType = VT_INT;
     }
+    Op = Op == TOK_MINUSMINUS;
     if (CurrentType & VT_PTRMASK) {
-        if (Op == TOK_MINUSMINUS)
-            Op = I_SUB>>3;
-        else
-            Op = I_ADD>>3;
-        EmitModrm(I_ALU_RM16_IMM8, Op, Loc, CurrentVal);
-        OutputBytes(SizeofType(CurrentType-VT_PTR1, CurrentStruct), -1);
-    }  else {
-        EmitModrm(I_INCDEC_RM|WordOp, Op == TOK_MINUSMINUS, Loc, CurrentVal);
+        const int Size = SizeofType(CurrentType-VT_PTR1, CurrentStruct);
+        if (Size != 1) {
+            EmitModrm(I_ALU_RM16_IMM8, Op*(I_SUB>>3), Loc, CurrentVal);
+            OutputBytes(Size, -1);
+            return;
+        }
     }
+
+    EmitModrm(I_INCDEC_RM|WordOp, Op, Loc, CurrentVal);
 }
 
 void ParseExpr(void);
@@ -1626,10 +1627,9 @@ void ParsePostfixExpression(void)
             ParseExpr();
             Expect(TOK_RBRACKET);
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                CurrentVal *= Scale;
                 Check(PendingPushAx);
                 PendingPushAx = 0;
-                OutputBytes(I_ADD|5, CurrentVal&0xff, (CurrentVal>>8)&0xff, -1);
+                EmitAddRegConst(R_AX, CurrentVal * Scale);
             } else {
                 LvalToRval();
                 Check(CurrentType == VT_INT);
