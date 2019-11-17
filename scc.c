@@ -19,6 +19,8 @@
 #include <unistd.h>
 #endif
 
+#define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC | O_BINARY
+
 #if 0
 // Only used when self-compiling
 // Small "standard library"
@@ -348,12 +350,12 @@ int CurrentStruct;
 int ReturnUsed;
 int PendingPushAx; // Remember to adjsust LocalOffset!
 int PendingSpAdj;
-int PendingJump;
+int PendingJump = -1;
 int IsDeadCode;
 
-int NextSwitchCase; // Where to go if we haven't matched
-int NextSwitchStmt; // Where to go if we've matched (-1 if already emitted)
-int SwitchDefault;  // Optional switch default label
+int NextSwitchCase = -1; // Where to go if we haven't matched
+int NextSwitchStmt;      // Where to go if we've matched (-1 if already emitted)
+int SwitchDefault;       // Optional switch default label
 
 int IsDigit(int ch)
 {
@@ -376,14 +378,6 @@ char* CopyStr(char* dst, const char* src)
     while (*src) *dst++ = *src++;
     *dst = 0;
     return dst;
-}
-
-int StrLen(const char* s)
-{
-    int l = 0;
-    while (*s++)
-        ++l;
-    return l;
 }
 
 char* VSPrintf(char* dest, const char* format, va_list vl)
@@ -592,19 +586,21 @@ int MakeLabel(void)
     return l;
 }
 
-int GetNamedLabel(int Id)
+struct NamedLabel* GetNamedLabel(int Id)
 {
-    int l;
-    for (l = 0; l < NamedLabelCount; ++l) {
-        if (NamedLabels[l].Id == Id) {
-            return l;
+    struct NamedLabel* NL = NamedLabels;
+    int l = NamedLabelCount;
+    while (l--) {
+        if (NL->Id == Id) {
+            goto Ret;
         }
     }
     Check(NamedLabelCount < NAMED_LABEL_MAX);
-    l = NamedLabelCount++;
-    NamedLabels[l].Id = Id;
-    NamedLabels[l].LabelId = MakeLabel();
-    return l;
+    ++NamedLabelCount;
+    NL->Id = Id;
+    NL->LabelId = MakeLabel();
+Ret:
+    return NL;
 }
 
 void ResetLabels(void)
@@ -758,7 +754,8 @@ void EmitMovRR(int d, int s)
 
 void EmitMovRImm(int r, int val)
 {
-    OutputBytes(I_MOV_R_IMM16 | r, val & 0xff, (val >> 8) & 0xff, -1);
+    OutputBytes(I_MOV_R_IMM16 | r, -1);
+    OutputWord(val);
 }
 
 void EmitLeaStackVar(int r, int off)
@@ -797,6 +794,7 @@ void EmitToBool(void)
 
 void EmitLocalJump(int l)
 {
+    Check(l >= 0 && l < LocalLabelCounter);
     int Addr = Labels[l].Addr;
     if (Addr) {
         Addr -= CodeAddress+2;
@@ -906,48 +904,6 @@ void SetPendingPushAx(void)
 {
     Check(!PendingPushAx && !PendingSpAdj);
     PendingPushAx = 1;
-}
-
-struct VarDecl* AddVarDecl(int Id)
-{
-    Check(ScopesCount);
-    Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
-    struct VarDecl* vd = &VarDecls[++Scopes[ScopesCount-1]];
-    vd->Type      = CurrentType;
-    vd->TypeExtra = CurrentStruct;
-    vd->Id        = Id;
-    vd->Offset    = 0;
-    vd->Ref       = 0;
-    return vd;
-}
-
-void PushScope(void)
-{
-    int End;
-    Check(ScopesCount < SCOPE_MAX);
-    if (ScopesCount)
-        End = Scopes[ScopesCount-1];
-    else
-        End = -1;
-    Scopes[ScopesCount++] = End;
-}
-
-void PopScope(void)
-{
-    Check(ScopesCount);
-    --ScopesCount;
-}
-
-int Lookup(int id)
-{
-    int vd;
-    Check(ScopesCount);
-    for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
-        if (VarDecls[vd].Id == id) {
-            break;
-        }
-    }
-    return vd;
 }
 
 void NextChar(void)
@@ -1277,11 +1233,6 @@ Redo:
     } else {
         Fatal("Unknown token encountered");
     }
-
-    //Printf("%d Token %d ", Line, TokenType);
-    //if (TokenType == TOK_NUM) Printf("Num %d", TokenNumVal);
-    //else if (TokenType >= TOK_BREAK) Printf("Id %s", IdText(TokenType - TOK_BREAK));
-    //Printf("\n");
 }
 
 enum {
@@ -1438,6 +1389,35 @@ void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
 void ParseDeclSpecs(void);
 
+void PushScope(void)
+{
+    int End;
+    Check(ScopesCount < SCOPE_MAX);
+    if (ScopesCount)
+        End = Scopes[ScopesCount-1];
+    else
+        End = -1;
+    Scopes[ScopesCount++] = End;
+}
+
+void PopScope(void)
+{
+    Check(ScopesCount);
+    --ScopesCount;
+}
+
+int Lookup(int id)
+{
+    int vd;
+    Check(ScopesCount);
+    for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
+        if (VarDecls[vd].Id == id) {
+            break;
+        }
+    }
+    return vd;
+}
+
 void HandlePrimaryId(int id)
 {
     const int vd = Lookup(id);
@@ -1534,10 +1514,9 @@ void GetVal(void)
         return;
     }
 
-    const int loc = CurrentType & VT_LOCMASK;
-    if (loc) {
-        Check(loc == VT_LOCLIT);
-        CurrentType &= ~VT_LOCMASK;
+    if (CurrentType & VT_LOCMASK) {
+        Check(CurrentType == (VT_INT|VT_LOCLIT));
+        CurrentType = VT_INT;
         EmitMovRImm(R_AX, CurrentVal);
     }
 }
@@ -1577,7 +1556,6 @@ void EmitCallMemcpy(void)
     MemcpyUsed = 1;
 }
 
-enum { MaxArgs = 4 }; // Maximum number of arguments per "chunk"
 void ParsePostfixExpression(void)
 {
     for (;;) {
@@ -1592,17 +1570,18 @@ void ParsePostfixExpression(void)
             int NumArgs = 0;
             int StackAdj = 0;
             while (TokenType != TOK_RPAREN) {
-                if (NumArgs % MaxArgs == 0) {
-                    StackAdj += MaxArgs*2;
-                    LocalOffset -= MaxArgs*2;
-                    EmitAdjSp(-MaxArgs*2);
+                enum { ArgsPerChunk = 4 };
+                if (NumArgs % ArgsPerChunk == 0) {
+                    StackAdj += ArgsPerChunk*2;
+                    LocalOffset -= ArgsPerChunk*2;
+                    EmitAdjSp(-ArgsPerChunk*2);
                     if (NumArgs) {
                         // Move arguments to new stack top
                         EmitMovRImm(R_AX, NumArgs*2);
                         EmitPush(R_AX);
-                        EmitLeaStackVar(R_AX, LocalOffset + MaxArgs*2);
+                        EmitLeaStackVar(R_AX, LocalOffset + ArgsPerChunk*2);
                         EmitPush(R_AX);
-                        EmitAddRegConst(R_AX, -MaxArgs*2);
+                        EmitAddRegConst(R_AX, -ArgsPerChunk*2);
                         EmitPush(R_AX);
                         EmitCallMemcpy();
                     }
@@ -1692,12 +1671,6 @@ void ParseUnaryExpression(void)
     } else if (Op == TOK_AND || Op == TOK_STAR || Op == TOK_PLUS || Op == TOK_MINUS || Op == TOK_TILDE || Op == TOK_NOT) {
         GetToken();
         ParseCastExpression();
-        if ((CurrentType & VT_LOCMASK) == VT_LOCLIT) {
-            Check(CurrentType == (VT_INT|VT_LOCLIT));
-            IsConst = 1;
-        } else if (Op != TOK_AND) {
-            LvalToRval();
-        }
         if (Op == TOK_AND) {
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("Lvalue required for address-of operator");
@@ -1715,7 +1688,16 @@ void ParseUnaryExpression(void)
                 CurrentType &= ~VT_LOCMASK;
             }
             CurrentType = (CurrentType&~VT_LVAL) + VT_PTR1;
-        } else if (Op == TOK_STAR) {
+            return;
+        }
+
+        if ((CurrentType & VT_LOCMASK) == VT_LOCLIT) {
+            Check(CurrentType == (VT_INT|VT_LOCLIT));
+            IsConst = 1;
+        } else {
+            LvalToRval();
+        }
+        if (Op == TOK_STAR) {
             if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Pointer required for dereference");
             }
@@ -1790,13 +1772,13 @@ void ParseCastExpression(void)
 
 int RelOpToCC(int Op)
 {
-    if (Op == TOK_LT)         return JL;
-    else if (Op == TOK_LTEQ)  return JNG;
-    else if (Op == TOK_GT)    return JG;
-    else if (Op == TOK_GTEQ)  return JNL;
-    else if (Op == TOK_EQEQ)  return JZ;
-    else if (Op == TOK_NOTEQ) return JNZ;
-    Fatal("Not implemented");
+    if (Op == TOK_LT)    return JL;
+    if (Op == TOK_LTEQ)  return JNG;
+    if (Op == TOK_GT)    return JG;
+    if (Op == TOK_GTEQ)  return JNL;
+    if (Op == TOK_EQEQ)  return JZ;
+    if (Op == TOK_NOTEQ) return JNZ;
+    Check(0);
 }
 
 int IsRelOp(int Op)
@@ -1895,7 +1877,8 @@ Plus:
         DoBinOp(Op);
         return;
     }
-    OutputBytes(Op|5, CurrentVal & 0xff, (CurrentVal>>8) & 0xff, -1);
+    OutputBytes(Op|5, -1);
+    OutputWord(CurrentVal);
     CurrentVal = NextVal;
 }
 
@@ -2121,6 +2104,19 @@ void ParseAssignmentExpression(void)
     ParseExpr0(PRED_EQ);
 }
 
+struct VarDecl* AddVarDecl(int Id)
+{
+    Check(ScopesCount);
+    Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
+    struct VarDecl* vd = &VarDecls[++Scopes[ScopesCount-1]];
+    vd->Type      = CurrentType;
+    vd->TypeExtra = CurrentStruct;
+    vd->Id        = Id;
+    vd->Offset    = 0;
+    vd->Ref       = 0;
+    return vd;
+}
+
 void ParseDeclSpecs(void)
 {
     Check(IsTypeStart());
@@ -2327,20 +2323,15 @@ Redo:
         EmitJmp(ReturnLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_BREAK)) {
-        Check(BreakLabel >= 0);
-        if (LocalOffset != BStackLevel)
-            EmitAdjSp(BStackLevel - LocalOffset);
+        EmitAdjSp(BStackLevel - LocalOffset);
         EmitJmp(BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
-        Check(ContinueLabel >= 0);
-        if (LocalOffset != CStackLevel)
-            EmitAdjSp(CStackLevel - LocalOffset);
+        EmitAdjSp(CStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_GOTO)) {
-        struct NamedLabel* nl = &NamedLabels[GetNamedLabel(ExpectId())];
-        EmitJmp(nl->LabelId);
+        EmitJmp(GetNamedLabel(ExpectId())->LabelId);
     } else if (Accept(TOK__EMIT)) {
         ParseExpr();
         Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
@@ -2468,8 +2459,8 @@ Redo:
             const int id = TokenType - TOK_BREAK;
             GetToken();
             if (Accept(TOK_COLON)) {
-                struct NamedLabel* nl = &NamedLabels[GetNamedLabel(id)];
-                EmitLocalLabel(nl->LabelId);
+                struct NamedLabel* NL = GetNamedLabel(id);
+                EmitLocalLabel(NL->LabelId);
                 EmitLeaStackVar(R_SP, LocalOffset);
                 goto Redo;
             } else {
@@ -2585,8 +2576,6 @@ void ParseExternalDefition(void)
     PopScope();
 }
 
-#define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC | O_BINARY
-
 void MakeOutputFilename(char* dest, const char* n)
 {
     char* LastDot;
@@ -2682,9 +2671,6 @@ int main(int argc, char** argv)
 
     for (i = 0; i < ID_HASHMAX; ++i)
         IdHashTab[i] = -1;
-    NextSwitchCase = -1;
-    NextSwitchStmt = -1;
-    PendingJump    = -1;
 
     AddBuiltins("break case char const continue default do else enum for goto if"
         " int return sizeof struct switch void while"
