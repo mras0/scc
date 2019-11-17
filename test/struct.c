@@ -55,8 +55,54 @@ void global() {
     assert_eq(gs.b, 4);
 }
 
+struct L {
+    struct L* next;
+    int a;
+};
+
+void list() {
+    struct L l1;
+    struct L l2;
+    l1.next = &l2;
+    l2.next = 0;
+    int n = 0;
+    struct L* l = &l1;
+    while (l) {
+        ++n;
+        l = l->next;
+    }
+    assert_eq(n, 2);
+}
+
+struct A {
+    int a;
+    int b;
+};
+
+struct B {
+    struct A a1;
+    struct A a2;
+};
+
+void nested()
+{
+    struct B b;
+    assert_eq(sizeof(struct B), 8);
+    b.a1.a = 1;
+    b.a1.b = 2;
+    b.a2.a = 3;
+    b.a2.b = 4;
+    assert_eq(b.a1.a, 1);
+    assert_eq(b.a1.b, 2);
+    assert_eq(b.a2.a, 3);
+    assert_eq(b.a2.b, 4);
+    assert_eq((char*)&b.a2.b - (char*)&b, 6);
+}
+
 void main() {
     bug1();
     assign();
     global();
+    list();
+    nested();
 }

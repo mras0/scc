@@ -270,6 +270,7 @@ struct NamedLabel {
 struct StructMember {
     int Id;
     int Type;
+    int TypeExtra;
 };
 
 struct StructDecl {
@@ -1322,11 +1323,17 @@ int OperatorPrecedence(int tok)
 int SizeofType(int Type, int Extra)
 {
     Type &= VT_BASEMASK|VT_PTRMASK;
-    if (Type == VT_CHAR)
+    if (Type == VT_CHAR) {
         return 1;
-    else if (Type == VT_STRUCT)
-        return 2*StructDecls[Extra].NumMem; // Eww
-    else {
+    } else if (Type == VT_STRUCT) {
+        int Size = 0;
+        struct StructMember* SM = &StructMembers[StructDecls[Extra].FirstMem];
+        int n = StructDecls[Extra].NumMem;
+        for (; n--; ++SM) {
+            Size += SizeofType(SM->Type, SM->TypeExtra);
+        }
+        return Size;
+    } else {
         Check(Type == VT_INT || (Type & VT_PTRMASK));
         return 2;
     }
@@ -1554,8 +1561,11 @@ void HandleStructMember(void)
 {
     const int MemId = ExpectId();
     const int Idx = StructMemberIndex(MemId);
-    const int Off = 2*(Idx - StructDecls[CurrentStruct].FirstMem); // HACK
-    Check(Off >= 0 && Off < SizeofCurrentType());
+    int Off = 0;
+    int m;
+    for (m = StructDecls[CurrentStruct].FirstMem; m < Idx; ++m) {
+        Off += SizeofType(StructMembers[m].Type, StructMembers[m].TypeExtra);
+    }
     int Loc = CurrentType & VT_LOCMASK;
     if (Loc == VT_LOCGLOB) {
         EmitLoadAddr(R_AX, Loc, CurrentVal);
@@ -1569,6 +1579,7 @@ void HandleStructMember(void)
         Check(0);
     }
     CurrentType = StructMembers[Idx].Type | VT_LVAL | Loc;
+    CurrentStruct = StructMembers[Idx].TypeExtra;
 }
 
 void EmitCallMemcpy(void)
@@ -2127,9 +2138,9 @@ int ParseStructMember(void)
     Check(StructMemCount < STRUCT_MEMBER_MAX);
     const int id = StructMemCount++;
     ParseDeclSpecs();
-    Check(CurrentType != VT_STRUCT); // Not supported yet
-    StructMembers[id].Type = CurrentType;
-    StructMembers[id].Id   = ExpectId();
+    StructMembers[id].Type      = CurrentType;
+    StructMembers[id].TypeExtra = CurrentStruct;
+    StructMembers[id].Id        = ExpectId();
     Expect(TOK_SEMICOLON);
     return id;
 }
