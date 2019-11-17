@@ -271,12 +271,12 @@ struct StructMember {
     int Id;
     int Type;
     int TypeExtra;
+    struct StructMember* Next;
 };
 
 struct StructDecl {
     int Id;
-    int FirstMem;
-    int NumMem;
+    struct StructMember* Members;
 };
 
 struct VarDecl {
@@ -1327,9 +1327,8 @@ int SizeofType(int Type, int Extra)
         return 1;
     } else if (Type == VT_STRUCT) {
         int Size = 0;
-        struct StructMember* SM = &StructMembers[StructDecls[Extra].FirstMem];
-        int n = StructDecls[Extra].NumMem;
-        for (; n--; ++SM) {
+        struct StructMember* SM = StructDecls[Extra].Members;
+        for (; SM; SM = SM->Next) {
             Size += SizeofType(SM->Type, SM->TypeExtra);
         }
         return Size;
@@ -1342,21 +1341,6 @@ int SizeofType(int Type, int Extra)
 int SizeofCurrentType(void)
 {
     return SizeofType(CurrentType, CurrentStruct);
-}
-
-int StructMemberIndex(int Id)
-{
-    Check(CurrentStruct >= 0 && CurrentStruct < StructCount);
-    int b = StructDecls[CurrentStruct].FirstMem;
-    int e = b + StructDecls[CurrentStruct].NumMem;
-    int i;
-    for (i = b; i != e; ++i) {
-        if (StructMembers[i].Id == Id) {
-            return i;
-        }
-    }
-    Printf("%s\n", IdText(Id));
-    Fatal("Invalid struct member");
 }
 
 void Unexpected(void)
@@ -1560,11 +1544,14 @@ void GetVal(void)
 void HandleStructMember(void)
 {
     const int MemId = ExpectId();
-    const int Idx = StructMemberIndex(MemId);
     int Off = 0;
-    int m;
-    for (m = StructDecls[CurrentStruct].FirstMem; m < Idx; ++m) {
-        Off += SizeofType(StructMembers[m].Type, StructMembers[m].TypeExtra);
+    Check(CurrentStruct >= 0 && CurrentStruct < StructCount);
+    struct StructMember* SM = StructDecls[CurrentStruct].Members;
+    for (; SM && SM->Id != MemId; SM = SM->Next) {
+        Off += SizeofType(SM->Type, SM->TypeExtra);
+    }
+    if (!SM) {
+        Fatal("Invalid struct member");
     }
     int Loc = CurrentType & VT_LOCMASK;
     if (Loc == VT_LOCGLOB) {
@@ -1578,8 +1565,8 @@ void HandleStructMember(void)
     } else {
         Check(0);
     }
-    CurrentType = StructMembers[Idx].Type | VT_LVAL | Loc;
-    CurrentStruct = StructMembers[Idx].TypeExtra;
+    CurrentType   = SM->Type | VT_LVAL | Loc;
+    CurrentStruct = SM->TypeExtra;
 }
 
 void EmitCallMemcpy(void)
@@ -1980,7 +1967,7 @@ void ParseExpr1(int OuterPrecedence)
                 EmitJmp(LEnd);
                 EmitLocalLabel(Temp);
             } else {
-                Check(CurrentType == VT_INT);
+                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
                 if (Op == TOK_ANDAND)
                     EmitJcc(JZ, LEnd);
@@ -2133,18 +2120,6 @@ void ParseAssignmentExpression(void)
     ParseExpr0(PRED_EQ);
 }
 
-int ParseStructMember(void)
-{
-    Check(StructMemCount < STRUCT_MEMBER_MAX);
-    const int id = StructMemCount++;
-    ParseDeclSpecs();
-    StructMembers[id].Type      = CurrentType;
-    StructMembers[id].TypeExtra = CurrentStruct;
-    StructMembers[id].Id        = ExpectId();
-    Expect(TOK_SEMICOLON);
-    return id;
-}
-
 void ParseDeclSpecs(void)
 {
     Check(IsTypeStart());
@@ -2171,13 +2146,20 @@ void ParseDeclSpecs(void)
             const int SI = StructCount++;
             struct StructDecl* SD = &StructDecls[SI];
             SD->Id = id;
-            SD->FirstMem = StructMemCount;
-            // TODO: Lookup StructName
+            struct StructMember** Last = &SD->Members;
             Expect(TOK_LBRACE);
             while (!Accept(TOK_RBRACE)) {
-                ParseStructMember();
+                Check(StructMemCount < STRUCT_MEMBER_MAX);
+                struct StructMember* SM = &StructMembers[StructMemCount++];
+                ParseDeclSpecs();
+                SM->Type      = CurrentType;
+                SM->TypeExtra = CurrentStruct;
+                SM->Id        = ExpectId();
+                *Last = SM;
+                Last = &SM->Next;
+                Expect(TOK_SEMICOLON);
             }
-            SD->NumMem = StructMemCount - SD->FirstMem;
+            *Last = 0;
             CurrentStruct = SI;
         }
     } else {

@@ -82,21 +82,27 @@ struct A {
 struct B {
     struct A a1;
     struct A a2;
+    struct C {
+        int x;
+    } c;
 };
 
 void nested()
 {
     struct B b;
-    assert_eq(sizeof(struct B), 8);
+    assert_eq(sizeof(struct B), 10);
     b.a1.a = 1;
     b.a1.b = 2;
     b.a2.a = 3;
     b.a2.b = 4;
+    b.c.x  = 5;
     assert_eq(b.a1.a, 1);
     assert_eq(b.a1.b, 2);
     assert_eq(b.a2.a, 3);
     assert_eq(b.a2.b, 4);
+    assert_eq(b.c.x,  5);
     assert_eq((char*)&b.a2.b - (char*)&b, 6);
+    assert_eq((char*)&b.c.x - (char*)&b, 8);
 }
 
 void main() {
