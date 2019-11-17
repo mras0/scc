@@ -132,7 +132,7 @@ enum {
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 350,
-    ID_MAX = 500,
+    ID_MAX = 550,
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
@@ -345,6 +345,7 @@ int CurrentStruct;
 
 int ReturnUsed;
 int PendingPushAx; // Remember to adjsust LocalOffset!
+int PendingSpAdj;
 int IsDeadCode;
 
 int NextSwitchCase; // Where to go if we haven't matched
@@ -556,6 +557,7 @@ enum {
     SHROT_SAR = 7,
 };
 
+void FlushSpAdj(void);
 int EmitChecks(void);
 
 void OutputBytes(int first, ...)
@@ -634,6 +636,7 @@ void AddFixup(int* f)
 void EmitLocalLabel(int l)
 {
     Check(l < LocalLabelCounter && !Labels[l].Addr);
+    FlushSpAdj();
     Labels[l].Addr = CodeAddress;
     IsDeadCode = 0;
     DoFixups(Labels[l].Ref, 1);
@@ -837,17 +840,41 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
     }
 }
 
-int EmitChecks(void)
+void FlushSpAdj(void)
 {
-    if (IsDeadCode) {
-        return 1;
-    }
+    int Amm = PendingSpAdj;
+    PendingSpAdj = 0;
+    EmitAddRegConst(R_SP, Amm);
+}
+
+void FlushPushAx(void)
+{
     if (PendingPushAx) {
         PendingPushAx = 0;
         EmitPush(R_AX);
         LocalOffset -= 2;
     }
+}
+
+void EmitAdjSp(int Amm)
+{
+    PendingSpAdj += Amm;
+}
+
+int EmitChecks(void)
+{
+    if (IsDeadCode) {
+        return 1;
+    }
+    FlushSpAdj();
+    FlushPushAx();
     return 0;
+}
+
+void SetPendingPushAx(void)
+{
+    Check(!PendingPushAx && !PendingSpAdj);
+    PendingPushAx = 1;
 }
 
 struct VarDecl* AddVarDecl(int Id)
@@ -1525,7 +1552,7 @@ void HandleStructMember(void)
 void EmitCallMemcpy(void)
 {
     EmitCall(MemcpyDecl);
-    EmitAddRegConst(R_SP, 6);
+    EmitAdjSp(6);
     MemcpyUsed = 1;
 }
 
@@ -1547,7 +1574,7 @@ void ParsePostfixExpression(void)
                 if (NumArgs % MaxArgs == 0) {
                     StackAdj += MaxArgs*2;
                     LocalOffset -= MaxArgs*2;
-                    EmitAddRegConst(R_SP, -MaxArgs*2);
+                    EmitAdjSp(-MaxArgs*2);
                     if (NumArgs) {
                         // Move arguments to new stack top
                         EmitMovRImm(R_AX, NumArgs*2);
@@ -1579,7 +1606,7 @@ void ParsePostfixExpression(void)
             Expect(TOK_RPAREN);
             EmitCall(Func);
             if (StackAdj) {
-                EmitAddRegConst(R_SP, StackAdj);
+                EmitAdjSp(StackAdj);
                 LocalOffset += StackAdj;
             }
             CurrentType = RetType;
@@ -1595,18 +1622,13 @@ void ParsePostfixExpression(void)
             const int Scale    = SizeofCurrentType();
             const int ResType  = CurrentType | VT_LVAL;
             const int ResExtra = CurrentStruct;
-            Check(!PendingPushAx);
-            PendingPushAx = 1;
+            SetPendingPushAx();
             ParseExpr();
             Expect(TOK_RBRACKET);
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 CurrentVal *= Scale;
-                if (PendingPushAx) {
-                    PendingPushAx = 0;
-                } else {
-                    EmitPop(R_AX);
-                    LocalOffset += 2;
-                }
+                Check(PendingPushAx);
+                PendingPushAx = 0;
                 OutputBytes(I_ADD|5, CurrentVal&0xff, (CurrentVal>>8)&0xff, -1);
             } else {
                 LvalToRval();
@@ -1935,9 +1957,8 @@ void ParseExpr1(int OuterPrecedence)
             }
         } else {
             LEnd = -1;
-            if (!(LhsType & VT_LOCMASK)) {
-                Check(!PendingPushAx);
-                PendingPushAx = Op != TOK_COMMA;
+            if (!(LhsType & VT_LOCMASK) && Op != TOK_COMMA) {
+                SetPendingPushAx();
             }
         }
 
@@ -2256,7 +2277,7 @@ Redo:
             // Note: AX contains "random" garbage at first if the variable isn't initialized
             EmitPush(R_AX);
         } else {
-            EmitAddRegConst(R_SP, -size);
+            EmitAdjSp(-size);
         }
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_RETURN)) {
@@ -2272,13 +2293,13 @@ Redo:
     } else if (Accept(TOK_BREAK)) {
         Check(BreakLabel >= 0);
         if (LocalOffset != BStackLevel)
-            EmitAddRegConst(R_SP, BStackLevel - LocalOffset);
+            EmitAdjSp(BStackLevel - LocalOffset);
         EmitJmp(BreakLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_CONTINUE)) {
         Check(ContinueLabel >= 0);
         if (LocalOffset != CStackLevel)
-            EmitAddRegConst(R_SP, CStackLevel - LocalOffset);
+            EmitAdjSp(CStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_GOTO)) {
@@ -2437,7 +2458,7 @@ void ParseCompoundStatement(void)
     }
     PopScope();
     if (InitialOffset != LocalOffset) {
-        EmitAddRegConst(R_SP, InitialOffset - LocalOffset);
+        EmitAdjSp(InitialOffset - LocalOffset);
         LocalOffset = InitialOffset;
     }
 }
@@ -2538,8 +2559,10 @@ void ParseExternalDefition(void)
         EmitMovRR(R_BP, R_SP);
         ParseCompoundStatement();
         EmitLocalLabel(ReturnLabel);
-        if (ReturnUsed)
+        if (ReturnUsed) {
+            PendingSpAdj = 0;
             EmitMovRR(R_SP, R_BP);
+        }
         EmitPop(R_BP);
         OutputBytes(I_RET, -1); // RET
         ResetLabels();
