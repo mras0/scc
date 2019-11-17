@@ -347,6 +347,7 @@ int CurrentStruct;
 int ReturnUsed;
 int PendingPushAx; // Remember to adjsust LocalOffset!
 int PendingSpAdj;
+int PendingJump;
 int IsDeadCode;
 
 int NextSwitchCase; // Where to go if we haven't matched
@@ -560,6 +561,7 @@ enum {
 };
 
 void FlushSpAdj(void);
+void FlushJump(void);
 int EmitChecks(void);
 
 void OutputBytes(int first, ...)
@@ -637,6 +639,10 @@ void AddFixup(int* f)
 void EmitLocalLabel(int l)
 {
     Check(l < LocalLabelCounter && !Labels[l].Addr);
+    if (PendingJump == l) {
+        PendingJump = -1;
+    }
+    FlushJump();
     FlushSpAdj();
     Labels[l].Addr = CodeAddress;
     IsDeadCode = 0;
@@ -800,8 +806,7 @@ void EmitLocalJump(int l)
             OutputWord(Addr-1);
         }
     } else {
-        OutputBytes(I_JMP_REL16, -1);
-        AddFixup(&Labels[l].Ref);
+        PendingJump = l;
     }
 }
 
@@ -831,6 +836,7 @@ void EmitJcc(int cc, int l)
 
     OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
     EmitLocalJump(l);
+    FlushJump();
 }
 
 void EmitCall(struct VarDecl* Func)
@@ -868,6 +874,17 @@ void FlushPushAx(void)
     }
 }
 
+void FlushJump(void)
+{
+    if (PendingJump != -1) {
+        int* f = &Labels[PendingJump].Ref;
+        PendingJump = -1;
+        IsDeadCode = 0;
+        OutputBytes(I_JMP_REL16, -1);
+        AddFixup(f);
+    }
+}
+
 void EmitAdjSp(int Amm)
 {
     PendingSpAdj += Amm;
@@ -880,6 +897,7 @@ int EmitChecks(void)
     }
     FlushSpAdj();
     FlushPushAx();
+    FlushJump();
     return 0;
 }
 
@@ -2672,6 +2690,7 @@ int main(int argc, char** argv)
         IdHashTab[i] = -1;
     NextSwitchCase = -1;
     NextSwitchStmt = -1;
+    PendingJump    = -1;
 
     AddBuiltins("break case char const continue default do else enum for goto if"
         " int return sizeof struct switch void while"
