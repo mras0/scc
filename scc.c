@@ -137,7 +137,7 @@ enum {
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6500, // Decrease this if increasing/adding other buffers..
+    OUTPUT_MAX = 0x6400, // Decrease this if increasing/adding other buffers..
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
 };
@@ -825,6 +825,18 @@ void EmitCall(struct VarDecl* Func)
     EmitGlobalRefRel(Func);
 }
 
+void EmitLoadAddr(int Reg, int Loc, int Val)
+{
+    if (Loc == VT_LOCOFF) {
+        EmitLeaStackVar(Reg, Val);
+    } else if (Loc == VT_LOCGLOB) {
+        OutputBytes(I_MOV_R_IMM16 | Reg, -1);
+        EmitGlobalRef(&VarDecls[Val]);
+    } else {
+        Check(0);
+    }
+}
+
 int EmitChecks(void)
 {
     if (IsDeadCode) {
@@ -1497,8 +1509,7 @@ void HandleStructMember(void)
     Check(Off >= 0 && Off < SizeofCurrentType());
     int Loc = CurrentType & VT_LOCMASK;
     if (Loc == VT_LOCGLOB) {
-        OutputBytes(I_MOV_R_IMM16 | R_AX, -1);
-        EmitGlobalRef(&VarDecls[CurrentVal]);
+        EmitLoadAddr(R_AX, Loc, CurrentVal);
         Loc = 0;
     }
     if (!Loc) {
@@ -1951,11 +1962,9 @@ void ParseExpr1(int OuterPrecedence)
             Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
             EmitMovRImm(R_CX, SizeofCurrentType());
             EmitPush(R_CX);
-            Check((CurrentType&VT_LOCMASK) == VT_LOCOFF);
-            EmitLeaStackVar(R_CX, CurrentVal);
+            EmitLoadAddr(R_CX, CurrentType&VT_LOCMASK, CurrentVal);
             EmitPush(R_CX);
-            Check(LhsLoc == VT_LOCOFF);
-            EmitLeaStackVar(R_CX, LhsVal);
+            EmitLoadAddr(R_CX, LhsLoc, LhsVal);
             EmitPush(R_CX);
             EmitCallMemcpy();
             continue;

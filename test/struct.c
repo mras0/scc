@@ -44,6 +44,15 @@ void global() {
     gs.b = 2;
     assert_eq(gs.a, 0);
     assert_eq(gs.b, 2);
+    struct S ts;
+    ts = gs;
+    assert_eq(ts.a, 0);
+    assert_eq(ts.b, 2);
+    ts.a = 3;
+    ts.b = 4;
+    gs = ts;
+    assert_eq(gs.a, 3);
+    assert_eq(gs.b, 4);
 }
 
 void main() {
