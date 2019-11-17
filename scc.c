@@ -297,7 +297,8 @@ int InFile;
 char* InBuf;
 int InBufCnt;
 int InBufSize;
-char UngottenChar;
+char CurChar;
+char StoredSlash;
 
 int Line = 1;
 
@@ -930,65 +931,84 @@ int Lookup(int id)
     return vd;
 }
 
-char GetChar(void)
+void NextChar(void)
 {
-    if (UngottenChar) {
-        char ch;
-        ch = UngottenChar;
-        UngottenChar = 0;
-        return ch;
-    }
     if (InBufCnt == InBufSize) {
         InBufCnt = 0;
         InBufSize = read(InFile, InBuf, INBUF_MAX);
         if (!InBufSize) {
-            return 0;
+            CurChar = 0;
+            return;
         }
     }
-    return InBuf[InBufCnt++];
+    CurChar = InBuf[InBufCnt++];
 }
 
-void UnGetChar(char ch)
+char GetChar(void)
 {
-    UngottenChar = ch;
+    if (StoredSlash) {
+        StoredSlash = 0;
+        return '/';
+    }
+    char ch = CurChar;
+    NextChar();
+    return ch;
 }
 
 int TryGetChar(char ch)
 {
-    char ch2;
-    if ((ch2 = GetChar()) != ch) {
-        UnGetChar(ch2);
-        return 0;
+    if (CurChar == ch) {
+        NextChar();
+        return 1;
     }
-    return 1;
+    return 0;
 }
 
 void SkipLine(void)
 {
-    int ch;
-    while ((ch = GetChar()) != '\n' && ch)
-        ;
+    while (CurChar && CurChar != '\n')
+        NextChar();
+    if (CurChar) NextChar();
     ++Line;
 }
 
 void SkipWhitespace(void)
 {
-    char ch;
-    while ((ch = GetChar()) <= ' ') {
-        if (!ch) {
+Redo:
+    while (CurChar <= ' ') {
+        if (!CurChar) {
             return;
         }
-        if (ch == '\n') {
+        if (CurChar == '\n') {
             ++Line;
         }
+        NextChar();
     }
-    UnGetChar(ch);
+    if (CurChar == '/') {
+        NextChar();
+        if (CurChar == '/') {
+            SkipLine();
+        } else if (CurChar == '*') {
+            NextChar();
+            int star = 0;
+            while (!star || CurChar != '/') {
+                star = CurChar == '*';
+                NextChar();
+                if (!CurChar)
+                    Fatal("Unterminated comment");
+            }
+            NextChar();
+        } else {
+            StoredSlash = 1;
+            return;
+        }
+        goto Redo;
+    }
 }
 
 char Unescape(void)
 {
-    char ch;
-    ch = GetChar();
+    char ch = GetChar();
     if (ch == 'n') {
         return '\n';
     } else if (ch == 'r') {
@@ -1027,11 +1047,9 @@ void GetStringLiteral(void)
             OutputBytes(ch, -1);
         }
         SkipWhitespace();
-        ch = GetChar();
-        if (ch != '"') {
-            UnGetChar(ch);
+        if (StoredSlash || CurChar != '"')
             break;
-        }
+        NextChar();
     }
     OutputBytes(0, -1);
     EmitLocalLabel(JL);
@@ -1068,78 +1086,54 @@ int GetStrIdHash(const char* Str, int Hash)
     return Id;
 }
 
-int HashStr(const char* Str)
-{
-    int Hash = HASHINIT;
-    while (*Str) {
-        Hash = Hash*HASHMUL + *Str++;
-    }
-    return Hash;
-}
-
-int GetStrId(const char* Str)
-{
-    return GetStrIdHash(Str, HashStr(Str));
-}
-
 void GetToken(void)
 {
-    char ch;
-
+Redo:
     SkipWhitespace();
-    ch = GetChar();
-
+    char ch = GetChar();
     if (!ch) {
         TokenType = TOK_EOF;
         return;
-      }
-
+    }
     if (ch == '#') {
         SkipLine();
-        GetToken();
-        return;
+        goto Redo;
     } else if (IsDigit(ch)) {
-        TokenNumVal = 0;
+        TokenNumVal = ch - '0';
         int base = 10;
         if (ch == '0') {
             base = 8;
-            ch = GetChar();
-            if (ch == 'x' || ch == 'X') {
+            if (CurChar == 'x' || CurChar == 'X') {
                 base = 16;
-                ch = GetChar();
+                NextChar();
             }
         }
         for (;;) {
-            if (IsDigit(ch)) {
-                ch -= '0';
-            } else if (IsAlpha(ch)) {
-                ch = (ch & 0xdf) - ('A'-10);
+            if (IsDigit(CurChar)) {
+                CurChar -= '0';
+            } else if (IsAlpha(CurChar)) {
+                CurChar = (CurChar & 0xdf) - ('A'-10);
             } else {
                 break;
             }
-            if (ch < 0 || ch >= base)
+            if (CurChar < 0 || CurChar >= base)
                 break;
-            TokenNumVal = TokenNumVal*base + ch;
-            ch = GetChar();
+            TokenNumVal = TokenNumVal*base + CurChar;
+            NextChar();
         }
-        UnGetChar(ch);
         TokenType = TOK_NUM;
     } else if (IsAlpha(ch) || ch == '_') {
         char* pc;
         char* start;
         start = pc = &IdBuffer[IdBufferIndex];
-        *pc++ = ch;
         int Hash = HASHINIT*HASHMUL+ch;
-        for (;;) {
-            ch = GetChar();
-            if (ch != '_' && !IsDigit(ch) && !IsAlpha(ch)) {
-                break;
-            }
-            *pc++ = ch;
-            Hash = Hash*HASHMUL+ch;
+        *pc++ = ch;
+        while (CurChar == '_' || IsDigit(CurChar) || IsAlpha(CurChar)) {
+            *pc++ = CurChar;
+            Hash = Hash*HASHMUL+CurChar;
+            NextChar();
         }
         *pc++ = 0;
-        UnGetChar(ch);
         TokenType = GetStrIdHash(start, Hash);
         if (TokenType < 0) {
             Check(IdCount < ID_MAX);
@@ -1151,11 +1145,9 @@ void GetToken(void)
         }
         TokenType += TOK_BREAK;
     } else if (ch == '\'') {
-        ch = GetChar();
-        if (ch == '\\') {
+        TokenNumVal = GetChar();
+        if (TokenNumVal == '\\') {
             TokenNumVal = Unescape();
-        } else {
-            TokenNumVal = ch;
         }
         if (GetChar() != '\'') {
             Fatal("Invalid character literal");
@@ -1246,11 +1238,6 @@ void GetToken(void)
             TokenType = TOK_STAREQ;
         }
     } else if (ch == '/') {
-        if (TryGetChar('/')) {
-            SkipLine();
-            GetToken();
-            return;
-        }
         TokenType = TOK_SLASH;
         if (TryGetChar('=')) {
             TokenType = TOK_SLASHEQ;
@@ -1271,6 +1258,11 @@ void GetToken(void)
     } else {
         Fatal("Unknown token encountered");
     }
+
+    //Printf("%d Token %d ", Line, TokenType);
+    //if (TokenType == TOK_NUM) Printf("Num %d", TokenNumVal);
+    //else if (TokenType >= TOK_BREAK) Printf("Id %s", IdText(TokenType - TOK_BREAK));
+    //Printf("\n");
 }
 
 enum {
@@ -2701,6 +2693,7 @@ int main(int argc, char** argv)
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
     MemcpyDecl = AddVarDecl(AddId("memcpy"));
 
+    NextChar();
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();
