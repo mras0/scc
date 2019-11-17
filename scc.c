@@ -548,7 +548,8 @@ enum {
     I_INT            = 0xcd,
     I_SHROT16_CL     = 0xd3,
     I_CALL           = 0xe8,
-    I_JMP            = 0xe9,
+    I_JMP_REL16      = 0xe9,
+    I_JMP_REL8       = 0xeb,
     I_INCDEC_RM      = 0xfe,
 };
 
@@ -563,14 +564,13 @@ int EmitChecks(void);
 void OutputBytes(int first, ...)
 {
     if (EmitChecks()) return;
-    Check(CodeAddress < OUTPUT_MAX+CODESTART);
     char* o = Output - CODESTART;
     va_list vl;
     va_start(vl, first);
-    o[CodeAddress++] = (char)first;
-    while ((first = va_arg(vl, int)) != -1) {
+    do {
+        Check(CodeAddress < OUTPUT_MAX+CODESTART);
         o[CodeAddress++] = (char)first;
-    }
+    } while ((first = va_arg(vl, int)) != -1);
     va_end(vl);
 }
 
@@ -648,16 +648,6 @@ void EmitLocalRef(int l)
     int Addr = Labels[l].Addr;
     Check(Addr);
     OutputWord(Addr);
-}
-
-void EmitLocalRefRel(int l)
-{
-    int Addr = Labels[l].Addr;
-    if (Addr) {
-        OutputWord(Addr - CodeAddress - 2);
-    } else {
-        AddFixup(&Labels[l].Ref);
-    }
 }
 
 void EmitGlobalLabel(struct VarDecl* vd)
@@ -738,7 +728,7 @@ void EmitAddRegConst(int r, int Amm)
         if (Amm > 1)
             OutputBytes(Op, -1);
     } else {
-        Check(Amm < 256);
+        Check(Amm < 128);
         OutputBytes(I_ALU_RM16_IMM8, MODRM_REG|Op|r, Amm & 0xff, -1);
     }
 }
@@ -797,28 +787,49 @@ void EmitToBool(void)
     OutputBytes(I_AND|1, MODRM_REG, -1); // AND AX, AX
 }
 
+void EmitLocalJump(int l)
+{
+    int Addr = Labels[l].Addr;
+    if (Addr) {
+        Addr -= CodeAddress+2;
+        if (Addr == (char)Addr) {
+            OutputBytes(I_JMP_REL8, Addr & 0xff, -1);
+        } else {
+            OutputBytes(I_JMP_REL16, -1);
+            OutputWord(Addr-1);
+        }
+    } else {
+        OutputBytes(I_JMP_REL16, -1);
+        AddFixup(&Labels[l].Ref);
+    }
+}
+
 void EmitJmp(int l)
 {
     PendingPushAx = 0;
-    if (IsDeadCode) {
+    if (EmitChecks()) {
         return;
     }
-    OutputBytes(I_JMP, -1);
-    EmitLocalRefRel(l);
+    EmitLocalJump(l);
     IsDeadCode = 1;
 }
 
 void EmitJcc(int cc, int l)
 {
+    if (EmitChecks())
+        return;
+
     int a = Labels[l].Addr;
-    if (a && CodeAddress+2-a <= 0x80) {
-        Check(a < CodeAddress);
-        OutputBytes(0x70 | cc, (a-CodeAddress-2)&0xff, -1);
-    } else {
-        OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
-        OutputBytes(I_JMP, -1);
-        EmitLocalRefRel(l);
+    if (a) {
+        a -= CodeAddress+2;
+        if (a == (char)a) {
+            OutputBytes(0x70 | cc, a & 0xff, -1);
+            return;
+        }
     }
+
+    OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
+    EmitLocalJump(l);
 }
 
 void EmitCall(struct VarDecl* Func)
@@ -2680,7 +2691,7 @@ int main(int argc, char** argv)
     // Prelude
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
-    OutputBytes(I_JMP, -1);
+    OutputBytes(I_JMP_REL16, -1);
     EmitGlobalRefRel(AddVarDecl(AddId("_start")));
 
     CurrentType = VT_CHAR|VT_LOCGLOB;
