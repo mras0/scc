@@ -105,10 +105,30 @@ void nested()
     assert_eq((char*)&b.c.x - (char*)&b, 8);
 }
 
+void unnamed() {
+    struct {
+        struct {
+            int a;
+            int b;
+        } x;
+        struct {
+            int c;
+        } y;
+    } un;
+
+    un.x.a=1; un.x.b=2; un.y.c=3;
+    assert_eq(un.x.a, 1);
+    assert_eq(un.x.b, 2);
+    assert_eq(un.y.c, 3);
+    assert_eq((char*)&un.y.c - (char*)&un, 4);
+    // TODO: assert_eq(sizeof(un), 6);
+}
+
 void main() {
     bug1();
     assign();
     global();
     list();
     nested();
+    unnamed();
 }

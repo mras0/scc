@@ -469,7 +469,7 @@ void Fatal(const char* Msg)
 {
 #if 0
     int* BP = GetBP();
-    Printf("BP   Return address\n");
+    Printf("\nBP   Return address\n");
     while (*BP) {
         Printf("%X %X\n", BP[0], BP[1]);
         BP = (int*)BP[0];
@@ -1313,7 +1313,7 @@ void PrintTokenType(int T)
 void Unexpected(void)
 {
     PrintTokenType(TokenType);
-    Fatal(" Unexpected token");
+    Fatal("Unexpected token");
 }
 
 int Accept(int type)
@@ -1959,6 +1959,7 @@ void ParseExpr1(int OuterPrecedence)
         }
         LhsType = CurrentType;
         LhsVal = CurrentVal;
+        LhsPointeeSize = 0;
         if (LhsType & VT_PTRMASK) {
             LhsPointeeSize = SizeofType(CurrentType-VT_PTR1, CurrentStruct);
         }
@@ -2176,17 +2177,22 @@ void ParseDeclSpecs(void)
     } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
         t = TokenType;
         GetToken();
-        int id = ExpectId();
+        int id = 0;
         if (t == TOK_UNION) {
-            id |= IS_UNION_FLAG;
+            id = IS_UNION_FLAG;
         }
         CurrentStruct = -1;
-        int i;
-        for (i = 0; i < StructCount; ++i) {
-            if (StructDecls[i].Id == id) {
-                CurrentStruct = i;
-                break;
+        if (TokenType >= TOK_ID) {
+            id |= ExpectId();
+            int i;
+            for (i = 0; i < StructCount; ++i) {
+                if (StructDecls[i].Id == id) {
+                    CurrentStruct = i;
+                    break;
+                }
             }
+        } else {
+            id |= ID_MAX; // Should never match in above loop
         }
         if (CurrentStruct < 0) {
             Check(StructCount < STRUCT_MAX);
