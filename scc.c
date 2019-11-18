@@ -1582,16 +1582,6 @@ void EmitCallMemcpy(void)
     MemcpyUsed = 1;
 }
 
-void ParseDeadExpr(int Precedence)
-{
-    const int WasDead = IsDeadCode;
-    const int OldCodeAddress = CodeAddress;
-    IsDeadCode = 1;
-    ParseExpr0(Precedence);
-    Check(IsDeadCode && OldCodeAddress == CodeAddress);
-    IsDeadCode = WasDead;
-}
-
 void ParsePostfixExpression(void)
 {
     for (;;) {
@@ -1771,10 +1761,22 @@ void ParseUnaryExpression(void)
         }
     } else if (Op == TOK_SIZEOF) {
         GetToken();
-        Expect(TOK_LPAREN);
-        ParseDeclSpecs();
+        const int WasDead = IsDeadCode;
+        IsDeadCode = 1;
+        if (Accept(TOK_LPAREN)) {
+            if (IsTypeStart()) {
+                ParseDeclSpecs();
+                CurrentVal = SizeofCurrentType();
+            } else {
+                ParseAssignmentExpression();
+            }
+            Expect(TOK_RPAREN);
+        } else {
+            ParseUnaryExpression();
+        }
+        Check(IsDeadCode);
+        IsDeadCode = WasDead;
         CurrentVal = SizeofCurrentType();
-        Expect(TOK_RPAREN);
         CurrentType = VT_LOCLIT | VT_INT;
     } else {
         ParsePrimaryExpression();
@@ -1987,7 +1989,11 @@ void ParseMaybeDead(int Live)
         const int OldType  = CurrentType;
         const int OldVal   = CurrentVal;
         const int OldExtra = CurrentStruct;
-        ParseDeadExpr(PRED_EQ);
+        const int WasDead  = IsDeadCode;
+        IsDeadCode = 1;
+        ParseAssignmentExpression();
+        Check(IsDeadCode);
+        IsDeadCode    = WasDead;
         CurrentType   = OldType;
         CurrentVal    = OldVal;
         CurrentStruct = OldExtra;

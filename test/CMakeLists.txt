@@ -4,6 +4,7 @@ set(TESTS
     dowhile
     enum
     lgoto # goto would clash with DOS goto builtin
+    sizeof
     struct
     switch
     union
