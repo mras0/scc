@@ -121,7 +121,7 @@ void unnamed() {
     assert_eq(un.x.b, 2);
     assert_eq(un.y.c, 3);
     assert_eq((char*)&un.y.c - (char*)&un, 4);
-    // TODO: assert_eq(sizeof(un), 6);
+    assert_eq(sizeof(un), 6);
 }
 
 void main() {

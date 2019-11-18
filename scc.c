@@ -139,7 +139,7 @@ enum {
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6400, // Decrease this if increasing/adding other buffers..
+    OUTPUT_MAX = 0x6200, // TODO: Re-determine max
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
 };
@@ -1407,12 +1407,6 @@ void DoIncDecOp(int Op, int Post)
     EmitModrm(I_INCDEC_RM|WordOp, Op, Loc, CurrentVal);
 }
 
-void ParseExpr(void);
-void ParseExpr0(int OuterPrecedence);
-void ParseCastExpression(void);
-void ParseAssignmentExpression(void);
-void ParseDeclSpecs(void);
-
 void PushScope(void)
 {
     int End;
@@ -1474,10 +1468,12 @@ void HandlePrimaryId(int id)
     }
 }
 
+void ParseExpr(void);
+void ParseAbstractDecl(void);
+
 void ParsePrimaryExpression(void)
 {
-    if (TokenType == TOK_LPAREN) {
-        GetToken();
+    if (Accept(TOK_LPAREN)) {
         ParseExpr();
         Expect(TOK_RPAREN);
     } else if (TokenType == TOK_NUM) {
@@ -1517,7 +1513,7 @@ void ParsePrimaryExpression(void)
             EmitLoadAx(2, VT_LOCOFF, offset);
             EmitAddRegConst(R_AX, 2);
             EmitStoreAx(2, VT_LOCOFF, offset);
-            ParseDeclSpecs();
+            ParseAbstractDecl();
             CurrentType |= VT_LVAL;
         }
         Expect(TOK_RPAREN);
@@ -1581,6 +1577,8 @@ void EmitCallMemcpy(void)
     EmitAdjSp(6);
     MemcpyUsed = 1;
 }
+
+void ParseAssignmentExpression(void);
 
 void ParsePostfixExpression(void)
 {
@@ -1687,6 +1685,8 @@ void ParsePostfixExpression(void)
     }
 }
 
+void ParseCastExpression(void);
+
 void ParseUnaryExpression(void)
 {
     const int Op = TokenType;
@@ -1765,7 +1765,7 @@ void ParseUnaryExpression(void)
         IsDeadCode = 1;
         if (Accept(TOK_LPAREN)) {
             if (IsTypeStart()) {
-                ParseDeclSpecs();
+                ParseAbstractDecl();
                 CurrentVal = SizeofCurrentType();
             } else {
                 ParseAssignmentExpression();
@@ -1788,7 +1788,7 @@ void ParseCastExpression(void)
 {
     if (Accept(TOK_LPAREN)) {
         if (IsTypeStart()) {
-            ParseDeclSpecs();
+            ParseAbstractDecl();
             Expect(TOK_RPAREN);
             const int T = CurrentType;
             const int S = CurrentStruct;
@@ -2258,100 +2258,135 @@ struct VarDecl* AddVarDecl(int Id)
     return vd;
 }
 
+void ParsePointers(void)
+{
+    // TODO: Could allow type qualifiers (const/volatile) here
+    while (Accept(TOK_STAR)) {
+        CurrentType += VT_PTR1;
+    }
+}
+
 void ParseDeclSpecs(void)
 {
-    Check(IsTypeStart());
-    if (TokenType == TOK_CONST) {
-        // Ignore
-        GetToken();
-        Check(IsTypeStart());
-    }
-    int t = VT_INT;
-    if (Accept(TOK_ENUM)) {
-        if (TokenType >= TOK_ID) {
-            // TODO: Store and use the enum identifier
+    // Could check if legal type, but we want to keep the code small...
+    CurrentType = VT_INT;
+    for (;;) {
+        if (Accept(TOK_VOID))
+            CurrentType = VT_VOID;
+        else if (Accept(TOK_CHAR))
+            CurrentType = VT_CHAR;
+        else if (Accept(TOK_INT))
+            CurrentType = VT_INT;
+        else if (Accept(TOK_VA_LIST))
+            CurrentType = VT_CHAR | VT_PTR1;
+        else if (Accept(TOK_CONST))   // Ignore but accept const for now
+            ;
+        else if (Accept(TOK_ENUM)) {
+            if (TokenType >= TOK_ID) {
+                // TODO: Store and use the enum identifier
+                GetToken();
+            }
+            if (Accept(TOK_LBRACE)) {
+                int EnumVal = 0;
+                while (TokenType != TOK_RBRACE) {
+                    const int id = ExpectId();
+                    if (Accept(TOK_EQ)) {
+                        ParseAssignmentExpression();
+                        Check(CurrentType == (VT_INT|VT_LOCLIT));
+                        EnumVal = CurrentVal;
+                    }
+                    CurrentType = VT_INT|VT_LOCLIT;
+                    struct VarDecl* vd = AddVarDecl(id);
+                    vd->Offset = EnumVal;
+                    if (!Accept(TOK_COMMA)) {
+                        break;
+                    }
+                    ++EnumVal;
+                }
+                Expect(TOK_RBRACE);
+            }
+            CurrentType = VT_INT;
+        } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
+            int id = 0;
+            if (TokenType == TOK_UNION)
+                id = IS_UNION_FLAG;
             GetToken();
-        }
-        if (Accept(TOK_LBRACE)) {
-            int EnumVal = 0;
-            while (TokenType != TOK_RBRACE) {
-                const int id = ExpectId();
-                if (Accept(TOK_EQ)) {
-                    ParseAssignmentExpression();
-                    Check(CurrentType == (VT_INT|VT_LOCLIT));
-                    EnumVal = CurrentVal;
+            CurrentStruct = -1;
+            if (TokenType >= TOK_ID) {
+                id |= ExpectId();
+                int i;
+                for (i = 0; i < StructCount; ++i) {
+                    if (StructDecls[i].Id == id) {
+                        CurrentStruct = i;
+                        break;
+                    }
                 }
-                CurrentType = VT_INT|VT_LOCLIT;
-                struct VarDecl* vd = AddVarDecl(id);
-                vd->Offset = EnumVal;
-                if (!Accept(TOK_COMMA)) {
-                    break;
-                }
-                ++EnumVal;
+            } else {
+                id |= ID_MAX; // Should never match in above loop
             }
-            Expect(TOK_RBRACE);
-        }
-    } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
-        t = TokenType;
-        GetToken();
-        int id = 0;
-        if (t == TOK_UNION) {
-            id = IS_UNION_FLAG;
-        }
-        CurrentStruct = -1;
-        if (TokenType >= TOK_ID) {
-            id |= ExpectId();
-            int i;
-            for (i = 0; i < StructCount; ++i) {
-                if (StructDecls[i].Id == id) {
-                    CurrentStruct = i;
-                    break;
+            if (CurrentStruct < 0) {
+                Check(StructCount < STRUCT_MAX);
+                const int SI = StructCount++;
+                struct StructDecl* SD = &StructDecls[SI];
+                SD->Id = id;
+                struct StructMember** Last = &SD->Members;
+                Expect(TOK_LBRACE);
+                while (!Accept(TOK_RBRACE)) {
+                    Check(StructMemCount < STRUCT_MEMBER_MAX);
+                    ParseAbstractDecl();
+                    int BaseType = CurrentType;
+                    int BaseStruct = CurrentStruct;
+                    while (TokenType != TOK_SEMICOLON) {
+                        ParsePointers();
+                        struct StructMember* SM = &StructMembers[StructMemCount++];
+                        SM->Type      = CurrentType;
+                        SM->TypeExtra = CurrentStruct;
+                        SM->Id        = ExpectId();
+                        *Last = SM;
+                        Last = &SM->Next;
+                        if (!Accept(TOK_COMMA))
+                            break;
+                        CurrentType = BaseType;
+                        CurrentStruct = BaseStruct;
+                    }
+                    Expect(TOK_SEMICOLON);
                 }
+                *Last = 0;
+                CurrentStruct = SI;
             }
+            CurrentType = VT_STRUCT;
         } else {
-            id |= ID_MAX; // Should never match in above loop
+            break;
         }
-        if (CurrentStruct < 0) {
-            Check(StructCount < STRUCT_MAX);
-            const int SI = StructCount++;
-            struct StructDecl* SD = &StructDecls[SI];
-            SD->Id = id;
-            struct StructMember** Last = &SD->Members;
-            Expect(TOK_LBRACE);
-            while (!Accept(TOK_RBRACE)) {
-                Check(StructMemCount < STRUCT_MEMBER_MAX);
-                struct StructMember* SM = &StructMembers[StructMemCount++];
-                ParseDeclSpecs();
-                SM->Type      = CurrentType;
-                SM->TypeExtra = CurrentStruct;
-                SM->Id        = ExpectId();
-                *Last = SM;
-                Last = &SM->Next;
-                Expect(TOK_SEMICOLON);
-            }
-            *Last = 0;
-            CurrentStruct = SI;
-        }
-        t = VT_STRUCT;
-    } else {
-        if (TokenType == TOK_VOID) {
-            t = VT_VOID;
-        } else if (TokenType == TOK_CHAR) {
-            t = VT_CHAR;
-        } else if (TokenType == TOK_INT) {
-            t = VT_INT;
-        } else if (TokenType == TOK_VA_LIST) {
-            t = VT_CHAR | VT_PTR1;
-        } else {
-            Unexpected();
-        }
-        GetToken();
     }
-    while (TokenType == TOK_STAR) {
-        t += VT_PTR1;
-        GetToken();
-    }
-    CurrentType = t;
+}
+
+void ParseAbstractDecl(void)
+{
+    ParseDeclSpecs();
+    ParsePointers();
+}
+
+struct VarDecl* DoDecl(void)
+{
+    ParsePointers();
+    return AddVarDecl(ExpectId());
+}
+
+struct VarDecl* ParseFirstDecl(void)
+{
+    ParseDeclSpecs();
+    if (TokenType == TOK_SEMICOLON)
+        return 0;
+    return DoDecl();
+}
+
+// Remember to reset CurrentType/CurrentStruct before calling
+struct VarDecl* NextDecl(void)
+{
+    if (!Accept(TOK_COMMA))
+        return 0;
+    return DoDecl();
 }
 
 void ParseCompoundStatement(void);
@@ -2419,9 +2454,10 @@ Redo:
 
     if (Accept(TOK_SEMICOLON)) {
     } else if (IsTypeStart()) {
-        ParseDeclSpecs();
-        if (TokenType != TOK_SEMICOLON) {
-            struct VarDecl* vd = AddVarDecl(ExpectId());
+        struct VarDecl* vd = ParseFirstDecl();
+        const int BaseType   = CurrentType;
+        const int BaseStruct = CurrentStruct;
+        while (vd) {
             vd->Type |= VT_LOCOFF;
             int size = 2;
             if (CurrentType == VT_STRUCT) {
@@ -2442,6 +2478,9 @@ Redo:
             } else {
                 EmitAdjSp(-size);
             }
+            CurrentType   = BaseType;
+            CurrentStruct = BaseStruct;
+            vd = NextDecl();
         }
         Expect(TOK_SEMICOLON);
     } else if (Accept(TOK_RETURN)) {
@@ -2630,15 +2669,13 @@ void ParseCompoundStatement(void)
 
 void ParseExternalDefition(void)
 {
-    ParseDeclSpecs();
+    ParseAbstractDecl();
 
     if (Accept(TOK_SEMICOLON)) {
         return;
     }
 
     const int Id = ExpectId();
-
-    CurrentType |= VT_LOCGLOB;
 
     struct VarDecl* vd;
     const int VarIndex = Lookup(Id);
@@ -2650,61 +2687,69 @@ void ParseExternalDefition(void)
         Check((vd->Type & VT_LOCMASK) == VT_LOCGLOB);
     }
 
-    // Variable?
-    if (Accept(TOK_EQ)) {
-        ParseAssignmentExpression();
-        Expect(TOK_SEMICOLON);
-        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Expecct constant expressions
-        // TODO: Could save one byte per global char...
-        //       Handle this if/when implementing complex initializers
-        EmitGlobalLabel(vd);
-        OutputWord(CurrentVal);
-        return;
-    } else if (Accept(TOK_SEMICOLON)) {
-        BssSize += SizeofCurrentType();
+    if (Accept(TOK_LPAREN)) {
+        vd->Type |= VT_FUN | VT_LOCGLOB;
+        PushScope();
+        int ArgOffset;
+        ArgOffset = 4;
+        while (TokenType != TOK_RPAREN) {
+            if (Accept(TOK_ELLIPSIS))
+                break;
+            ParseAbstractDecl();
+            if (CurrentType == VT_VOID)
+                break;
+            struct VarDecl* arg = AddVarDecl(ExpectId());
+            arg->Type |= VT_LOCOFF;
+            arg->Offset = ArgOffset;
+            ArgOffset += 2;
+            if (!Accept(TOK_COMMA)) {
+                break;
+            }
+        }
+        Expect(TOK_RPAREN);
+        if (!Accept(TOK_SEMICOLON)) {
+            Check(!LocalLabelCounter);
+            LocalOffset = 0;
+            ReturnUsed = 0;
+            ReturnLabel = MakeLabel();
+            BreakLabel = ContinueLabel = -1;
+            EmitGlobalLabel(vd);
+            EmitPush(R_BP);
+            EmitMovRR(R_BP, R_SP);
+            ParseCompoundStatement();
+            EmitLocalLabel(ReturnLabel);
+            if (ReturnUsed) {
+                PendingSpAdj = 0;
+                EmitMovRR(R_SP, R_BP);
+            }
+            EmitPop(R_BP);
+            OutputBytes(I_RET, -1); // RET
+            ResetLabels();
+        }
+        PopScope();
         return;
     }
 
-    Expect(TOK_LPAREN);
-    vd->Type |= VT_FUN;
-    PushScope();
-    int ArgOffset;
-    ArgOffset = 4;
-    while (TokenType != TOK_RPAREN) {
-        if (Accept(TOK_ELLIPSIS))
-            break;
-        ParseDeclSpecs();
-        if (CurrentType == VT_VOID)
-            break;
-        struct VarDecl* arg = AddVarDecl(ExpectId());
-        arg->Type |= VT_LOCOFF;
-        arg->Offset = ArgOffset;
-        ArgOffset += 2;
-        if (!Accept(TOK_COMMA)) {
-            break;
+    const int BaseType   = CurrentType;
+    const int BaseStruct = CurrentStruct;
+    while (vd) {
+        vd->Type |= VT_LOCGLOB;
+
+        if (Accept(TOK_EQ)) {
+            ParseAssignmentExpression();
+            Check(CurrentType == (VT_INT|VT_LOCLIT)); // Expecct constant expressions
+            // TODO: Could save one byte per global char...
+            //       Handle this if/when implementing complex initializers
+            EmitGlobalLabel(vd);
+            OutputWord(CurrentVal);
+        } else {
+            BssSize += SizeofCurrentType();
         }
+        CurrentType   = BaseType;
+        CurrentStruct = BaseStruct;
+        vd = NextDecl();
     }
-    Expect(TOK_RPAREN);
-    if (!Accept(TOK_SEMICOLON)) {
-        Check(!LocalLabelCounter);
-        LocalOffset = 0;
-        ReturnUsed = 0;
-        ReturnLabel = MakeLabel();
-        BreakLabel = ContinueLabel = -1;
-        EmitGlobalLabel(vd);
-        EmitPush(R_BP);
-        EmitMovRR(R_BP, R_SP);
-        ParseCompoundStatement();
-        EmitLocalLabel(ReturnLabel);
-        if (ReturnUsed) {
-            PendingSpAdj = 0;
-            EmitMovRR(R_SP, R_BP);
-        }
-        EmitPop(R_BP);
-        OutputBytes(I_RET, -1); // RET
-        ResetLabels();
-    }
-    PopScope();
+    Expect(TOK_SEMICOLON);
 }
 
 void MakeOutputFilename(char* dest, const char* n)
