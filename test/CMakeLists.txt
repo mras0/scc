@@ -1,5 +1,6 @@
 set(TESTS
     comma
+    condop
     dowhile
     enum
     lgoto # goto would clash with DOS goto builtin

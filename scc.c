@@ -222,6 +222,7 @@ enum {
     TOK_DOT,
     TOK_ELLIPSIS,
     TOK_ARROW,
+    TOK_QUESTION,
 
     // NOTE: Must match order of registration in main
     //       TOK_BREAK must be first
@@ -907,7 +908,7 @@ int EmitChecks(void)
 
 void SetPendingPushAx(void)
 {
-    Check(!PendingPushAx && !PendingSpAdj);
+    Check(!PendingPushAx);
     PendingPushAx = 1;
 }
 
@@ -1235,6 +1236,8 @@ Redo:
             }
             TokenType = TOK_ELLIPSIS;
         }
+    } else if (ch == '?') {
+        TokenType = TOK_QUESTION;
     } else {
         Fatal("Unknown token encountered");
     }
@@ -1267,6 +1270,8 @@ int OperatorPrecedence(int tok)
         return 11;
     } else if (tok == TOK_OROR) {
         return 12;
+    } else if (tok == TOK_QUESTION) {
+        return 13;
     } else if (tok == TOK_EQ || tok == TOK_PLUSEQ || tok == TOK_MINUSEQ || tok == TOK_STAREQ || tok == TOK_SLASHEQ || tok == TOK_MODEQ || tok == TOK_LSHEQ || tok == TOK_RSHEQ || tok == TOK_ANDEQ || tok == TOK_XOREQ || tok == TOK_OREQ) {
         return PRED_EQ;
     } else if (tok == TOK_COMMA) {
@@ -1403,6 +1408,7 @@ void DoIncDecOp(int Op, int Post)
 }
 
 void ParseExpr(void);
+void ParseExpr0(int OuterPrecedence);
 void ParseCastExpression(void);
 void ParseAssignmentExpression(void);
 void ParseDeclSpecs(void);
@@ -1574,6 +1580,16 @@ void EmitCallMemcpy(void)
     EmitCall(MemcpyDecl);
     EmitAdjSp(6);
     MemcpyUsed = 1;
+}
+
+void ParseDeadExpr(int Precedence)
+{
+    const int WasDead = IsDeadCode;
+    const int OldCodeAddress = CodeAddress;
+    IsDeadCode = 1;
+    ParseExpr0(Precedence);
+    Check(IsDeadCode && OldCodeAddress == CodeAddress);
+    IsDeadCode = WasDead;
 }
 
 void ParsePostfixExpression(void)
@@ -1926,6 +1942,97 @@ int OpCommutes(int Op)
         || Op == TOK_AND || Op == TOK_XOR || Op == TOK_OR;
 }
 
+void DoCondHasExpr(int Label, int Forward) // forward => jump if label is false
+{
+    LvalToRval();
+    if (CurrentType == VT_BOOL) {
+        EmitJcc(CurrentVal^Forward, Label);
+    } else if (CurrentType == (VT_LOCLIT|VT_INT)) {
+        // Constant condition
+        if (!CurrentVal && Forward)
+            EmitJmp(Label);
+    } else {
+        GetVal();
+        Check(CurrentType == VT_INT || (CurrentType&VT_PTRMASK));
+        EmitToBool();
+        EmitJcc(JNZ^Forward, Label);
+    }
+}
+
+
+void DoCond(int Label, int Forward) // forward => jump if label is false
+{
+    ParseExpr();
+    DoCondHasExpr(Label, Forward);
+}
+
+void ForceToReg(void)
+{
+    const int Loc = CurrentType & VT_LOCMASK;
+    if (!Loc) return;
+    CurrentType &= ~VT_LOCMASK;
+    if (Loc == VT_LOCGLOB || Loc == VT_LOCOFF) {
+        EmitLoadAddr(R_AX, Loc, CurrentVal);
+    } else {
+        Check(Loc == VT_LOCLIT);
+        EmitMovRImm(R_AX, CurrentVal);
+    }
+}
+
+void ParseMaybeDead(int Live)
+{
+    if (Live) {
+        ParseAssignmentExpression();
+    } else {
+        const int OldType  = CurrentType;
+        const int OldVal   = CurrentVal;
+        const int OldExtra = CurrentStruct;
+        ParseDeadExpr(PRED_EQ);
+        CurrentType   = OldType;
+        CurrentVal    = OldVal;
+        CurrentStruct = OldExtra;
+    }
+}
+
+void HandleCondOp(void)
+{
+    if (CurrentType == (VT_LOCLIT|VT_INT)) {
+        // Handle potentially constant conditions
+        const int V = CurrentVal;
+        ParseMaybeDead(V);
+        Expect(TOK_COLON);
+        ParseMaybeDead(!V);
+        return;
+    }
+
+    const int FalseLabel = MakeLabel();
+    const int EndLabel = MakeLabel();
+    DoCondHasExpr(FalseLabel, 1);
+    ParseAssignmentExpression();
+    ForceToReg();
+    const int LhsType = CurrentType;
+    EmitJmp(EndLabel);
+    Expect(TOK_COLON);
+    EmitLocalLabel(FalseLabel);
+    ParseAssignmentExpression();
+    ForceToReg();
+    // Check if type unification is needed.
+    // This is certainly the case if only one side is an lvalue
+    // or if the types are "too different".
+    int TypeDiff = LhsType ^ CurrentType;
+    if ((TypeDiff & VT_LVAL) || ((TypeDiff & VT_BASEMASK) && !(CurrentType & VT_PTRMASK))) {
+        const int RealEnd = MakeLabel();
+        LvalToRval();
+        EmitJmp(RealEnd);
+        EmitLocalLabel(EndLabel);
+        CurrentType = LhsType;
+        LvalToRval();
+        EmitLocalLabel(RealEnd);
+    } else {
+        EmitLocalLabel(EndLabel);
+    }
+}
+
 void ParseExpr1(int OuterPrecedence)
 {
     int LEnd;
@@ -1944,6 +2051,11 @@ void ParseExpr1(int OuterPrecedence)
             break;
         }
         GetToken();
+
+        if (Op == TOK_QUESTION) {
+            HandleCondOp();
+            continue;
+        }
 
         IsAssign = Prec == PRED_EQ;
 
@@ -1989,7 +2101,6 @@ void ParseExpr1(int OuterPrecedence)
             }
         }
 
-        // TODO: Question, ?:
         ParseCastExpression(); // RHS
         for (;;) {
             const int LookAheadOp         = TokenType;
@@ -2235,24 +2346,6 @@ void ParseDeclSpecs(void)
         GetToken();
     }
     CurrentType = t;
-}
-
-void DoCond(int Label, int Forward) // forward => jump if label is false
-{
-    ParseExpr();
-    LvalToRval();
-    if (CurrentType == VT_BOOL) {
-        EmitJcc(CurrentVal^Forward, Label);
-    } else if (CurrentType == (VT_LOCLIT|VT_INT)) {
-        // Constant condition
-        if (CurrentVal != Forward)
-            EmitJmp(Label);
-    } else {
-        GetVal();
-        Check(CurrentType == VT_INT || (CurrentType&VT_PTRMASK));
-        EmitToBool();
-        EmitJcc(JNZ^Forward, Label);
-    }
 }
 
 void ParseCompoundStatement(void);
