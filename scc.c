@@ -161,13 +161,13 @@ enum {
     VT_LVAL    = 1<<3,
     VT_FUN     = 1<<4,
 
-    VT_PTR1    = 1<<5,
-    VT_PTRMASK = 3<<5, // 3 levels of indirection should be enough..
+    VT_PTR1    = 1<<6,
+    VT_PTRMASK = 3<<6, // 3 levels of indirection should be enough..
 
-    VT_LOCLIT  = 1<<7,    // CurrentVal holds a literal value (or label)
-    VT_LOCOFF  = 2<<7,    // CurrentVal holds BP offset
-    VT_LOCGLOB = 3<<7,    // CurrentVal holds the VarDecl index of a global
-    VT_LOCMASK = 3<<7,
+    VT_LOCLIT  = 1<<8,    // CurrentVal holds a literal value (or label)
+    VT_LOCOFF  = 2<<8,    // CurrentVal holds BP offset
+    VT_LOCGLOB = 3<<8,    // CurrentVal holds the VarDecl index of a global
+    VT_LOCMASK = 3<<8,
 };
 
 enum {
@@ -357,7 +357,7 @@ int ContinueLabel;
 
 int CurrentType;
 int CurrentVal;
-int CurrentStruct;
+int CurrentTypeExtra;
 
 int ReturnUsed;
 int PendingPushAx; // Remember to adjsust LocalOffset!
@@ -1292,7 +1292,7 @@ int SizeofType(int Type, int Extra)
 
 int SizeofCurrentType(void)
 {
-    return SizeofType(CurrentType, CurrentStruct);
+    return SizeofType(CurrentType, CurrentTypeExtra);
 }
 
 void PrintTokenType(int T)
@@ -1386,7 +1386,7 @@ void DoIncDecOp(int Op, int Post)
     }
     Op = Op == TOK_MINUSMINUS;
     if (CurrentType & VT_PTRMASK) {
-        const int Size = SizeofType(CurrentType-VT_PTR1, CurrentStruct);
+        const int Size = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
         if (Size != 1) {
             EmitModrm(I_ALU_RM16_IMM8, Op*(I_SUB>>3), Loc, CurrentVal);
             OutputBytes(Size, -1);
@@ -1440,9 +1440,9 @@ void HandlePrimaryId(int id)
         Printf("Undefined identifier: \"%s\"\n", IdText(id));
         Fatal("TODO");
     }
-    CurrentType   = VarDecls[vd].Type;
-    CurrentStruct = VarDecls[vd].TypeExtra;
-    CurrentVal    = VarDecls[vd].Offset;
+    CurrentType      = VarDecls[vd].Type;
+    CurrentTypeExtra = VarDecls[vd].TypeExtra;
+    CurrentVal       = VarDecls[vd].Offset;
     const int Loc = CurrentType & VT_LOCMASK;
     if (Loc == VT_LOCLIT) {
         Check(CurrentType == (VT_LOCLIT | VT_INT));
@@ -1535,9 +1535,9 @@ void HandleStructMember(void)
 {
     const int MemId = ExpectId();
     int Off = 0;
-    Check(CurrentStruct >= 0 && CurrentStruct < StructCount);
-    struct StructMember* SM = StructDecls[CurrentStruct].Members;
-    const int IsUnion = StructDecls[CurrentStruct].Id & IS_UNION_FLAG;
+    Check(CurrentTypeExtra >= 0 && CurrentTypeExtra < StructCount);
+    struct StructMember* SM = StructDecls[CurrentTypeExtra].Members;
+    const int IsUnion       = StructDecls[CurrentTypeExtra].Id & IS_UNION_FLAG;
     for (; SM && SM->Id != MemId; SM = SM->Next) {
         if (!IsUnion)
             Off += SizeofType(SM->Type, SM->TypeExtra);
@@ -1557,8 +1557,8 @@ void HandleStructMember(void)
     } else {
         Check(0);
     }
-    CurrentType   = SM->Type | VT_LVAL | Loc;
-    CurrentStruct = SM->TypeExtra;
+    CurrentType      = SM->Type | VT_LVAL | Loc;
+    CurrentTypeExtra = SM->TypeExtra;
 }
 
 void EmitCallMemcpy(void)
@@ -1627,7 +1627,7 @@ void ParsePostfixExpression(void)
             if (CurrentType == VT_CHAR) {
                 CurrentType = VT_INT;
             }
-            CurrentStruct = Func->TypeExtra;
+            CurrentTypeExtra = Func->TypeExtra;
         } else if (Accept(TOK_LBRACKET)) {
             LvalToRval();
             if (!(CurrentType & VT_PTRMASK)) {
@@ -1636,7 +1636,7 @@ void ParsePostfixExpression(void)
             CurrentType -= VT_PTR1;
             const int Scale    = SizeofCurrentType();
             const int ResType  = CurrentType | VT_LVAL;
-            const int ResExtra = CurrentStruct;
+            const int ResExtra = CurrentTypeExtra;
             SetPendingPushAx();
             ParseExpr();
             Expect(TOK_RBRACKET);
@@ -1653,8 +1653,8 @@ void ParsePostfixExpression(void)
                 LocalOffset += 2;
                 OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
             }
-            CurrentType   = ResType;
-            CurrentStruct = ResExtra;
+            CurrentType      = ResType;
+            CurrentTypeExtra = ResExtra;
             Check(!(CurrentType & VT_LOCMASK));
         } else if (Accept(TOK_DOT)) {
             Check((CurrentType & ~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
@@ -1781,13 +1781,13 @@ void ParseCastExpression(void)
             ParseAbstractDecl();
             Expect(TOK_RPAREN);
             const int T = CurrentType;
-            const int S = CurrentStruct;
+            const int E = CurrentTypeExtra;
             Check(!(T & VT_LOCMASK));
             ParseCastExpression();
             LvalToRval();
             GetVal(); // TODO: could optimize some constant expressions here
-            CurrentType = T;
-            CurrentStruct = S;
+            CurrentType      = T;
+            CurrentTypeExtra = E;
             if (CurrentType == VT_CHAR) {
                 OutputBytes(I_CBW, -1);
                 CurrentType = VT_INT;
@@ -1996,15 +1996,15 @@ void ParseMaybeDead(int Live)
     } else {
         const int OldType  = CurrentType;
         const int OldVal   = CurrentVal;
-        const int OldExtra = CurrentStruct;
+        const int OldExtra = CurrentTypeExtra;
         const int WasDead  = IsDeadCode;
         IsDeadCode = 1;
         ParseAssignmentExpression();
         Check(IsDeadCode);
-        IsDeadCode    = WasDead;
-        CurrentType   = OldType;
-        CurrentVal    = OldVal;
-        CurrentStruct = OldExtra;
+        IsDeadCode       = WasDead;
+        CurrentType      = OldType;
+        CurrentVal       = OldVal;
+        CurrentTypeExtra = OldExtra;
     }
 }
 
@@ -2087,7 +2087,7 @@ void ParseExpr1(int OuterPrecedence)
         LhsVal = CurrentVal;
         LhsPointeeSize = 0;
         if (LhsType & VT_PTRMASK) {
-            LhsPointeeSize = SizeofType(CurrentType-VT_PTR1, CurrentStruct);
+            LhsPointeeSize = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
         }
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
@@ -2131,7 +2131,7 @@ void ParseExpr1(int OuterPrecedence)
             continue;
         } else if (Op == TOK_EQ && LhsType == VT_STRUCT) {
             // Struct assignment
-            // TODO: Verify CurrentStruct matches Lhs struct
+            // TODO: Verify CurrentTypeExtra matches Lhs struct
             Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
             EmitMovRImm(R_CX, SizeofCurrentType());
             EmitPush(R_CX);
@@ -2259,20 +2259,14 @@ struct VarDecl* AddVarDecl(int Id)
     Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
     struct VarDecl* vd = &VarDecls[++Scopes[ScopesCount-1]];
     vd->Type      = CurrentType;
-    vd->TypeExtra = CurrentStruct;
+    vd->TypeExtra = CurrentTypeExtra;
     vd->Id        = Id;
     vd->Offset    = 0;
     vd->Ref       = 0;
     return vd;
 }
 
-void ParsePointers(void)
-{
-    // TODO: Could allow type qualifiers (const/volatile) here
-    while (Accept(TOK_STAR)) {
-        CurrentType += VT_PTR1;
-    }
-}
+void ParseDeclarator(int* Id);
 
 void ParseDeclSpecs(void)
 {
@@ -2319,20 +2313,20 @@ void ParseDeclSpecs(void)
             if (TokenType == TOK_UNION)
                 id = IS_UNION_FLAG;
             GetToken();
-            CurrentStruct = -1;
+            CurrentTypeExtra = -1;
             if (TokenType >= TOK_ID) {
                 id |= ExpectId();
                 int i;
                 for (i = 0; i < StructCount; ++i) {
                     if (StructDecls[i].Id == id) {
-                        CurrentStruct = i;
+                        CurrentTypeExtra = i;
                         break;
                     }
                 }
             } else {
                 id |= ID_MAX; // Should never match in above loop
             }
-            if (CurrentStruct < 0) {
+            if (CurrentTypeExtra < 0) {
                 Check(StructCount < STRUCT_MAX);
                 const int SI = StructCount++;
                 struct StructDecl* SD = &StructDecls[SI];
@@ -2342,25 +2336,24 @@ void ParseDeclSpecs(void)
                 while (!Accept(TOK_RBRACE)) {
                     Check(StructMemCount < STRUCT_MEMBER_MAX);
                     ParseAbstractDecl();
-                    int BaseType = CurrentType;
-                    int BaseStruct = CurrentStruct;
+                    int BaseType  = CurrentType;
+                    int BaseExtra = CurrentTypeExtra;
                     while (TokenType != TOK_SEMICOLON) {
-                        ParsePointers();
                         struct StructMember* SM = &StructMembers[StructMemCount++];
+                        ParseDeclarator(&SM->Id);
                         SM->Type      = CurrentType;
-                        SM->TypeExtra = CurrentStruct;
-                        SM->Id        = ExpectId();
+                        SM->TypeExtra = CurrentTypeExtra;
                         *Last = SM;
                         Last = &SM->Next;
                         if (!Accept(TOK_COMMA))
                             break;
-                        CurrentType = BaseType;
-                        CurrentStruct = BaseStruct;
+                        CurrentType      = BaseType;
+                        CurrentTypeExtra = BaseExtra;
                     }
                     Expect(TOK_SEMICOLON);
                 }
                 *Last = 0;
-                CurrentStruct = SI;
+                CurrentTypeExtra = SI;
             }
             CurrentType = VT_STRUCT;
         } else {
@@ -2369,16 +2362,29 @@ void ParseDeclSpecs(void)
     }
 }
 
+void ParseDeclarator(int* Id)
+{
+    // TODO: Could allow type qualifiers (const/volatile) here
+    while (Accept(TOK_STAR)) {
+        CurrentType += VT_PTR1;
+    }
+    if (!Id) {
+        return;
+    }
+    *Id = ExpectId();
+}
+
 void ParseAbstractDecl(void)
 {
     ParseDeclSpecs();
-    ParsePointers();
+    ParseDeclarator(0);
 }
 
 struct VarDecl* DoDecl(void)
 {
-    ParsePointers();
-    return AddVarDecl(ExpectId());
+    int Id;
+    ParseDeclarator(&Id);
+    return AddVarDecl(Id);
 }
 
 struct VarDecl* ParseFirstDecl(void)
@@ -2389,7 +2395,7 @@ struct VarDecl* ParseFirstDecl(void)
     return DoDecl();
 }
 
-// Remember to reset CurrentType/CurrentStruct before calling
+// Remember to reset CurrentType/CurrentTypeExtra before calling
 struct VarDecl* NextDecl(void)
 {
     if (!Accept(TOK_COMMA))
@@ -2464,7 +2470,7 @@ Redo:
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
         const int BaseType   = CurrentType;
-        const int BaseStruct = CurrentStruct;
+        const int BaseStruct = CurrentTypeExtra;
         while (vd) {
             vd->Type |= VT_LOCOFF;
             int size = 2;
@@ -2486,8 +2492,8 @@ Redo:
             } else {
                 EmitAdjSp(-size);
             }
-            CurrentType   = BaseType;
-            CurrentStruct = BaseStruct;
+            CurrentType      = BaseType;
+            CurrentTypeExtra = BaseStruct;
             vd = NextDecl();
         }
         Expect(TOK_SEMICOLON);
@@ -2739,7 +2745,7 @@ void ParseExternalDefition(void)
     }
 
     const int BaseType   = CurrentType;
-    const int BaseStruct = CurrentStruct;
+    const int BaseStruct = CurrentTypeExtra;
     while (vd) {
         vd->Type |= VT_LOCGLOB;
 
@@ -2753,8 +2759,8 @@ void ParseExternalDefition(void)
         } else {
             BssSize += SizeofCurrentType();
         }
-        CurrentType   = BaseType;
-        CurrentStruct = BaseStruct;
+        CurrentType      = BaseType;
+        CurrentTypeExtra = BaseStruct;
         vd = NextDecl();
     }
     Expect(TOK_SEMICOLON);
@@ -2897,8 +2903,8 @@ int main(int argc, char** argv)
     EmitGlobalLabel(SBSS);
     for (i = 0 ; i <= Scopes[0]; ++i) {
         struct VarDecl* vd = &VarDecls[i];
-        CurrentType = vd->Type;
-        CurrentStruct = vd->TypeExtra;
+        CurrentType      = vd->Type;
+        CurrentTypeExtra = vd->TypeExtra;
         const int Loc = CurrentType & VT_LOCMASK;
         if (Loc == VT_LOCGLOB && !vd->Offset) {
             if (vd == EBSS || (vd == MemcpyDecl && !MemcpyUsed))
