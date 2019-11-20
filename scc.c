@@ -31,16 +31,6 @@ int main(int argc, char** argv);
 int DosCall(int* ax, int bx, int cx, int dx);
 void memset(char* dest, int val, int size);
 
-char* HeapStart;
-
-char* malloc(int Size)
-{
-    char* ret;
-    ret = HeapStart;
-    HeapStart += Size;
-    return ret;
-}
-
 void exit(int retval)
 {
     retval = (retval & 0xff) | 0x4c00;
@@ -101,11 +91,9 @@ void _start(void)
     int Len = *CmdLine++ & 0xff;
     CmdLine[Len] = 0;
 
-    char **Args;
+    char *Args[10]; // Arbitrary limit
     int NumArgs;
 
-    HeapStart = &_EBSS;
-    Args = malloc(sizeof(char*)*10);
     Args[0] = "scc";
     NumArgs = 1;
 
@@ -128,8 +116,6 @@ void _start(void)
 
 
 enum {
-    LINEBUF_MAX = 100,
-    TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
     VARDECL_MAX = 400,
@@ -138,10 +124,10 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6200, // TODO: Re-determine max
+    OUTPUT_MAX = 0x6400, // Warning: Close to limit. Need at least 512 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
-    ARRAY_MAX = 8,
+    ARRAY_MAX = 16,
 };
 
 enum {
@@ -308,15 +294,12 @@ struct VarDecl {
     int Ref; // Actually only needed for globals
 };
 
-char* Output;
+char Output[OUTPUT_MAX];
 int CodeAddress = CODESTART;
 int BssSize;
 
-char* LineBuf;
-char* TempBuf;
-
 int InFile;
-char* InBuf;
+char InBuf[INBUF_MAX];
 int InBufCnt;
 int InBufSize;
 char CurChar;
@@ -327,34 +310,34 @@ int Line = 1;
 int TokenType;
 int TokenNumVal;
 
-char* IdBuffer;
+char IdBuffer[IDBUFFER_MAX];
 int IdBufferIndex;
 
-int* IdOffset;
-int* IdHashTab;
+int IdOffset[ID_MAX];
+int IdHashTab[ID_HASHMAX];
 int IdCount;
 
-struct StructMember* StructMembers;
+struct StructMember StructMembers[STRUCT_MEMBER_MAX];
 int StructMemCount;
 
-struct StructDecl* StructDecls;
+struct StructDecl StructDecls[STRUCT_MAX];
 int StructCount;
 
-struct ArrayDecl* ArrayDecls;
+struct ArrayDecl ArrayDecls[ARRAY_MAX];
 int ArrayCount;
 
-struct VarDecl* VarDecls;
+struct VarDecl VarDecls[VARDECL_MAX];
 
 struct VarDecl* MemcpyDecl;
 int MemcpyUsed;
 
-int* Scopes; // VarDecl index
+int Scopes[SCOPE_MAX]; // VarDecl index
 int ScopesCount;
 
-struct Label* Labels;
+struct Label Labels[LABEL_MAX];
 int LocalLabelCounter;
 
-struct NamedLabel* NamedLabels;
+struct NamedLabel NamedLabels[NAMED_LABEL_MAX];
 int NamedLabelCount;
 
 int LocalOffset;
@@ -404,6 +387,7 @@ char* CopyStr(char* dst, const char* src)
 
 char* VSPrintf(char* dest, const char* format, va_list vl)
 {
+    char TempBuf[9];
     char ch;
     while ((ch = *format++)) {
         if (ch != '%') {
@@ -432,7 +416,7 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
                 s = 1;
                 n = -n;
             }
-            buf = TempBuf + TMPBUF_MAX;
+            buf = TempBuf + sizeof(TempBuf);
             *--buf = 0;
             do {
                 *--buf = '0' + n % 10;
@@ -459,6 +443,7 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
 
 void Printf(const char* format, ...)
 {
+    char LineBuf[80];
     va_list vl;
     va_start(vl, format);
     VSPrintf(LineBuf, format, vl);
@@ -2887,21 +2872,6 @@ int main(int argc, char** argv)
 {
     int i;
 
-    Output           = malloc(OUTPUT_MAX);
-    LineBuf          = malloc(LINEBUF_MAX);
-    TempBuf          = malloc(TMPBUF_MAX);
-    InBuf            = malloc(INBUF_MAX);
-    IdBuffer         = malloc(IDBUFFER_MAX);
-    IdOffset         = malloc(sizeof(int)*ID_MAX);
-    IdHashTab        = malloc(sizeof(int)*ID_HASHMAX);
-    VarDecls         = malloc(sizeof(struct VarDecl)*VARDECL_MAX);
-    Scopes           = malloc(sizeof(int)*SCOPE_MAX);
-    Labels           = malloc(sizeof(struct Label)*LABEL_MAX);
-    NamedLabels      = malloc(sizeof(struct NamedLabel)*NAMED_LABEL_MAX);
-    StructMembers    = malloc(sizeof(struct StructMember)*STRUCT_MEMBER_MAX);
-    StructDecls      = malloc(sizeof(struct StructDecl)*STRUCT_MAX);
-    ArrayDecls       = malloc(sizeof(struct ArrayDecl)*ARRAY_MAX);
-
     if (argc < 2) {
         Printf("Usage: %s input-file [output-file]\n", argv[0]);
         return 1;
@@ -2912,7 +2882,7 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
-    memset(IdHashTab, -1, ID_HASHMAX*sizeof(int));
+    memset(IdHashTab, -1, sizeof(IdHashTab));
 
     AddBuiltins("break case char const continue default do else enum for goto if"
         " int return sizeof struct switch union void while"
@@ -2946,11 +2916,11 @@ int main(int argc, char** argv)
         struct VarDecl* vd = &VarDecls[i];
         CurrentType      = vd->Type;
         CurrentTypeExtra = vd->TypeExtra;
-        const int Loc = CurrentType & VT_LOCMASK;
-        if (Loc == VT_LOCGLOB && !vd->Offset) {
+        if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB)
+            continue;
+        if (!vd->Offset) {
             if (vd == EBSS || (vd == MemcpyDecl && !MemcpyUsed))
                 continue;
-            CurrentType &= ~VT_LOCMASK;
             if (CurrentType & VT_FUN) {
                 Printf("%s is undefined\n", IdText(vd->Id));
                 Fatal("Undefined function");
@@ -2958,7 +2928,7 @@ int main(int argc, char** argv)
             EmitGlobalLabel(vd);
             CodeAddress += SizeofCurrentType();
         }
-        //if (Loc == VT_LOCGLOB && (CurrentType&VT_FUN)) Printf("%X %s\n", vd->Offset, IdText(vd->Id));
+        //if (CurrentType&VT_FUN) Printf("%X %s\n", vd->Offset, IdText(vd->Id));
     }
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);
