@@ -1,4 +1,5 @@
 set(TESTS
+    array
     comma
     condop
     decl

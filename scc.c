@@ -132,15 +132,16 @@ enum {
     TMPBUF_MAX = 32,
     INBUF_MAX = 1024,
     SCOPE_MAX = 10,
-    VARDECL_MAX = 350,
+    VARDECL_MAX = 400,
     ID_MAX = 550,
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
-    IDBUFFER_MAX = 5000,
+    IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
     OUTPUT_MAX = 0x6200, // TODO: Re-determine max
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
+    ARRAY_MAX = 8,
 };
 
 enum {
@@ -160,6 +161,7 @@ enum {
 
     VT_LVAL    = 1<<3,
     VT_FUN     = 1<<4,
+    VT_ARRAY   = 1<<5,
 
     VT_PTR1    = 1<<6,
     VT_PTRMASK = 3<<6, // 3 levels of indirection should be enough..
@@ -293,6 +295,11 @@ struct StructDecl {
     struct StructMember* Members;
 };
 
+struct ArrayDecl {
+    int Bound;
+    int Extra;
+};
+
 struct VarDecl {
     int Id;
     int Type;
@@ -332,6 +339,9 @@ int StructMemCount;
 
 struct StructDecl* StructDecls;
 int StructCount;
+
+struct ArrayDecl* ArrayDecls;
+int ArrayCount;
 
 struct VarDecl* VarDecls;
 
@@ -1269,8 +1279,12 @@ int OperatorPrecedence(int tok)
 
 int SizeofType(int Type, int Extra)
 {
-    Type &= VT_BASEMASK|VT_PTRMASK;
-    if (Type == VT_CHAR) {
+    Type &= VT_BASEMASK|VT_PTRMASK|VT_ARRAY;
+    if (Type & VT_ARRAY) {
+        struct ArrayDecl* AD = &ArrayDecls[Extra];
+        Check(AD->Bound);
+        return AD->Bound * SizeofType(Type & ~VT_ARRAY, AD->Extra);
+    } else if (Type == VT_CHAR) {
         return 1;
     } else if (Type == VT_STRUCT) {
         const int IsUnion = StructDecls[Extra].Id & IS_UNION_FLAG;
@@ -1298,6 +1312,7 @@ int SizeofCurrentType(void)
 void PrintTokenType(int T)
 {
     if (T >= TOK_BREAK) Printf("%s ", IdText(T-TOK_BREAK));
+    else if (T > ' ' && T < 128) Printf("%c ", T);
     else Printf("%d ", T);
 }
 
@@ -1358,6 +1373,16 @@ void LvalToRval(void)
     if (CurrentType & VT_LVAL) {
         const int loc = CurrentType & VT_LOCMASK;
         CurrentType &= ~(VT_LVAL | VT_LOCMASK);
+
+        if (CurrentType & VT_ARRAY) {
+            // Decay array
+            CurrentType &= ~VT_ARRAY;
+            CurrentType += VT_PTR1;
+            CurrentTypeExtra = ArrayDecls[CurrentTypeExtra].Extra;
+            EmitLoadAddr(R_AX, loc, CurrentVal);
+            return;
+        }
+
         int sz = 2;
         if (CurrentType == VT_CHAR) {
             sz = 1;
@@ -2055,7 +2080,7 @@ void ParseExpr1(int OuterPrecedence)
     int Prec;
     int IsAssign;
     int LhsType;
-    int LhsPointeeSize;
+    int LhsTypeExtra;
     int LhsVal;
     int LhsLoc;
     for (;;) {
@@ -2083,12 +2108,9 @@ void ParseExpr1(int OuterPrecedence)
         } else {
             LvalToRval();
         }
-        LhsType = CurrentType;
-        LhsVal = CurrentVal;
-        LhsPointeeSize = 0;
-        if (LhsType & VT_PTRMASK) {
-            LhsPointeeSize = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
-        }
+        LhsType        = CurrentType;
+        LhsTypeExtra   = CurrentTypeExtra;
+        LhsVal         = CurrentVal;
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
             LEnd = MakeLabel();
@@ -2195,12 +2217,18 @@ void ParseExpr1(int OuterPrecedence)
             }
             EmitStoreAx(Size, LhsLoc, LhsVal);
         } else {
+            int LhsPointeeSize = 0;
+            if (LhsType & VT_PTRMASK) {
+                LhsPointeeSize = SizeofType(LhsType-VT_PTR1, LhsTypeExtra);
+                CurrentTypeExtra = LhsTypeExtra;
+            }
             if (CurrentType == (VT_LOCLIT|VT_INT)) {
                 Check(PendingPushAx);
                 PendingPushAx = 0;
                 CurrentType = VT_INT;
                 if (LhsType & VT_PTRMASK) {
                     CurrentVal *= LhsPointeeSize;
+                    CurrentType = LhsType;
                 }
                 DoRhsConstBinOp(Op);
             } else {
@@ -2208,6 +2236,7 @@ void ParseExpr1(int OuterPrecedence)
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 if (Op == TOK_PLUS && (LhsType & VT_PTRMASK)) {
                     EmitScaleAx(LhsPointeeSize);
+                    CurrentType = LhsType;
                 }
                 Temp = OpCommutes(Op);
                 if (LhsLoc == VT_LOCLIT) {
@@ -2368,10 +2397,27 @@ void ParseDeclarator(int* Id)
     while (Accept(TOK_STAR)) {
         CurrentType += VT_PTR1;
     }
-    if (!Id) {
-        return;
+    if (Id) {
+        *Id = ExpectId();
     }
-    *Id = ExpectId();
+    if (Accept(TOK_LBRACKET)) {
+        Check(ArrayCount < ARRAY_MAX);
+        struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
+        AD->Extra = CurrentTypeExtra;
+        int T  = CurrentType | VT_ARRAY;
+        int TE = ArrayCount++;
+        if (TokenType != TOK_RBRACKET) {
+            ParseExpr();
+            Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
+            AD->Bound = CurrentVal;
+            Check(AD->Bound > 0);
+        } else {
+            AD->Bound = 0;
+        }
+        Expect(TOK_RBRACKET);
+        CurrentType      = T;
+        CurrentTypeExtra = TE;
+    }
 }
 
 void ParseAbstractDecl(void)
@@ -2473,25 +2519,20 @@ Redo:
         const int BaseStruct = CurrentTypeExtra;
         while (vd) {
             vd->Type |= VT_LOCOFF;
-            int size = 2;
-            if (CurrentType == VT_STRUCT) {
-                size = SizeofCurrentType();
-            } else if (Accept(TOK_EQ)) {
+            int size = (SizeofCurrentType()+1)&-2;
+            if (Accept(TOK_EQ)) {
                 ParseAssignmentExpression();
                 LvalToRval();
                 GetVal();
                 if (CurrentType == VT_CHAR) {
                     OutputBytes(I_CBW, -1);
                 }
-            }
-            LocalOffset -= size;
-            vd->Offset = LocalOffset;
-            if (size == 2) {
-                // Note: AX contains "random" garbage at first if the variable isn't initialized
                 EmitPush(R_AX);
             } else {
                 EmitAdjSp(-size);
             }
+            LocalOffset -= size;
+            vd->Offset = LocalOffset;
             CurrentType      = BaseType;
             CurrentTypeExtra = BaseStruct;
             vd = NextDecl();
@@ -2683,22 +2724,19 @@ void ParseCompoundStatement(void)
 
 void ParseExternalDefition(void)
 {
-    ParseAbstractDecl();
+    struct VarDecl* vd = ParseFirstDecl();
+    if (!vd)
+        goto End;
 
-    if (Accept(TOK_SEMICOLON)) {
-        return;
-    }
-
-    const int Id = ExpectId();
-
-    struct VarDecl* vd;
-    const int VarIndex = Lookup(Id);
-    if (VarIndex < 0) {
-        vd = AddVarDecl(Id);
-    } else {
-        vd = &VarDecls[VarIndex];
+    // Check for definition of previous forward declaration
+    int i;
+    for (i = 0; i < *Scopes; ++i) {
+        struct VarDecl* V = &VarDecls[i];
+        if (vd->Id != V->Id) continue;
+        --Scopes[0]; // Undo allocation by ParseFirstDecl
+        vd = V;
         Check(vd->Offset == 0);
-        Check((vd->Type & VT_LOCMASK) == VT_LOCGLOB);
+        break;
     }
 
     if (Accept(TOK_LPAREN)) {
@@ -2763,6 +2801,8 @@ void ParseExternalDefition(void)
         CurrentTypeExtra = BaseStruct;
         vd = NextDecl();
     }
+
+End:
     Expect(TOK_SEMICOLON);
 }
 
@@ -2860,6 +2900,7 @@ int main(int argc, char** argv)
     NamedLabels      = malloc(sizeof(struct NamedLabel)*NAMED_LABEL_MAX);
     StructMembers    = malloc(sizeof(struct StructMember)*STRUCT_MEMBER_MAX);
     StructDecls      = malloc(sizeof(struct StructDecl)*STRUCT_MAX);
+    ArrayDecls       = malloc(sizeof(struct ArrayDecl)*ARRAY_MAX);
 
     if (argc < 2) {
         Printf("Usage: %s input-file [output-file]\n", argv[0]);
