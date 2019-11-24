@@ -38,4 +38,14 @@ void main()
     int xx = 42;
     assert_eq(xx ? xx : -1, 42);
     assert_eq(!xx ? xx : -1, -1);
+
+    const char* a = "AB";
+    const char* b = a ? a : "XY";
+    assert_eq(b[0], 'A');
+    assert_eq(b[1], 'B');
+
+    const char* c = 0;
+    const char* d = c ? c : "XY";
+    assert_eq(d[0], 'X');
+    assert_eq(d[1], 'Y');
 }

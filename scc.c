@@ -37,11 +37,17 @@ void exit(int retval)
     DosCall(&retval, 0, 0, 0);
 }
 
-void putchar(int ch)
+void raw_putchar(int ch)
 {
     int ax;
     ax = 0x200;
     DosCall(&ax, 0, 0, ch);
+}
+
+void putchar(int ch)
+{
+    if (ch == '\n') raw_putchar('\r');
+    raw_putchar(ch);
 }
 
 int open(const char* filename, int flags, ...)
@@ -117,14 +123,15 @@ void _start(void)
 
 enum {
     INBUF_MAX = 1024,
-    SCOPE_MAX = 10,
+    SCOPE_MAX = 16,
     VARDECL_MAX = 400,
     ID_MAX = 550,
     ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6400, // Warning: Close to limit. Need at least 512 bytes of stack.
+    // Was 0x6400
+    OUTPUT_MAX = 0x6300, // Warning: Close to limit. Need at least 512 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 16,
@@ -1015,7 +1022,6 @@ void GetStringLiteral(void)
     const int JL = MakeLabel();
     EmitJmp(JL);
     EmitLocalLabel(TokenNumVal);
-    IsDeadCode = WasDeadCode;
 
     char ch;
     for (;;) {
@@ -1035,6 +1041,7 @@ void GetStringLiteral(void)
     }
     OutputBytes(0, -1);
     EmitLocalLabel(JL);
+    IsDeadCode = WasDeadCode;
 }
 
 void GetToken(void)
