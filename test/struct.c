@@ -124,6 +124,38 @@ void unnamed() {
     assert_eq(sizeof(un), 6);
 }
 
+void scope() {
+    struct A {
+        int x;
+    };
+    struct B {
+        struct A a;
+    };
+    struct B b1, b2;
+    b1.a.x = 42;
+    b2.a = b1.a;
+    assert_eq(b2.a.x, 42);
+}
+
+void twice() {
+    struct T {
+        int a;
+    };
+    struct TL {
+        struct T t;
+    };
+    struct RS {
+        struct TL* tl;
+    };
+    struct TL tl;
+    tl.t.a = 60;
+    struct RS rs;
+    rs.tl = &tl;
+    struct RS* rsp = &rs;
+    struct T t;
+    t = rsp->tl->t;
+}
+
 void main() {
     bug1();
     assign();
@@ -131,4 +163,6 @@ void main() {
     list();
     nested();
     unnamed();
+    scope();
+    twice();
 }

@@ -867,7 +867,8 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
         OutputBytes(I_MOV_R_IMM16 | Reg, -1);
         EmitGlobalRef(&VarDecls[Val]);
     } else {
-        Check(0);
+        Check(!Loc);
+        EmitMovRR(Reg, R_AX);
     }
 }
 
@@ -2338,7 +2339,7 @@ void ParseDeclSpecs(void)
             if (TokenType >= TOK_ID) {
                 id |= ExpectId();
                 int i;
-                for (i = 0; i < StructCount; ++i) {
+                for (i = StructCount - 1; i >= 0; --i) {
                     if (StructDecls[i].Id == id) {
                         CurrentTypeExtra = i;
                         break;
@@ -2347,13 +2348,12 @@ void ParseDeclSpecs(void)
             } else {
                 id |= ID_MAX; // Should never match in above loop
             }
-            if (CurrentTypeExtra < 0) {
+            if (Accept(TOK_LBRACE) || CurrentTypeExtra < 0) {
                 Check(StructCount < STRUCT_MAX);
                 const int SI = StructCount++;
                 struct StructDecl* SD = &StructDecls[SI];
                 SD->Id = id;
                 struct StructMember** Last = &SD->Members;
-                Expect(TOK_LBRACE);
                 while (!Accept(TOK_RBRACE)) {
                     Check(StructMemCount < STRUCT_MEMBER_MAX);
                     ParseAbstractDecl();
@@ -2694,17 +2694,25 @@ Redo:
 
 void ParseCompoundStatement(void)
 {
-    const int InitialOffset = LocalOffset;
+    const int OldOffset         = LocalOffset;
+    const int OldStructMemCount = StructMemCount;
+    const int OldStructCount    = StructCount;
+    const int OldArrayCount     = ArrayCount;
+
     PushScope();
     Expect(TOK_LBRACE);
     while (!Accept(TOK_RBRACE)) {
         ParseStatement();
     }
     PopScope();
-    if (InitialOffset != LocalOffset) {
-        EmitAdjSp(InitialOffset - LocalOffset);
-        LocalOffset = InitialOffset;
+    if (OldOffset != LocalOffset) {
+        EmitAdjSp(OldOffset - LocalOffset);
+        LocalOffset = OldOffset;
     }
+
+    StructMemCount = OldStructMemCount;
+    StructCount    = OldStructCount;
+    ArrayCount     = OldArrayCount;
 }
 
 // Arg 2              BP + 6
