@@ -604,7 +604,7 @@ struct NamedLabel* GetNamedLabel(int Id)
 {
     struct NamedLabel* NL = NamedLabels;
     int l = NamedLabelCount;
-    while (l--) {
+    for (; l--; ++NL) {
         if (NL->Id == Id) {
             goto Ret;
         }
