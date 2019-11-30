@@ -943,9 +943,10 @@ char GetChar(void)
     return ch;
 }
 
-int TryGetChar(char ch)
+int TryGetChar(char ch, int t)
 {
     if (CurChar == ch) {
+        TokenType = t;
         NextChar();
         return 1;
     }
@@ -1139,91 +1140,64 @@ Redo:
     case '?':
         return;
     case '=':
-        if (TryGetChar('=')) {
-            TokenType = TOK_EQEQ;
-        }
+        TryGetChar('=', TOK_EQEQ);
         return;
     case '!':
-        if (TryGetChar('=')) {
-            TokenType = TOK_NOTEQ;
-        }
+        TryGetChar('=', TOK_NOTEQ);
         return;
     case '<':
-        if (TryGetChar('<')) {
-            TokenType = TOK_LSH;
-            if (TryGetChar('=')) {
-                TokenType = TOK_LSHEQ;
-            }
-        } else if (TryGetChar('=')) {
-            TokenType = TOK_LTEQ;
+        if (TryGetChar('<', TOK_LSH)) {
+            TryGetChar('=', TOK_LSHEQ);
+        } else{
+            TryGetChar('=', TOK_LTEQ);
         }
         return;
     case '>':
-        if (TryGetChar('>')) {
-            TokenType = TOK_RSH;
-            if (TryGetChar('=')) {
-                TokenType = TOK_RSHEQ;
-            }
-        } else if (TryGetChar('=')) {
-            TokenType = TOK_GTEQ;
+        if (TryGetChar('>', TOK_RSH)) {
+            TryGetChar('=', TOK_RSHEQ);
+        } else {
+            TryGetChar('=', TOK_GTEQ);
         }
         return;
     case '&':
-        if (TryGetChar('&')) {
-            TokenType = TOK_ANDAND;
-        } else if (TryGetChar('=')) {
-            TokenType = TOK_ANDEQ;
+        if (!TryGetChar('&', TOK_ANDAND)) {
+            TryGetChar('=', TOK_ANDEQ);
         }
         return;
     case '|':
-        if (TryGetChar('|')) {
-            TokenType = TOK_OROR;
-        } else if (TryGetChar('=')) {
-            TokenType = TOK_OREQ;
+        if (!TryGetChar('|', TOK_OROR)) {
+            TryGetChar('=', TOK_OREQ);
         }
         return;
     case '^':
-        if (TryGetChar('=')) {
-            TokenType = TOK_XOREQ;
-        }
+        TryGetChar('=', TOK_XOREQ);
         return;
     case '+':
-        if (TryGetChar('+')) {
-            TokenType = TOK_PLUSPLUS;
-        } else if (TryGetChar('=')) {
-            TokenType = TOK_PLUSEQ;
+        if (!TryGetChar('+', TOK_PLUSPLUS)) {
+            TryGetChar('=', TOK_PLUSEQ);
         }
         return;
     case '-':
-        if (TryGetChar('-')) {
-            TokenType = TOK_MINUSMINUS;
-        } else if (TryGetChar('=')) {
-            TokenType = TOK_MINUSEQ;
-        } else if (TryGetChar('>')) {
-            TokenType = TOK_ARROW;
+        if (!TryGetChar('-', TOK_MINUSMINUS)) {
+            if (!TryGetChar('=', TOK_MINUSEQ))
+                TryGetChar('>', TOK_ARROW);
         }
         return;
     case '*':
-        if (TryGetChar('=')) {
-            TokenType = TOK_STAREQ;
-        }
+        TryGetChar('=', TOK_STAREQ);
         return;
     case '/':
-        if (TryGetChar('=')) {
-            TokenType = TOK_SLASHEQ;
-        }
+        TryGetChar('=', TOK_SLASHEQ);
         return;
     case '%':
-        if (TryGetChar('=')) {
-            TokenType = TOK_MODEQ;
-        }
+        TryGetChar('=', TOK_MODEQ);
         return;
     case '.':
-        if (TryGetChar('.')) {
-            if (!TryGetChar('.')) {
+        if (CurChar == '.') {
+            GetChar();
+            if (!TryGetChar('.', TOK_ELLIPSIS)) {
                 Fatal("Invalid token ..");
             }
-            TokenType = TOK_ELLIPSIS;
         }
         return;
     }
@@ -1820,21 +1794,7 @@ int RelOpToCC(int Op)
     if (Op == TOK_GTEQ)  return JNL;
     if (Op == TOK_EQEQ)  return JZ;
     if (Op == TOK_NOTEQ) return JNZ;
-    Check(0);
-}
-
-int IsRelOp(int Op)
-{
-    switch (Op) {
-    case TOK_LT:
-    case TOK_LTEQ:
-    case TOK_GT:
-    case TOK_GTEQ:
-    case TOK_EQEQ:
-    case TOK_NOTEQ:
-        return 1;
-    }
-    return 0;
+    return -1;
 }
 
 int RemoveAssign(int Op)
@@ -1856,9 +1816,10 @@ int RemoveAssign(int Op)
 void DoBinOp(int Op)
 {
     int RM = MODRM_REG|R_CX<<3;
-    if (IsRelOp(Op)) {
+    int CC = RelOpToCC(Op);
+    if (CC >= 0) {
         CurrentType = VT_BOOL;
-        CurrentVal  = RelOpToCC(Op);
+        CurrentVal  = CC;
         Op = I_CMP;
     } else if (Op == TOK_PLUS) {
         Op = I_ADD;
@@ -1894,11 +1855,10 @@ void DoBinOp(int Op)
 
 void DoRhsConstBinOp(int Op)
 {
-    int NextVal = CurrentVal;
+    int CC = RelOpToCC(Op);
 
-    if (IsRelOp(Op)) {
+    if (CC >= 0) {
         CurrentType = VT_BOOL;
-        NextVal = RelOpToCC(Op);
         Op = I_CMP;
     } else if (Op == TOK_PLUS)  {
 Plus:
@@ -1930,7 +1890,8 @@ Plus:
     }
     OutputBytes(Op|5, -1);
     OutputWord(CurrentVal);
-    CurrentVal = NextVal;
+    if (CC >= 0)
+        CurrentVal = CC;
 }
 
 int DoConstBinOp(int Op, int L, int R)
@@ -2126,10 +2087,7 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
-                if (Op == TOK_ANDAND)
-                    EmitJcc(JZ, LEnd);
-                else
-                    EmitJcc(JNZ, LEnd);
+                EmitJcc(JZ | (Op != TOK_ANDAND), LEnd);
             }
         } else {
             LEnd = -1;
@@ -2140,8 +2098,7 @@ void ParseExpr1(int OuterPrecedence)
 
         ParseCastExpression(); // RHS
         for (;;) {
-            const int LookAheadOp         = TokenType;
-            const int LookAheadPrecedence = OperatorPrecedence(LookAheadOp);
+            const int LookAheadPrecedence = OperatorPrecedence(TokenType);
             if (LookAheadPrecedence > Prec || (LookAheadPrecedence == Prec && LookAheadPrecedence != PRED_EQ)) // LookAheadOp != PRED_EQ => !IsRightAssociative
                 break;
             ParseExpr1(LookAheadPrecedence);
@@ -2154,8 +2111,7 @@ void ParseExpr1(int OuterPrecedence)
             continue;
         } else if (Op == TOK_EQ && LhsType == VT_STRUCT) {
             // Struct assignment
-            // TODO: Verify CurrentTypeExtra matches Lhs struct
-            Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
+            Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL) && CurrentTypeExtra == LhsTypeExtra);
             Temp = CurrentType & VT_LOCMASK;
 
             HandleLhsLvalLoc(LhsLoc);
