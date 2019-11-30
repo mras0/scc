@@ -156,6 +156,22 @@ void twice() {
     t = rsp->tl->t;
 }
 
+void swap() {
+    struct S {
+        int a;
+        int b;
+    } ss[2];
+    struct S temp;
+    struct S * x = &ss[0], * y = &ss[1];
+    ss[0].a = 42;
+    ss[1].a = 60;
+    temp = *x;
+    *x = *y;
+    *y = temp;
+    assert_eq(x->a, 60);
+    assert_eq(y->a, 42);
+}
+
 void main() {
     bug1();
     assign();
@@ -165,4 +181,5 @@ void main() {
     unnamed();
     scope();
     twice();
+    swap();
 }

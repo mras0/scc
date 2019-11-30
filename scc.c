@@ -867,8 +867,7 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
         OutputBytes(I_MOV_R_IMM16 | Reg, -1);
         EmitGlobalRef(&VarDecls[Val]);
     } else {
-        Check(!Loc);
-        EmitMovRR(Reg, R_AX);
+        Check(0);
     }
 }
 
@@ -2148,12 +2147,27 @@ void ParseExpr1(int OuterPrecedence)
             // Struct assignment
             // TODO: Verify CurrentTypeExtra matches Lhs struct
             Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
+            Temp = CurrentType & VT_LOCMASK;
+
+            // Get LHS to BX
+            if (!LhsLoc) {
+                if (PendingPushAx) {
+                    PendingPushAx = 0;
+                    EmitMovRR(R_BX, R_AX);
+                } else {
+                    EmitPop(R_BX);
+                    LocalOffset += 2;
+                }
+            } else {
+                EmitLoadAddr(R_BX, LhsLoc, LhsVal);
+            }
+
             EmitMovRImm(R_CX, SizeofCurrentType());
             EmitPush(R_CX);
-            EmitLoadAddr(R_CX, CurrentType&VT_LOCMASK, CurrentVal);
-            EmitPush(R_CX);
-            EmitLoadAddr(R_CX, LhsLoc, LhsVal);
-            EmitPush(R_CX);
+            if (Temp)
+                EmitLoadAddr(R_AX, Temp, CurrentVal);
+            EmitPush(R_AX);
+            EmitPush(R_BX);
             EmitCallMemcpy();
             continue;
         }
@@ -2507,7 +2521,7 @@ Redo:
     if (Accept(TOK_SEMICOLON)) {
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
-        const int BaseType   = CurrentType;
+        const int BaseType   = CurrentType & ~VT_PTRMASK;
         const int BaseStruct = CurrentTypeExtra;
         while (vd) {
             vd->Type |= VT_LOCOFF;
@@ -2943,10 +2957,26 @@ int main(int argc, char** argv)
             EmitGlobalLabel(vd);
             CodeAddress += SizeofCurrentType();
         }
-        //if (CurrentType&VT_FUN) Printf("%X %s\n", vd->Offset, IdText(vd->Id));
     }
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);
+
+    /*
+    for (i = 0 ; i <= Scopes[0]; ++i) {
+        int j = i + 1;
+        struct VarDecl* a = &VarDecls[i];
+        for (; j <= Scopes[0]; ++j) {
+            struct VarDecl* b = &VarDecls[j];
+            if (a->Offset > b->Offset) {
+                struct VarDecl temp;
+                temp = *a;
+                *a = *b;
+                *b = temp;
+            }
+        }
+        if (a->Type&VT_FUN) Printf("%X %s\n", a->Offset, IdText(a->Id));
+    }
+    */
 
     PopScope();
 
@@ -2958,7 +2988,7 @@ int main(int argc, char** argv)
     if (OutFile < 0) {
         Fatal("Error creating output file");
     }
-    write(OutFile, Output, SBSS->Offset - CODESTART);
+    write(OutFile, Output, CodeAddress - BssSize - CODESTART);
     close(OutFile);
 
     return 0;
