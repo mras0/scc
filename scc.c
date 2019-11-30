@@ -255,7 +255,6 @@ enum {
     TOK__START = TOK_ID,
     TOK__SBSS,
     TOK__EBSS,
-    TOK_MEMCPY,
 };
 
 enum {
@@ -334,9 +333,6 @@ struct ArrayDecl ArrayDecls[ARRAY_MAX];
 int ArrayCount;
 
 struct VarDecl VarDecls[VARDECL_MAX];
-
-struct VarDecl* MemcpyDecl;
-int MemcpyUsed;
 
 int Scopes[SCOPE_MAX]; // VarDecl index
 int ScopesCount;
@@ -555,12 +551,15 @@ enum {
     I_CBW            = 0x98,
     I_CWD            = 0x99,
     I_MOV_R_IMM16    = 0xb8,
+    I_MOVSB          = 0xa4,
+    I_STOSB          = 0xaa,
     I_RET            = 0xc3,
     I_INT            = 0xcd,
     I_SHROT16_CL     = 0xd3,
     I_CALL           = 0xe8,
     I_JMP_REL16      = 0xe9,
     I_JMP_REL8       = 0xeb,
+    I_REP            = 0xf3,
     I_INCDEC_RM      = 0xfe,
 };
 
@@ -1578,13 +1577,6 @@ void HandleStructMember(void)
     CurrentTypeExtra = SM->TypeExtra;
 }
 
-void EmitCallMemcpy(void)
-{
-    EmitCall(MemcpyDecl);
-    EmitAdjSp(6);
-    MemcpyUsed = 1;
-}
-
 void ParseAssignmentExpression(void);
 
 void ParsePostfixExpression(void)
@@ -1608,13 +1600,15 @@ void ParsePostfixExpression(void)
                     EmitAdjSp(-ArgsPerChunk*2);
                     if (NumArgs) {
                         // Move arguments to new stack top
-                        EmitMovRImm(R_AX, NumArgs*2);
-                        EmitPush(R_AX);
-                        EmitLeaStackVar(R_AX, LocalOffset + ArgsPerChunk*2);
-                        EmitPush(R_AX);
-                        EmitAddRegConst(R_AX, -ArgsPerChunk*2);
-                        EmitPush(R_AX);
-                        EmitCallMemcpy();
+                        EmitPush(R_SI);
+                        EmitPush(R_DI);
+                        EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
+                        EmitMovRR(R_DI, R_SI);
+                        EmitAddRegConst(R_DI, -ArgsPerChunk*2);
+                        EmitMovRImm(R_CX, NumArgs*2);
+                        OutputBytes(I_REP, I_MOVSB, -1);
+                        EmitPop(R_DI);
+                        EmitPop(R_SI);
                     }
                 }
                 ParseAssignmentExpression();
@@ -2064,6 +2058,21 @@ void HandleCondOp(void)
     }
 }
 
+void HandleLhsLvalLoc(int LhsLoc)
+{
+    if (!LhsLoc) {
+        if (PendingPushAx) {
+            PendingPushAx = 0;
+            EmitMovRR(R_BX, R_AX);
+        } else {
+            EmitPop(R_BX);
+            LocalOffset += 2;
+        }
+    } else {
+        Check(LhsLoc == VT_LOCOFF || LhsLoc == VT_LOCGLOB);
+    }
+}
+
 void ParseExpr1(int OuterPrecedence)
 {
     int LEnd;
@@ -2149,26 +2158,21 @@ void ParseExpr1(int OuterPrecedence)
             Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
             Temp = CurrentType & VT_LOCMASK;
 
-            // Get LHS to BX
-            if (!LhsLoc) {
-                if (PendingPushAx) {
-                    PendingPushAx = 0;
-                    EmitMovRR(R_BX, R_AX);
-                } else {
-                    EmitPop(R_BX);
-                    LocalOffset += 2;
-                }
-            } else {
-                EmitLoadAddr(R_BX, LhsLoc, LhsVal);
-            }
-
-            EmitMovRImm(R_CX, SizeofCurrentType());
-            EmitPush(R_CX);
+            HandleLhsLvalLoc(LhsLoc);
+            EmitPush(R_SI);
+            EmitPush(R_DI);
+            if (LhsLoc)
+                EmitLoadAddr(R_DI, LhsLoc, LhsVal);
+            else
+                EmitMovRR(R_DI, R_BX);
             if (Temp)
-                EmitLoadAddr(R_AX, Temp, CurrentVal);
-            EmitPush(R_AX);
-            EmitPush(R_BX);
-            EmitCallMemcpy();
+                EmitLoadAddr(R_SI, Temp, CurrentVal);
+            else
+                EmitMovRR(R_SI, R_AX);
+            EmitMovRImm(R_CX, SizeofCurrentType());
+            OutputBytes(I_REP, I_MOVSB, -1);
+            EmitPop(R_DI);
+            EmitPop(R_SI);
             continue;
         }
 
@@ -2190,17 +2194,7 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
             }
-            if (!LhsLoc) {
-                if (PendingPushAx) {
-                    PendingPushAx = 0;
-                    EmitMovRR(R_BX, R_AX);
-                } else {
-                    EmitPop(R_BX);
-                    LocalOffset += 2;
-                }
-            } else {
-                Check(LhsLoc == VT_LOCOFF || LhsLoc == VT_LOCGLOB);
-            }
+            HandleLhsLvalLoc(LhsLoc);
             if (Op != TOK_EQ) {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
                 Temp = CurrentType == (VT_INT|VT_LOCLIT);
@@ -2872,18 +2866,6 @@ int DosCall(int* ax, int bx, int cx, int dx)
     _emit I_SBB|1               _emit MODRM_REG                      // 19C0              SBB AX,AX
 }
 
-void memcpy(char* dst, const char* src, int size)
-{
-    _emit I_PUSH|R_SI                                       // PUSH SI
-    _emit I_PUSH|R_DI                                       // PUSH DI
-    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_DI<<3 _emit 4 // MOV DI,[BP+0x4]
-    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_SI<<3 _emit 6 // MOV SI,[BP+0x6]
-    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // MOV CX,[BP+0x8]
-    _emit 0xF3         _emit 0xA4                           // REP MOVSB
-    _emit I_POP|R_DI                                        // POP DI
-    _emit I_POP|R_SI                                        // POP SI
-}
-
 void memset(char* dst, int val, int size)
 {
     _emit I_PUSH|R_SI                                       // PUSH SI
@@ -2891,7 +2873,7 @@ void memset(char* dst, int val, int size)
     _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_DI<<3 _emit 4 // MOV DI,[BP+0x4]
     _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_AX<<3 _emit 6 // MOV AX,[BP+0x6]
     _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // MOV CX,[BP+0x8]
-    _emit 0xF3         _emit 0xAA                           // REP STOSB
+    _emit I_REP        _emit I_STOSB                        // REP STOSB
     _emit I_POP|R_DI                                        // POP DI
     _emit I_POP|R_SI                                        // POP SI
 }
@@ -2915,8 +2897,8 @@ int main(int argc, char** argv)
 
     AddBuiltins("break case char const continue default do else enum for goto if"
         " int return sizeof struct switch union void while"
-        " va_list va_start va_end va_arg _emit _start _SBSS _EBSS memcpy");
-    Check(IdCount+TOK_BREAK-1 == TOK_MEMCPY);
+        " va_list va_start va_end va_arg _emit _start _SBSS _EBSS");
+    Check(IdCount+TOK_BREAK-1 == TOK__EBSS);
 
     PushScope();
 
@@ -2929,9 +2911,6 @@ int main(int argc, char** argv)
     CurrentType = VT_CHAR|VT_LOCGLOB;
     struct VarDecl* SBSS = AddVarDecl(TOK__SBSS-TOK_BREAK);
     struct VarDecl* EBSS = AddVarDecl(TOK__EBSS-TOK_BREAK);
-
-    CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
-    MemcpyDecl = AddVarDecl(TOK_MEMCPY-TOK_BREAK);
 
     NextChar();
     GetToken();
@@ -2948,7 +2927,7 @@ int main(int argc, char** argv)
         if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB)
             continue;
         if (!vd->Offset) {
-            if (vd == EBSS || (vd == MemcpyDecl && !MemcpyUsed))
+            if (vd == EBSS)
                 continue;
             if (CurrentType & VT_FUN) {
                 Printf("%s is undefined\n", IdText(vd->Id));

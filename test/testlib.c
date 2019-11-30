@@ -1,8 +1,3 @@
-void memcpy(char* d, const char* s, int n)
-{
-    while (n--) *d++ = *s++;
-}
-
 void putchar(int ch)
 {
     _emit 0x8B _emit 0x46|2<<3 _emit 0x04 // MOV DX, [BP+4]
