@@ -172,6 +172,22 @@ void swap() {
     assert_eq(y->a, 42);
 }
 
+void cast() {
+    struct T {
+        char* s;
+    };
+    struct A {
+        int i;
+    };
+    struct A a;
+    a.i = 42;
+    struct T t;
+    t.s = (char*)&a;
+    assert_eq(((struct A*)t.s)->i, 42);
+    struct T* tp = &t;
+    assert_eq(((struct A*)tp->s)->i, 42);
+}
+
 void main() {
     bug1();
     assign();
@@ -182,4 +198,5 @@ void main() {
     scope();
     twice();
     swap();
+    cast();
 }

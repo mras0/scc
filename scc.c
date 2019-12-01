@@ -1780,6 +1780,7 @@ void ParseCastExpression(void)
         } else {
             ParseExpr();
             Expect(TOK_RPAREN);
+            ParsePostfixExpression();
         }
     } else {
         ParseUnaryExpression();
