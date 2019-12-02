@@ -65,5 +65,11 @@ void main(void)
 
     assert_eq(sizeof(int[4]), 8);
 
+    char large[512];
+    large[1] = 60;
+    large[511] = 42;
+    assert_eq(large[1], 60);
+    assert_eq(large[511], 42);
+
     // TODO: multi dimensional arrays
 }

@@ -747,9 +747,14 @@ void EmitAddRegConst(int r, int Amm)
         OutputBytes(Op, -1);
         if (Amm > 1)
             OutputBytes(Op, -1);
-    } else {
-        Check(Amm < 128);
+    } else if (Amm < 128) {
         OutputBytes(I_ALU_RM16_IMM8, MODRM_REG|Op|r, Amm & 0xff, -1);
+    } else {
+        if (r == R_AX)
+            OutputBytes(Op|5, -1);
+        else
+            OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|Op|r, -1);
+        OutputWord(Amm);
     }
 }
 
@@ -1867,11 +1872,8 @@ void DoRhsConstBinOp(int Op)
         Op = I_CMP;
     } else if (Op == TOK_PLUS)  {
 Plus:
-        if (CurrentVal == (char)CurrentVal) {
-            EmitAddRegConst(R_AX, CurrentVal);
-            return;
-        }
-        Op = I_ADD;
+        EmitAddRegConst(R_AX, CurrentVal);
+        return;
     } else if (Op == TOK_MINUS) {
         // Ease optimizations
         CurrentVal = -CurrentVal;
