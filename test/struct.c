@@ -188,6 +188,32 @@ void cast() {
     assert_eq(((struct A*)tp->s)->i, 42);
 }
 
+void baz(char* b, int v, int sz) {
+    while (sz--) *b++ = v;
+}
+
+void with_array() {
+    struct File {
+        int p;
+        char b[512];
+    };
+    struct File* CurFile = (struct File*)&_EBSS;
+    baz(CurFile->b, 0, sizeof(CurFile->b));
+    CurFile->p = 100;
+    baz(CurFile->b + CurFile->p, 42, 2);
+    assert_eq(CurFile->b[99], 0);
+    assert_eq(CurFile->b[100], 42);
+    assert_eq(CurFile->b[101], 42);
+    assert_eq(CurFile->b[102], 0);
+    assert_eq(CurFile->p, 100);
+    baz(CurFile, 0, sizeof(*CurFile));
+    assert_eq(CurFile->b[99], 0);
+    assert_eq(CurFile->b[100], 0);
+    assert_eq(CurFile->b[101], 0);
+    assert_eq(CurFile->b[102], 0);
+    assert_eq(CurFile->p, 0);
+}
+
 void main() {
     bug1();
     assign();
@@ -199,4 +225,5 @@ void main() {
     twice();
     swap();
     cast();
+    with_array();
 }

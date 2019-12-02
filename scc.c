@@ -642,6 +642,8 @@ void DoFixups(int r, int relative)
 
 void AddFixup(int* f)
 {
+    if (IsDeadCode)
+        return;
     OutputWord(*f);
     *f = CodeAddress - 2;
 }
@@ -662,6 +664,7 @@ void EmitLocalLabel(int l)
 
 void EmitLocalRef(int l)
 {
+    Check(!IsDeadCode);
     int Addr = Labels[l].Addr;
     Check(Addr);
     OutputWord(Addr);
@@ -1344,7 +1347,8 @@ void LvalToRval(void)
             CurrentType &= ~VT_ARRAY;
             CurrentType += VT_PTR1;
             CurrentTypeExtra = ArrayDecls[CurrentTypeExtra].Extra;
-            EmitLoadAddr(R_AX, loc, CurrentVal);
+            if (loc)
+                EmitLoadAddr(R_AX, loc, CurrentVal);
             return;
         }
 
