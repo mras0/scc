@@ -1,3 +1,5 @@
+#ifndef __SCC__
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +23,7 @@
 
 #define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC | O_BINARY
 
-#if 0
+#else
 // Only used when self-compiling
 // Small "standard library"
 
@@ -463,7 +465,7 @@ int StrEqual(const char* a, const char* b)
     return !*a && !*b;
 }
 
-#if 0
+#ifdef __SCC__
 int* GetBP(void)
 {
     _emit 0x8B _emit 0x46 _emit 0x00 // MOV AX, [BP]
@@ -472,7 +474,7 @@ int* GetBP(void)
 
 void Fatal(const char* Msg)
 {
-#if 0
+#ifdef __SCC__
     int* BP = GetBP();
     Printf("\nBP   Return address\n");
     while (*BP) {
@@ -491,7 +493,10 @@ void Check(int ok)
     }
 }
 
+#ifndef __SCC__
+// Takes up too much code...
 #define Check(expr) do { if (!(expr)) { Printf("In %s:%d: ", __FILE__, __LINE__); Fatal(#expr " failed"); } } while (0)
+#endif
 
 const char* IdText(int id)
 {
@@ -2814,7 +2819,7 @@ void AddBuiltins(const char* s)
     } while(ch);
 }
 
-#if 0
+#ifdef __SCC__
 int DosCall(int* ax, int bx, int cx, int dx)
 {
     _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0x4]
