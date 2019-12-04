@@ -12,8 +12,6 @@ else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ggdb -Wall -Wextra -pedantic -std=c99 -Wno-return-type")
 endif()
 
-add_executable(scc scc.c)
-
 if (MSVC)
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT scc)
 endif()
@@ -27,6 +25,8 @@ macro(SCC n)
     )
 
     add_custom_target(${n}_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${n}.com")
+
+    add_executable(${n} ${n}.c) # Make sure we can build on host as well
 endmacro()
 
 SCC(scc)

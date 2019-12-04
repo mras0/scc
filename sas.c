@@ -1,3 +1,4 @@
+#ifndef __SCC__
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -23,7 +24,7 @@
 
 #define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC | O_BINARY
 
-#if 0
+#else
 // Small "standard library"
 
 enum { CREATE_FLAGS = 1 }; // Ugly hack
@@ -452,15 +453,15 @@ void Fatal(const char* format, ...)
     exit(1);
 }
 
-#define Fatal(...) do { printf("%s:%d: ", __FILE__, __LINE__); Fatal(__VA_ARGS__); } while (0)
-
-#if 0
+#ifdef __SCC__
 void assert(int res)
 {
     if (!res) {
         Fatal("Assertion failed");
     }
 }
+#else
+#define Fatal(...) do { printf("%s:%d: ", __FILE__, __LINE__); Fatal(__VA_ARGS__); } while (0)
 #endif
 
 void OutputByte(int b)
@@ -1622,7 +1623,7 @@ int main(int argc, char** argv)
                     assert(L->Val == -1);
                     struct Fixup* F = L->Fixups;
                     if (F) {
-                        struct Fixup* Last;
+                        struct Fixup* Last = F;
                         while (F) {
                             switch (F->Type) {
                             case FIXUP_REL8:
@@ -1641,7 +1642,7 @@ int main(int argc, char** argv)
                             F = F->Next;
                         }
                         Last->Next = NextFixup;
-                        NextFixup = Last; // = TODO: F?
+                        NextFixup = L->Fixups;
                     }
                 }
                 L->Val = VirtAddress;
