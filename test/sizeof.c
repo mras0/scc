@@ -40,4 +40,7 @@ void main()
     assert_eq(sizeof(s2.y), 2);
 
     assert_eq(sizeof 1+1, 3);
+
+    assert_eq(sizeof("test"), 5);
+    assert_eq(1, 1);
 }

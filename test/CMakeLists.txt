@@ -2,6 +2,7 @@ set(TESTS
     array
     comma
     condop
+    deadcode
     decl
     dowhile
     enum

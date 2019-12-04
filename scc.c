@@ -136,7 +136,7 @@ enum {
     OUTPUT_MAX = 0x6300, // Warning: Close to limit. Need at least 512 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
-    ARRAY_MAX = 16,
+    ARRAY_MAX = 32,
 };
 
 enum {
@@ -317,6 +317,7 @@ int Line = 1;
 
 int TokenType;
 int TokenNumVal;
+char* TokenStrLit;
 
 char IdBuffer[IDBUFFER_MAX];
 int IdBufferIndex;
@@ -669,7 +670,6 @@ void EmitLocalLabel(int l)
 
 void EmitLocalRef(int l)
 {
-    Check(!IsDeadCode);
     int Addr = Labels[l].Addr;
     Check(Addr);
     OutputWord(Addr);
@@ -1030,11 +1030,8 @@ char Unescape(void)
 
 void GetStringLiteral(void)
 {
-    TokenNumVal = MakeLabel();
-    const int WasDeadCode = IsDeadCode;
-    const int JL = MakeLabel();
-    EmitJmp(JL);
-    EmitLocalLabel(TokenNumVal);
+    TokenStrLit = Output + CodeAddress + (64 - CODESTART); // Just leave a little head room for code to be outputted before consuming the string literal
+    TokenNumVal = 0;
 
     char ch;
     for (;;) {
@@ -1045,16 +1042,15 @@ void GetStringLiteral(void)
             if (!ch) {
                 Fatal("Unterminated string literal");
             }
-            OutputBytes(ch, -1);
+            TokenStrLit[TokenNumVal++] = ch;
         }
         SkipWhitespace();
         if (StoredSlash || CurChar != '"')
             break;
         NextChar();
     }
-    OutputBytes(0, -1);
-    EmitLocalLabel(JL);
-    IsDeadCode = WasDeadCode;
+    TokenStrLit[TokenNumVal++] = 0;
+    Check(TokenStrLit+TokenNumVal-Output <= OUTPUT_MAX);
 }
 
 void GetToken(void)
@@ -1475,9 +1471,24 @@ void ParsePrimaryExpression(void)
         CurrentVal  = TokenNumVal;
         GetToken();
     } else if (TokenType == TOK_STRLIT) {
-        OutputBytes(I_MOV_R_IMM16, -1);
-        EmitLocalRef(TokenNumVal);
-        CurrentType = VT_PTR1 | VT_CHAR;
+        Check(ArrayCount < ARRAY_MAX);
+        struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
+        AD->Bound = TokenNumVal;
+        AD->Extra = 0;
+        CurrentType = VT_CHAR | VT_ARRAY | VT_LVAL;
+        CurrentTypeExtra = ArrayCount++;
+        if (!IsDeadCode) {
+            const int EndLab = MakeLabel();
+            const int DatLab = MakeLabel();
+            FlushPushAx();
+            EmitJmp(EndLab);
+            EmitLocalLabel(DatLab);
+            while (TokenNumVal--)
+                OutputBytes(*TokenStrLit++ & 0xff, -1);
+            EmitLocalLabel(EndLab);
+            OutputBytes(I_MOV_R_IMM16, -1);
+            EmitLocalRef(DatLab);
+        }
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
         // Handle var arg builtins
@@ -1636,11 +1647,12 @@ void ParsePostfixExpression(void)
             const int Scale    = SizeofCurrentType();
             const int ResType  = CurrentType | VT_LVAL;
             const int ResExtra = CurrentTypeExtra;
-            SetPendingPushAx();
+            if (!IsDeadCode)
+                SetPendingPushAx();
             ParseExpr();
             Expect(TOK_RBRACKET);
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                Check(PendingPushAx);
+                Check(PendingPushAx || IsDeadCode);
                 PendingPushAx = 0;
                 EmitAddRegConst(R_AX, CurrentVal * Scale);
             } else {
@@ -1962,6 +1974,10 @@ void DoCond(int Label, int Forward) // forward => jump if label is false
 
 void ForceToReg(void)
 {
+    // Always decay arrays
+    if (CurrentType & VT_ARRAY)
+        LvalToRval();
+
     const int Loc = CurrentType & VT_LOCMASK;
     if (!Loc) return;
     CurrentType &= ~VT_LOCMASK;
@@ -2103,7 +2119,7 @@ void ParseExpr1(int OuterPrecedence)
             }
         } else {
             LEnd = -1;
-            if (!(LhsType & VT_LOCMASK) && Op != TOK_COMMA) {
+            if (!(LhsType & VT_LOCMASK) && Op != TOK_COMMA && !IsDeadCode) {
                 SetPendingPushAx();
             }
         }
@@ -2192,7 +2208,7 @@ void ParseExpr1(int OuterPrecedence)
                 CurrentTypeExtra = LhsTypeExtra;
             }
             if (CurrentType == (VT_LOCLIT|VT_INT)) {
-                Check(PendingPushAx);
+                Check(PendingPushAx || IsDeadCode);
                 PendingPushAx = 0;
                 CurrentType = VT_INT;
                 if (LhsType & VT_PTRMASK) {
