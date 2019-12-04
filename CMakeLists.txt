@@ -18,13 +18,17 @@ if (MSVC)
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT scc)
 endif()
 
-add_custom_command(
-    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/scc.com"
-    COMMAND $<TARGET_FILE:scc> "${CMAKE_CURRENT_SOURCE_DIR}/scc.c" ./scc.com
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scc.c"
-)
+macro(SCC n)
+    add_custom_command(
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${n}.com"
+        COMMAND $<TARGET_FILE:scc> "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c" ./${n}.com
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c"
+    )
 
-add_custom_target(scc_com DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/scc.com")
+    add_custom_target(${n}_com DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${n}.com")
+endmacro()
+
+SCC(scc)
 
 add_subdirectory(test)
