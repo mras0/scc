@@ -1,0 +1,4 @@
+#ifdef __SCC__
+42
+#endif
+__SCC__

@@ -1,0 +1,13 @@
+__FILE__ __LINE__
+
+#include <inc1.h>
+
+__FILE__ __LINE__
+
+#ifdef EXCLUDE_INC1_H
+42
+#endif
+
+#ifdef INC1_H_INCLUDED
+60
+#endif

@@ -1,0 +1,5 @@
+#if 0
+ijqpisdjpsqidjsjd piqjp '
+"
+#error shouldn't fire! \ 
+#endif

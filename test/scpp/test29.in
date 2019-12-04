@@ -1,0 +1,4 @@
+#define X 42
+#define Y 60
+#define F(a,b) a+b
+F(X, Y)

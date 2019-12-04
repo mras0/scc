@@ -1,0 +1,3 @@
+#define ADD1(x) ((x)+1)
+#define MUL2(x) ((x)*2)
+ADD1(MUL2(42))

@@ -1,0 +1,10 @@
+#define X
+#ifdef X
+1
+#endif
+#ifdef Y
+2
+#endif
+#ifndef Y
+3
+#endif

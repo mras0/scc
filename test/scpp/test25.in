@@ -1,0 +1,5 @@
+#define X 123
+X
+#undef X
+#define X 42
+X

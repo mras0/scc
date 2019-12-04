@@ -1,0 +1,5 @@
+#if 0
+#error Should not fire
+#endif
+#pragma foo
+#line 123

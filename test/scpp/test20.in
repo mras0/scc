@@ -1,0 +1,7 @@
+#define Y 42
+#if X
+#elif Y
+50
+#else
+2
+#endif

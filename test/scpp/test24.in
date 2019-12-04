@@ -1,0 +1,12 @@
+#undef XXX
+#define X 123
+#ifdef X
+X
+#endif
+#undef X
+#ifdef X
+1234
+#endif
+#if X+1==1
+42
+#endif

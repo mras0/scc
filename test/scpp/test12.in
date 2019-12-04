@@ -1,0 +1,7 @@
+#define X 42
+#define Y (X+X)
+#if Y == 84
+1
+#else
+0
+#endif

@@ -1,0 +1,2 @@
+#define P(a,b) a##b
+P(1 , 2)

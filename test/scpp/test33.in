@@ -1,0 +1,3 @@
+#define F(x) x+1
+#define Z F(42)
+Z

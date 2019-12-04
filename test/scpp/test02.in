@@ -1,0 +1,3 @@
+#define X 42
+#define Y X+1
+Y*2

@@ -1,0 +1,4 @@
+#define A 2
+#define B ((A)+1)
+#define X A + B
+X

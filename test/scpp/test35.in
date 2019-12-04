@@ -1,0 +1,3 @@
+#define X(a,b) a\
++b
+X(1,2)

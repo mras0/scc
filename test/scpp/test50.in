@@ -1,0 +1,2 @@
+#define X(N) foo_ ## N ## _blah
+X(test)

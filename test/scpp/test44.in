@@ -1,0 +1,3 @@
+#define indirect(x) foo(x)
+#define foo(x) x
+indirect(42 + x)

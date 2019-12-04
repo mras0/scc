@@ -1,0 +1,6 @@
+#define W
+#define V 0x0502
+#define X (V >= 0x0502 || !defined (W))
+#if X && !defined (__C)
+1
+#endif

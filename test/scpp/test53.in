@@ -1,0 +1,2 @@
+#define M(a) x ## a ## 1
+M(x)

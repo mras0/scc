@@ -1,0 +1,3 @@
+#define X(a) a+1
+#define Y(b) b-2
+X(Y(42))

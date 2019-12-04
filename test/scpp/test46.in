@@ -1,0 +1,2 @@
+#define str(s) #s " test"
+str(hello world 42)

@@ -1,0 +1,8 @@
+#define DEF(id, str) id,
+#define DEF_BWL(x) \
+DEF(TOK_ASM_ ## x ## b, #x "b") \
+DEF(TOK_ASM_ ## x ## w, #x "w") \
+DEF(TOK_ASM_ ## x ## l, #x "l") \
+DEF(TOK_ASM_ ## x, #x)
+#define DEF_BWLX DEF_BWL
+DEF_BWLX(mov)

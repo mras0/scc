@@ -1,0 +1,8 @@
+#define C defined(X)
+#if C
+0
+#endif
+#define X
+#if C
+1
+#endif

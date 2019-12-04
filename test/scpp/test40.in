@@ -1,0 +1,2 @@
+#define strange(file) fprintf (file, "%s %d",
+strange(stderr) p, 35)

@@ -1,0 +1,5 @@
+#define X() (1+2)
+X + 1
+X ()
+#define Y()  
+Y()

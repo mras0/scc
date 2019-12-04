@@ -1,0 +1,1 @@
+(((sym_bind) << 4) + ((((esym->st_info) & 0xf)) & 0xf));

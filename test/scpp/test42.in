@@ -1,0 +1,5 @@
+#define min(X, Y)  ((X) < (Y) ? (X) : (Y))
+min(, b)
+min(a, )
+min(,)
+min((,),)

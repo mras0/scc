@@ -30,6 +30,7 @@ macro(SCC n)
 endmacro()
 
 SCC(scc)
+SCC(scpp)
 SCC(sas)
 
 add_subdirectory(test)

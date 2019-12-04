@@ -1,0 +1,18 @@
+#if 0
+000
+#if 1
+111
+#elif 1
+222
+#endif
+#elif 0
+333
+#elif 1
+#if 0
+444
+#else
+123
+#endif
+#else
+666
+#endif

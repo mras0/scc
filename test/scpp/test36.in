@@ -1,0 +1,4 @@
+#define assert(c) do {\
+if(!(c)) Fail(); }\
+ while (0)
+assert(1-1)

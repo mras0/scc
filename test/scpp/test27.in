@@ -1,0 +1,4 @@
+#define F(x,y,z) x+y+z
+F(    1   ,     
+          2   ,            3 
+)
