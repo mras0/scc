@@ -26,9 +26,10 @@ macro(SCC n)
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c"
     )
 
-    add_custom_target(${n}_com DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${n}.com")
+    add_custom_target(${n}_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${n}.com")
 endmacro()
 
 SCC(scc)
+SCC(sas)
 
 add_subdirectory(test)
