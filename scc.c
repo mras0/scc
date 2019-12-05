@@ -132,8 +132,8 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    // Was 0x6400
-    OUTPUT_MAX = 0x6300, // Warning: Close to limit. Need at least 512 bytes of stack.
+    // Was 0x6400 and 0x6300...
+    OUTPUT_MAX = 0x6200, // Warning: Close to limit. Need at least 512 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -281,6 +281,8 @@ char Output[OUTPUT_MAX];
 int CodeAddress = CODESTART;
 int BssSize;
 
+int MapFile;
+
 int InFile;
 char InBuf[INBUF_MAX];
 int InBufCnt;
@@ -366,6 +368,16 @@ char* CopyStr(char* dst, const char* src)
     return dst;
 }
 
+char* CvtHex(char* dest, int n)
+{
+    const char* HexD = "0123456789ABCDEF";
+    int i;
+    for (i = 3; i >= 0; --i) {
+        *dest++ = HexD[(n>>i*4)&0xf];
+    }
+    return dest;
+}
+
 char* VSPrintf(char* dest, const char* format, va_list vl)
 {
     char TempBuf[9];
@@ -407,12 +419,7 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
             else if (always) *--buf = '+';
             dest  = CopyStr(dest, buf);
         } else if (ch == 'X') {
-            const char* HexD = "0123456789ABCDEF";
-            int n = va_arg(vl, int);
-            int i;
-            for (i = 3; i >= 0; --i) {
-                *dest++ = HexD[(n>>i*4)&0xf];
-            }
+            dest = CvtHex(dest, va_arg(vl, int));
         } else {
             PutStr("Invalid format string");
             exit(1);
@@ -453,7 +460,8 @@ void Fatal(const char* Msg)
 #ifdef __SCC__
     int* BP = GetBP();
     Printf("\nBP   Return address\n");
-    while (*BP) {
+    int i = 0;
+    while (*BP && ++i < 10) {
         Printf("%X %X\n", BP[0], BP[1]);
         BP = (int*)BP[0];
     }
@@ -2732,6 +2740,15 @@ void ParseExternalDefition(void)
             ReturnUsed = 0;
             ReturnLabel = MakeLabel();
             BreakLabel = ContinueLabel = -1;
+
+            char* Buf = &IdBuffer[IdBufferIndex];
+            char* P = CvtHex(Buf, CodeAddress);
+            *P++ = ' ';
+            P = CopyStr(P, IdText(vd->Id));
+            *P++ = '\r';
+            *P++ = '\n';
+            write(MapFile, Buf, (int)(P - Buf));
+
             EmitGlobalLabel(vd);
             EmitPush(R_BP);
             EmitMovRR(R_BP, R_SP);
@@ -2773,8 +2790,9 @@ End:
     Expect(';');
 }
 
-void MakeOutputFilename(char* dest, const char* n)
+void MakeOutputFilename(const char* n, const char* ext)
 {
+    char* dest = IdBuffer;
     char* LastDot;
     LastDot = 0;
     while (*n) {
@@ -2783,7 +2801,16 @@ void MakeOutputFilename(char* dest, const char* n)
         *dest++ = *n++;
     }
     if (!LastDot) LastDot = dest;
-    CopyStr(LastDot, ".com");
+    CopyStr(LastDot, ext);
+}
+
+int OpenOutput(void)
+{
+    const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
+    if (OutFile < 0) {
+        Fatal("Error creating output file");
+    }
+    return OutFile;
 }
 
 void AddBuiltins(const char* s)
@@ -2852,6 +2879,9 @@ int main(int argc, char** argv)
         Fatal("Error opening input file");
     }
 
+    MakeOutputFilename(argv[2] ? argv[2] : argv[1], ".map");
+    MapFile = OpenOutput();
+
     memset(IdHashTab, -1, sizeof(IdHashTab));
 
     AddBuiltins("break case char const continue default do else enum for goto if"
@@ -2899,33 +2929,13 @@ int main(int argc, char** argv)
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);
 
-    /*
-    for (i = 0 ; i <= Scopes[0]; ++i) {
-        int j = i + 1;
-        struct VarDecl* a = &VarDecls[i];
-        for (; j <= Scopes[0]; ++j) {
-            struct VarDecl* b = &VarDecls[j];
-            if (a->Offset > b->Offset) {
-                struct VarDecl temp;
-                temp = *a;
-                *a = *b;
-                *b = temp;
-            }
-        }
-        if (a->Type&VT_FUN) Printf("%X %s\n", a->Offset, IdText(a->Id));
-    }
-    */
-
-    PopScope();
+    close(MapFile);
 
     if (argv[2])
        CopyStr(IdBuffer, argv[2]);
     else
-        MakeOutputFilename(IdBuffer, argv[1]);
-    const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
-    if (OutFile < 0) {
-        Fatal("Error creating output file");
-    }
+        MakeOutputFilename(argv[1], ".com");
+    const int OutFile = OpenOutput();
     write(OutFile, Output, CodeAddress - BssSize - CODESTART);
     close(OutFile);
 

@@ -21,7 +21,7 @@ macro(SCC n)
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${n}.com"
         COMMAND $<TARGET_FILE:scc> "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c" ./${n}.com
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c" ${PROJECT_SOURCE_DIR}/scc.c
     )
 
     add_custom_target(${n}_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${n}.com")
