@@ -173,31 +173,6 @@ enum {
     TOK_NUM,
     TOK_STRLIT,
 
-    TOK_LPAREN    = '(',
-    TOK_RPAREN    = ')',
-    TOK_LBRACE    = '{',
-    TOK_RBRACE    = '}',
-    TOK_LBRACKET  = '[',
-    TOK_RBRACKET  = ']',
-    TOK_COMMA     = ',',
-    TOK_COLON     = ':',
-    TOK_SEMICOLON = ';',
-    TOK_EQ        = '=',
-    TOK_NOT       = '!',
-    TOK_LT        = '<',
-    TOK_GT        = '>',
-    TOK_STAR      = '*',
-    TOK_SLASH     = '/',
-    TOK_MOD       = '%',
-    TOK_AND       = '&',
-    TOK_XOR       = '^',
-    TOK_OR        = '|',
-    TOK_PLUS      = '+',
-    TOK_MINUS     = '-',
-    TOK_TILDE     = '~',
-    TOK_DOT       = '.',
-    TOK_QUESTION  = '?',
-
     TOK_EQEQ = 128,
     TOK_NOTEQ,
     TOK_LTEQ,
@@ -1221,31 +1196,31 @@ enum {
 int OperatorPrecedence(int tok)
 {
     switch (tok) {
-    case TOK_STAR: case TOK_SLASH: case TOK_MOD:
+    case '*': case '/': case '%':
         return 3;
-    case TOK_PLUS: case TOK_MINUS:
+    case '+': case '-':
         return 4;
     case TOK_LSH: case TOK_RSH:
         return 5;
-    case TOK_LT: case TOK_LTEQ: case TOK_GT: case TOK_GTEQ:
+    case '<': case '>': case TOK_LTEQ: case TOK_GTEQ:
         return 6;
     case TOK_EQEQ: case TOK_NOTEQ:
         return 7;
-    case TOK_AND:
+    case '&':
         return 8;
-    case TOK_XOR:
+    case '^':
         return 9;
-    case TOK_OR:
+    case '|':
         return 10;
     case TOK_ANDAND:
         return 11;
     case TOK_OROR:
         return 12;
-    case TOK_QUESTION:
+    case '?':
         return 13;
-    case TOK_EQ: case TOK_PLUSEQ: case TOK_MINUSEQ: case TOK_STAREQ: case TOK_SLASHEQ: case TOK_MODEQ: case TOK_LSHEQ: case TOK_RSHEQ: case TOK_ANDEQ: case TOK_XOREQ: case TOK_OREQ:
+    case '=': case TOK_PLUSEQ: case TOK_MINUSEQ: case TOK_STAREQ: case TOK_SLASHEQ: case TOK_MODEQ: case TOK_LSHEQ: case TOK_RSHEQ: case TOK_ANDEQ: case TOK_XOREQ: case TOK_OREQ:
         return PRED_EQ;
-    case TOK_COMMA:
+    case ',':
         return PRED_COMMA;
     }
     return 100;
@@ -1463,9 +1438,9 @@ void ParseAbstractDecl(void);
 
 void ParsePrimaryExpression(void)
 {
-    if (Accept(TOK_LPAREN)) {
+    if (Accept('(')) {
         ParseExpr();
-        Expect(TOK_RPAREN);
+        Expect(')');
     } else if (TokenType == TOK_NUM) {
         CurrentType = VT_LOCLIT | VT_INT;
         CurrentVal  = TokenNumVal;
@@ -1494,7 +1469,7 @@ void ParsePrimaryExpression(void)
         // Handle var arg builtins
         const int func = TokenType;
         GetToken();
-        Expect(TOK_LPAREN);
+        Expect('(');
         int id = ExpectId();
         int vd = Lookup(id);
         if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
@@ -1502,7 +1477,7 @@ void ParsePrimaryExpression(void)
         }
         const int offset = VarDecls[vd].Offset;
         if (func == TOK_VA_START) {
-            Expect(TOK_COMMA);
+            Expect(',');
             id = ExpectId();
             vd = Lookup(id);
             if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) {
@@ -1514,14 +1489,14 @@ void ParsePrimaryExpression(void)
         } else if (func == TOK_VA_END) {
             CurrentType = VT_VOID;
         } else if (func == TOK_VA_ARG) {
-            Expect(TOK_COMMA);
+            Expect(',');
             EmitLoadAx(2, VT_LOCOFF, offset);
             EmitAddRegConst(R_AX, 2);
             EmitStoreAx(2, VT_LOCOFF, offset);
             ParseAbstractDecl();
             CurrentType |= VT_LVAL;
         }
-        Expect(TOK_RPAREN);
+        Expect(')');
     } else {
         HandlePrimaryId(ExpectId());
     }
@@ -1581,7 +1556,7 @@ void ParseAssignmentExpression(void);
 void ParsePostfixExpression(void)
 {
     for (;;) {
-        if (Accept(TOK_LPAREN)) {
+        if (Accept('(')) {
             // Function call
             if (!(CurrentType & VT_FUN)) {
                 Fatal("Not a function");
@@ -1591,7 +1566,7 @@ void ParsePostfixExpression(void)
             const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
             int NumArgs = 0;
             int StackAdj = 0;
-            while (TokenType != TOK_RPAREN) {
+            while (TokenType != ')') {
                 enum { ArgsPerChunk = 4 };
                 if (NumArgs % ArgsPerChunk == 0) {
                     StackAdj += ArgsPerChunk*2;
@@ -1623,11 +1598,11 @@ void ParsePostfixExpression(void)
                 }
                 ++NumArgs;
 
-                if (!Accept(TOK_COMMA)) {
+                if (!Accept(',')) {
                     break;
                 }
             }
-            Expect(TOK_RPAREN);
+            Expect(')');
             EmitCall(Func);
             if (StackAdj) {
                 EmitAdjSp(StackAdj);
@@ -1638,7 +1613,7 @@ void ParsePostfixExpression(void)
                 CurrentType = VT_INT;
             }
             CurrentTypeExtra = Func->TypeExtra;
-        } else if (Accept(TOK_LBRACKET)) {
+        } else if (Accept('[')) {
             LvalToRval();
             if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Expected pointer");
@@ -1650,7 +1625,7 @@ void ParsePostfixExpression(void)
             if (!IsDeadCode)
                 SetPendingPushAx();
             ParseExpr();
-            Expect(TOK_RBRACKET);
+            Expect(']');
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 Check(PendingPushAx || IsDeadCode);
                 PendingPushAx = 0;
@@ -1667,7 +1642,7 @@ void ParsePostfixExpression(void)
             CurrentType      = ResType;
             CurrentTypeExtra = ResExtra;
             Check(!(CurrentType & VT_LOCMASK));
-        } else if (Accept(TOK_DOT)) {
+        } else if (Accept('.')) {
             Check((CurrentType & ~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
             HandleStructMember();
         } else if (Accept(TOK_ARROW)) {
@@ -1696,10 +1671,10 @@ void ParseUnaryExpression(void)
         GetToken();
         ParseUnaryExpression();
         DoIncDecOp(Op, 0);
-    } else if (Op == TOK_AND || Op == TOK_STAR || Op == TOK_PLUS || Op == TOK_MINUS || Op == TOK_TILDE || Op == TOK_NOT) {
+    } else if (Op == '&' || Op == '*' || Op == '+' || Op == '-' || Op == '~' || Op == '!') {
         GetToken();
         ParseCastExpression();
-        if (Op == TOK_AND) {
+        if (Op == '&') {
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("Lvalue required for address-of operator");
             }
@@ -1725,28 +1700,28 @@ void ParseUnaryExpression(void)
         } else {
             LvalToRval();
         }
-        if (Op == TOK_STAR) {
+        if (Op == '*') {
             if (!(CurrentType & VT_PTRMASK)) {
                 Fatal("Pointer required for dereference");
             }
             CurrentType = (CurrentType-VT_PTR1) | VT_LVAL;
-        } else if (Op == TOK_PLUS) {
+        } else if (Op == '+') {
             Check(IsConst || CurrentType == VT_INT);
-        } else if (Op == TOK_MINUS) {
+        } else if (Op == '-') {
             if (IsConst) {
                 CurrentVal = -CurrentVal;
             } else {
                 Check(CurrentType == VT_INT);
                 OutputBytes(0xF7, 0xD8, -1); // NEG AX
             }
-        } else if (Op == TOK_TILDE) {
+        } else if (Op == '~') {
             if (IsConst) {
                 CurrentVal = ~CurrentVal;
             } else {
                 Check(CurrentType == VT_INT);
                 OutputBytes(0xF7, 0xD0, -1); // NOT AX
             }
-        } else if (Op == TOK_NOT) {
+        } else if (Op == '!') {
             if (IsConst) {
                 CurrentVal = !CurrentVal;
             } else if (CurrentType == VT_BOOL) {
@@ -1764,14 +1739,14 @@ void ParseUnaryExpression(void)
         GetToken();
         const int WasDead = IsDeadCode;
         IsDeadCode = 1;
-        if (Accept(TOK_LPAREN)) {
+        if (Accept('(')) {
             if (IsTypeStart()) {
                 ParseAbstractDecl();
                 CurrentVal = SizeofCurrentType();
             } else {
                 ParseAssignmentExpression();
             }
-            Expect(TOK_RPAREN);
+            Expect(')');
         } else {
             ParseUnaryExpression();
         }
@@ -1787,10 +1762,10 @@ void ParseUnaryExpression(void)
 
 void ParseCastExpression(void)
 {
-    if (Accept(TOK_LPAREN)) {
+    if (Accept('(')) {
         if (IsTypeStart()) {
             ParseAbstractDecl();
-            Expect(TOK_RPAREN);
+            Expect(')');
             const int T = CurrentType;
             const int E = CurrentTypeExtra;
             Check(!(T & VT_LOCMASK));
@@ -1805,7 +1780,7 @@ void ParseCastExpression(void)
             }
         } else {
             ParseExpr();
-            Expect(TOK_RPAREN);
+            Expect(')');
             ParsePostfixExpression();
         }
     } else {
@@ -1815,9 +1790,9 @@ void ParseCastExpression(void)
 
 int RelOpToCC(int Op)
 {
-    if (Op == TOK_LT)    return JL;
+    if (Op == '<')       return JL;
     if (Op == TOK_LTEQ)  return JNG;
-    if (Op == TOK_GT)    return JG;
+    if (Op == '>')       return JG;
     if (Op == TOK_GTEQ)  return JNL;
     if (Op == TOK_EQEQ)  return JZ;
     if (Op == TOK_NOTEQ) return JNZ;
@@ -1826,16 +1801,16 @@ int RelOpToCC(int Op)
 
 int RemoveAssign(int Op)
 {
-    if (Op == TOK_PLUSEQ)  return TOK_PLUS;
-    if (Op == TOK_MINUSEQ) return TOK_MINUS;
-    if (Op == TOK_STAREQ)  return TOK_STAR;
-    if (Op == TOK_SLASHEQ) return TOK_SLASH;
-    if (Op == TOK_MODEQ)   return TOK_MOD;
+    if (Op == TOK_PLUSEQ)  return '+';
+    if (Op == TOK_MINUSEQ) return '-';
+    if (Op == TOK_STAREQ)  return '*';
+    if (Op == TOK_SLASHEQ) return '/';
+    if (Op == TOK_MODEQ)   return '%';
     if (Op == TOK_LSHEQ)   return TOK_LSH;
     if (Op == TOK_RSHEQ)   return TOK_RSH;
-    if (Op == TOK_ANDEQ)   return TOK_AND;
-    if (Op == TOK_XOREQ)   return TOK_XOR;
-    if (Op == TOK_OREQ)    return TOK_OR;
+    if (Op == TOK_ANDEQ)   return '&';
+    if (Op == TOK_XOREQ)   return '^';
+    if (Op == TOK_OREQ)    return '|';
     Check(0);
 }
 
@@ -1848,25 +1823,25 @@ void DoBinOp(int Op)
         CurrentType = VT_BOOL;
         CurrentVal  = CC;
         Op = I_CMP;
-    } else if (Op == TOK_PLUS) {
+    } else if (Op == '+') {
         Op = I_ADD;
-    } else if (Op == TOK_MINUS) {
+    } else if (Op == '-') {
         Op = I_SUB;
-    } else if (Op == TOK_STAR) {
+    } else if (Op == '*') {
         // IMUL : F7 /5
         Op = 0xF7;
         RM = MODRM_REG | (5<<3) | R_CX;
-    } else if (Op == TOK_SLASH || Op == TOK_MOD) {
+    } else if (Op == '/' || Op == '%') {
         OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1);
-        if (Op == TOK_MOD) {
+        if (Op == '%') {
             EmitMovRR(R_AX, R_DX);
         }
         return;
-    } else if (Op == TOK_AND) {
+    } else if (Op == '&') {
         Op = I_AND;
-    } else if (Op == TOK_XOR) {
+    } else if (Op == '^') {
         Op = I_XOR;
-    } else if (Op == TOK_OR) {
+    } else if (Op == '|') {
         Op = I_OR;
     } else if (Op == TOK_LSH) {
         Op = 0xd3; // Don't care about |1 below
@@ -1887,24 +1862,24 @@ void DoRhsConstBinOp(int Op)
     if (CC >= 0) {
         CurrentType = VT_BOOL;
         Op = I_CMP;
-    } else if (Op == TOK_PLUS)  {
+    } else if (Op == '+')  {
 Plus:
         EmitAddRegConst(R_AX, CurrentVal);
         return;
-    } else if (Op == TOK_MINUS) {
+    } else if (Op == '-') {
         // Ease optimizations
         CurrentVal = -CurrentVal;
         goto Plus;
-    } else if (Op == TOK_AND) {
+    } else if (Op == '&') {
         Op = I_AND;
-    } else if (Op == TOK_XOR) {
+    } else if (Op == '^') {
         Op = I_XOR;
-    } else if (Op == TOK_OR) {
+    } else if (Op == '|') {
         Op = I_OR;
-    } else if (Op == TOK_STAR) {
+    } else if (Op == '*') {
         EmitScaleAx(CurrentVal);
         return;
-    } else if (Op == TOK_SLASH) {
+    } else if (Op == '/') {
         EmitDivAxConst(CurrentVal);
         return;
     } else {
@@ -1920,29 +1895,29 @@ Plus:
 
 int DoConstBinOp(int Op, int L, int R)
 {
-    if (Op == TOK_PLUS)  return L + R;
-    if (Op == TOK_MINUS) return L - R;
-    if (Op == TOK_STAR)  return L * R;
-    if (Op == TOK_SLASH) return L / R;
-    if (Op == TOK_MOD)   return L % R;
-    if (Op == TOK_AND)   return L & R;
-    if (Op == TOK_XOR)   return L ^ R;
-    if (Op == TOK_OR)    return L | R;
-    if (Op == TOK_LSH)   return L << R;
-    if (Op == TOK_RSH)   return L >> R;
+    if (Op == '+')     return L + R;
+    if (Op == '-')     return L - R;
+    if (Op == '*')     return L * R;
+    if (Op == '/')     return L / R;
+    if (Op == '%')     return L % R;
+    if (Op == '&')     return L & R;
+    if (Op == '^')     return L ^ R;
+    if (Op == '|')     return L | R;
+    if (Op == TOK_LSH) return L << R;
+    if (Op == TOK_RSH) return L >> R;
     Check(0);
 }
 
 int OpCommutes(int Op)
 {
     switch (Op) {
-    case TOK_PLUS:
-    case TOK_STAR:
-    case TOK_EQ:
+    case '+':
+    case '*':
+    case TOK_EQEQ:
     case TOK_NOTEQ:
-    case TOK_AND:
-    case TOK_XOR:
-    case TOK_OR:
+    case '&':
+    case '^':
+    case '|':
         return 1;
     }
     return 0;
@@ -2014,7 +1989,7 @@ void HandleCondOp(void)
         // Handle potentially constant conditions
         const int V = CurrentVal;
         ParseMaybeDead(V);
-        Expect(TOK_COLON);
+        Expect(':');
         ParseMaybeDead(!V);
         return;
     }
@@ -2026,7 +2001,7 @@ void HandleCondOp(void)
     ForceToReg();
     const int LhsType = CurrentType;
     EmitJmp(EndLabel);
-    Expect(TOK_COLON);
+    Expect(':');
     EmitLocalLabel(FalseLabel);
     ParseAssignmentExpression();
     ForceToReg();
@@ -2081,7 +2056,7 @@ void ParseExpr1(int OuterPrecedence)
         }
         GetToken();
 
-        if (Op == TOK_QUESTION) {
+        if (Op == '?') {
             HandleCondOp();
             continue;
         }
@@ -2092,7 +2067,7 @@ void ParseExpr1(int OuterPrecedence)
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("L-value required");
             }
-            if (Op != TOK_EQ)
+            if (Op != '=')
                 Op = RemoveAssign(Op);
             CurrentType &= ~VT_LVAL;
         } else {
@@ -2119,7 +2094,7 @@ void ParseExpr1(int OuterPrecedence)
             }
         } else {
             LEnd = -1;
-            if (!(LhsType & VT_LOCMASK) && Op != TOK_COMMA && !IsDeadCode) {
+            if (!(LhsType & VT_LOCMASK) && Op != ',' && !IsDeadCode) {
                 SetPendingPushAx();
             }
         }
@@ -2135,9 +2110,9 @@ void ParseExpr1(int OuterPrecedence)
         LhsLoc = LhsType & VT_LOCMASK;
         LhsType &= ~VT_LOCMASK;
 
-        if (Op == TOK_COMMA) {
+        if (Op == ',') {
             continue;
-        } else if (Op == TOK_EQ && LhsType == VT_STRUCT) {
+        } else if (Op == '=' && LhsType == VT_STRUCT) {
             // Struct assignment
             Check((CurrentType&~VT_LOCMASK) == (VT_STRUCT|VT_LVAL) && CurrentTypeExtra == LhsTypeExtra);
             Temp = CurrentType & VT_LOCMASK;
@@ -2179,7 +2154,7 @@ void ParseExpr1(int OuterPrecedence)
                 Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
             }
             HandleLhsLvalLoc(LhsLoc);
-            if (Op != TOK_EQ) {
+            if (Op != '=') {
                 Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
                 Temp = CurrentType == (VT_INT|VT_LOCLIT);
                 if (!Temp) {
@@ -2219,7 +2194,7 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 GetVal();
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                if (Op == TOK_PLUS && (LhsType & VT_PTRMASK)) {
+                if (Op == '+' && (LhsType & VT_PTRMASK)) {
                     EmitScaleAx(LhsPointeeSize);
                     CurrentType = LhsType;
                 }
@@ -2243,7 +2218,7 @@ void ParseExpr1(int OuterPrecedence)
                     OutputBytes(I_XCHG_AX | R_CX, -1);
                 DoBinOp(Op);
             }
-            if (Op == TOK_MINUS && (LhsType & VT_PTRMASK)) {
+            if (Op == '-' && (LhsType & VT_PTRMASK)) {
                 EmitDivAxConst(LhsPointeeSize);
                 CurrentType = VT_INT;
             }
@@ -2302,11 +2277,11 @@ void ParseDeclSpecs(void)
                 // TODO: Store and use the enum identifier
                 GetToken();
             }
-            if (Accept(TOK_LBRACE)) {
+            if (Accept('{')) {
                 int EnumVal = 0;
-                while (TokenType != TOK_RBRACE) {
+                while (TokenType != '}') {
                     const int id = ExpectId();
-                    if (Accept(TOK_EQ)) {
+                    if (Accept('=')) {
                         ParseAssignmentExpression();
                         Check(CurrentType == (VT_INT|VT_LOCLIT));
                         EnumVal = CurrentVal;
@@ -2314,12 +2289,12 @@ void ParseDeclSpecs(void)
                     CurrentType = VT_INT|VT_LOCLIT;
                     struct VarDecl* vd = AddVarDecl(id);
                     vd->Offset = EnumVal;
-                    if (!Accept(TOK_COMMA)) {
+                    if (!Accept(',')) {
                         break;
                     }
                     ++EnumVal;
                 }
-                Expect(TOK_RBRACE);
+                Expect('}');
             }
             CurrentType = VT_INT;
         } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
@@ -2340,30 +2315,30 @@ void ParseDeclSpecs(void)
             } else {
                 id |= ID_MAX; // Should never match in above loop
             }
-            if (Accept(TOK_LBRACE) || CurrentTypeExtra < 0) {
+            if (Accept('{') || CurrentTypeExtra < 0) {
                 Check(StructCount < STRUCT_MAX);
                 const int SI = StructCount++;
                 struct StructDecl* SD = &StructDecls[SI];
                 SD->Id = id;
                 struct StructMember** Last = &SD->Members;
-                while (!Accept(TOK_RBRACE)) {
+                while (!Accept('}')) {
                     Check(StructMemCount < STRUCT_MEMBER_MAX);
                     ParseAbstractDecl();
                     int BaseType  = CurrentType;
                     int BaseExtra = CurrentTypeExtra;
-                    while (TokenType != TOK_SEMICOLON) {
+                    while (TokenType != ';') {
                         struct StructMember* SM = &StructMembers[StructMemCount++];
                         ParseDeclarator(&SM->Id);
                         SM->Type      = CurrentType;
                         SM->TypeExtra = CurrentTypeExtra;
                         *Last = SM;
                         Last = &SM->Next;
-                        if (!Accept(TOK_COMMA))
+                        if (!Accept(','))
                             break;
                         CurrentType      = BaseType;
                         CurrentTypeExtra = BaseExtra;
                     }
-                    Expect(TOK_SEMICOLON);
+                    Expect(';');
                 }
                 *Last = 0;
                 CurrentTypeExtra = SI;
@@ -2378,19 +2353,19 @@ void ParseDeclSpecs(void)
 void ParseDeclarator(int* Id)
 {
     // TODO: Could allow type qualifiers (const/volatile) here
-    while (Accept(TOK_STAR)) {
+    while (Accept('*')) {
         CurrentType += VT_PTR1;
     }
     if (Id) {
         *Id = ExpectId();
     }
-    if (Accept(TOK_LBRACKET)) {
+    if (Accept('[')) {
         Check(ArrayCount < ARRAY_MAX);
         struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
         AD->Extra = CurrentTypeExtra;
         int T  = CurrentType | VT_ARRAY;
         int TE = ArrayCount++;
-        if (TokenType != TOK_RBRACKET) {
+        if (TokenType != ']') {
             ParseExpr();
             Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
             AD->Bound = CurrentVal;
@@ -2398,7 +2373,7 @@ void ParseDeclarator(int* Id)
         } else {
             AD->Bound = 0;
         }
-        Expect(TOK_RBRACKET);
+        Expect(']');
         CurrentType      = T;
         CurrentTypeExtra = TE;
     }
@@ -2420,7 +2395,7 @@ struct VarDecl* DoDecl(void)
 struct VarDecl* ParseFirstDecl(void)
 {
     ParseDeclSpecs();
-    if (TokenType == TOK_SEMICOLON)
+    if (TokenType == ';')
         return 0;
     return DoDecl();
 }
@@ -2428,7 +2403,7 @@ struct VarDecl* ParseFirstDecl(void)
 // Remember to reset CurrentType/CurrentTypeExtra before calling
 struct VarDecl* NextDecl(void)
 {
-    if (!Accept(TOK_COMMA))
+    if (!Accept(','))
         return 0;
     return DoDecl();
 }
@@ -2458,7 +2433,7 @@ void ParseStatement(void)
 Redo:
 
     // Get compund statements out of the way to simplify switch handling
-    if (TokenType == TOK_LBRACE) {
+    if (TokenType == '{') {
         ParseCompoundStatement();
         return;
     }
@@ -2477,14 +2452,14 @@ Redo:
             EmitLocalLabel(NextSwitchCase);
             NextSwitchCase = MakeLabel();
             ParseExpr();
-            Expect(TOK_COLON);
+            Expect(':');
             Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
             OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
             OutputWord(CurrentVal);
             EmitJcc(JZ, NextSwitchStmt);
             goto Redo;
         } else if (Accept(TOK_DEFAULT)) {
-            Expect(TOK_COLON);
+            Expect(':');
             Check(SwitchDefault == -1);
             SwitchDefault = NextSwitchStmt;
             goto Redo;
@@ -2496,7 +2471,7 @@ Redo:
         }
     }
 
-    if (Accept(TOK_SEMICOLON)) {
+    if (Accept(';')) {
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
         const int BaseType   = CurrentType & ~VT_PTRMASK;
@@ -2504,7 +2479,7 @@ Redo:
         while (vd) {
             vd->Type |= VT_LOCOFF;
             int size = (SizeofCurrentType()+1)&-2;
-            if (Accept(TOK_EQ)) {
+            if (Accept('=')) {
                 ParseAssignmentExpression();
                 LvalToRval();
                 GetVal();
@@ -2521,9 +2496,9 @@ Redo:
             CurrentTypeExtra = BaseStruct;
             vd = NextDecl();
         }
-        Expect(TOK_SEMICOLON);
+        Expect(';');
     } else if (Accept(TOK_RETURN)) {
-        if (TokenType != TOK_SEMICOLON) {
+        if (TokenType != ';') {
             ParseExpr();
             LvalToRval();
             GetVal();
@@ -2531,15 +2506,15 @@ Redo:
         if (LocalOffset)
             ReturnUsed = 1;
         EmitJmp(ReturnLabel);
-        Expect(TOK_SEMICOLON);
+        Expect(';');
     } else if (Accept(TOK_BREAK)) {
         EmitAdjSp(BStackLevel - LocalOffset);
         EmitJmp(BreakLabel);
-        Expect(TOK_SEMICOLON);
+        Expect(';');
     } else if (Accept(TOK_CONTINUE)) {
         EmitAdjSp(CStackLevel - LocalOffset);
         EmitJmp(ContinueLabel);
-        Expect(TOK_SEMICOLON);
+        Expect(';');
     } else if (Accept(TOK_GOTO)) {
         EmitJmp(GetNamedLabel(ExpectId())->LabelId);
     } else if (Accept(TOK__EMIT)) {
@@ -2549,9 +2524,9 @@ Redo:
     } else if (Accept(TOK_IF)) {
         const int ElseLabel = MakeLabel();
 
-        Accept(TOK_LPAREN);
+        Accept('(');
         DoCond(ElseLabel, 1);
-        Accept(TOK_RPAREN);
+        Accept(')');
         ParseStatement();
         if (Accept(TOK_ELSE)) {
             const int EndLabel  = MakeLabel();
@@ -2568,30 +2543,30 @@ Redo:
         const int EndLabel  = MakeLabel();
         int IterLabel       = CondLabel;
         
-        Expect(TOK_LPAREN);
+        Expect('(');
 
         // Init
-        if (TokenType != TOK_SEMICOLON) {
+        if (TokenType != ';') {
             ParseExpr();
         }
-        Expect(TOK_SEMICOLON);
+        Expect(';');
 
         // Cond
         EmitLocalLabel(CondLabel);
-        if (TokenType != TOK_SEMICOLON) {
+        if (TokenType != ';') {
             DoCond(EndLabel, 1);
         }
-        Expect(TOK_SEMICOLON);
+        Expect(';');
 
         // Iter
-        if (TokenType != TOK_RPAREN) {
+        if (TokenType != ')') {
             EmitJmp(BodyLabel);
             IterLabel  = MakeLabel();
             EmitLocalLabel(IterLabel);
             ParseExpr();
             EmitJmp(CondLabel);
         }
-        Expect(TOK_RPAREN);
+        Expect(')');
 
         EmitLocalLabel(BodyLabel);
         DoLoopStatements(EndLabel, IterLabel);
@@ -2601,9 +2576,9 @@ Redo:
         const int StartLabel = MakeLabel();
         const int EndLabel   = MakeLabel();
         EmitLocalLabel(StartLabel);
-        Expect(TOK_LPAREN);
+        Expect('(');
         DoCond(EndLabel, 1);
-        Expect(TOK_RPAREN);
+        Expect(')');
         DoLoopStatements(EndLabel, StartLabel);
         EmitJmp(StartLabel);
         EmitLocalLabel(EndLabel);
@@ -2615,17 +2590,17 @@ Redo:
         DoLoopStatements(EndLabel, CondLabel);
         EmitLocalLabel(CondLabel);
         Expect(TOK_WHILE);
-        Expect(TOK_LPAREN);
+        Expect('(');
         DoCond(StartLabel, 0);
-        Expect(TOK_RPAREN);
-        Expect(TOK_SEMICOLON);
+        Expect(')');
+        Expect(';');
         EmitLocalLabel(EndLabel);
     } else if (Accept(TOK_SWITCH)) {
-        Expect(TOK_LPAREN);
+        Expect('(');
         ParseExpr();
         LvalToRval();
         GetVal();
-        Expect(TOK_RPAREN);
+        Expect(')');
 
         const int OldBreakLevel  = BStackLevel;
         const int OldBreakLabel  = BreakLabel;
@@ -2668,7 +2643,7 @@ Redo:
         if (TokenType >= TOK_ID) {
             const int id = TokenType - TOK_BREAK;
             GetToken();
-            if (Accept(TOK_COLON)) {
+            if (Accept(':')) {
                 EmitLocalLabel(GetNamedLabel(id)->LabelId);
                 EmitLeaStackVar(R_SP, LocalOffset);
                 goto Redo;
@@ -2680,7 +2655,7 @@ Redo:
         } else {
             ParseExpr();
         }
-        Expect(TOK_SEMICOLON);
+        Expect(';');
     }
 }
 
@@ -2692,8 +2667,8 @@ void ParseCompoundStatement(void)
     const int OldArrayCount     = ArrayCount;
 
     PushScope();
-    Expect(TOK_LBRACE);
-    while (!Accept(TOK_RBRACE)) {
+    Expect('{');
+    while (!Accept('}')) {
         ParseStatement();
     }
     PopScope();
@@ -2731,12 +2706,12 @@ void ParseExternalDefition(void)
         break;
     }
 
-    if (Accept(TOK_LPAREN)) {
+    if (Accept('(')) {
         vd->Type |= VT_FUN | VT_LOCGLOB;
         PushScope();
         int ArgOffset;
         ArgOffset = 4;
-        while (TokenType != TOK_RPAREN) {
+        while (TokenType != ')') {
             if (Accept(TOK_ELLIPSIS))
                 break;
             ParseAbstractDecl();
@@ -2746,12 +2721,12 @@ void ParseExternalDefition(void)
             arg->Type |= VT_LOCOFF;
             arg->Offset = ArgOffset;
             ArgOffset += 2;
-            if (!Accept(TOK_COMMA)) {
+            if (!Accept(',')) {
                 break;
             }
         }
-        Expect(TOK_RPAREN);
-        if (!Accept(TOK_SEMICOLON)) {
+        Expect(')');
+        if (!Accept(';')) {
             Check(!LocalLabelCounter);
             LocalOffset = 0;
             ReturnUsed = 0;
@@ -2779,7 +2754,7 @@ void ParseExternalDefition(void)
     while (vd) {
         vd->Type |= VT_LOCGLOB;
 
-        if (Accept(TOK_EQ)) {
+        if (Accept('=')) {
             ParseAssignmentExpression();
             Check(CurrentType == (VT_INT|VT_LOCLIT)); // Expecct constant expressions
             // TODO: Could save one byte per global char...
@@ -2795,7 +2770,7 @@ void ParseExternalDefition(void)
     }
 
 End:
-    Expect(TOK_SEMICOLON);
+    Expect(';');
 }
 
 void MakeOutputFilename(char* dest, const char* n)
