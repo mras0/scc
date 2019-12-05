@@ -129,7 +129,7 @@ void _start(void)
     char *Args[10]; // Arbitrary limit
     int NumArgs;
 
-    Args[0] = "sas";
+    Args[0] = "scpp";
     NumArgs = 1;
 
     while (*CmdLine) {

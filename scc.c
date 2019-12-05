@@ -30,8 +30,32 @@
 enum { CREATE_FLAGS = 1 }; // Ugly hack
 
 int main(int argc, char** argv);
-int DosCall(int* ax, int bx, int cx, int dx);
-void memset(char* dest, int val, int size);
+
+int DosCall(int* ax, int bx, int cx, int dx)
+{
+    _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
+    _emit 0x8B _emit 0x07            // 8B07              MOV AX,[BX]
+    _emit 0x8B _emit 0x5E _emit 0x06 // 8B5E06            MOV BX,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // 8B4E08            MOV CX,[BP+0x8]
+    _emit 0x8B _emit 0x56 _emit 0x0A // 8B560A            MOV DX,[BP+0xA]
+    _emit 0xCD _emit 0x21            // CD21              INT 0x21
+    _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
+    _emit 0x89 _emit 0x07            // 8907              MOV [BX],AX
+    _emit 0xB8 _emit 0x00 _emit 0x00 // B80000            MOV AX,0x0
+    _emit 0x19 _emit 0xC0            // 19C0              SBB AX,AX
+}
+
+void memset(void* ptr, int val, int size)
+{
+    _emit 0x56                       // PUSH SI
+    _emit 0x57                       // PUSH DI
+    _emit 0x8B _emit 0x7E _emit 0x04 // MOV DI,[BP+0x4]
+    _emit 0x8B _emit 0x46 _emit 0x06 // MOV AX,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
+    _emit 0xF3 _emit 0xAA            // REP STOSB
+    _emit 0x5F                       // POP DI
+    _emit 0x5E                       // POP SI
+}
 
 void exit(int retval)
 {
@@ -121,7 +145,6 @@ void _start(void)
     exit(main(NumArgs, Args));
 }
 #endif
-
 
 enum {
     INBUF_MAX = 1024,
@@ -345,6 +368,10 @@ int NextSwitchCase = -1; // Where to go if we haven't matched
 int NextSwitchStmt;      // Where to go if we've matched (-1 if already emitted)
 int SwitchDefault;       // Optional switch default label
 
+///////////////////////////////////////////////////////////////////////
+// Helper functions
+///////////////////////////////////////////////////////////////////////
+
 int IsDigit(int ch)
 {
     return ch >= '0' && ch <= '9';
@@ -366,6 +393,15 @@ char* CopyStr(char* dst, const char* src)
     while (*src) *dst++ = *src++;
     *dst = 0;
     return dst;
+}
+
+int StrEqual(const char* a, const char* b)
+{
+    while (*a && *b && *a == *b) {
+        ++a;
+        ++b;
+    }
+    return !*a && !*b;
 }
 
 char* CvtHex(char* dest, int n)
@@ -439,15 +475,6 @@ void Printf(const char* format, ...)
     va_end(vl);
 }
 
-int StrEqual(const char* a, const char* b)
-{
-    while (*a && *b && *a == *b) {
-        ++a;
-        ++b;
-    }
-    return !*a && !*b;
-}
-
 #ifdef __SCC__
 int* GetBP(void)
 {
@@ -482,11 +509,346 @@ void Check(int ok)
 #define Check(expr) do { if (!(expr)) { Printf("In %s:%d: ", __FILE__, __LINE__); Fatal(#expr " failed"); } } while (0)
 #endif
 
+
+///////////////////////////////////////////////////////////////////////
+// Tokenizer
+///////////////////////////////////////////////////////////////////////
+
 const char* IdText(int id)
 {
     Check(id >= 0 && id < IdCount);
     return IdBuffer + IdOffset[id];
 }
+
+void NextChar(void)
+{
+    if (InBufCnt == InBufSize) {
+        InBufCnt = 0;
+        InBufSize = read(InFile, InBuf, INBUF_MAX);
+        if (!InBufSize) {
+            CurChar = 0;
+            return;
+        }
+    }
+    CurChar = InBuf[InBufCnt++];
+}
+
+char GetChar(void)
+{
+    if (StoredSlash) {
+        StoredSlash = 0;
+        return '/';
+    }
+    char ch = CurChar;
+    NextChar();
+    return ch;
+}
+
+int TryGetChar(char ch, int t)
+{
+    if (CurChar == ch) {
+        TokenType = t;
+        NextChar();
+        return 1;
+    }
+    return 0;
+}
+
+void SkipLine(void)
+{
+    while (CurChar && CurChar != '\n')
+        NextChar();
+    if (CurChar) NextChar();
+    ++Line;
+}
+
+void SkipWhitespace(void)
+{
+Redo:
+    while (CurChar <= ' ') {
+        if (!CurChar) {
+            return;
+        }
+        if (CurChar == '\n') {
+            ++Line;
+        }
+        NextChar();
+    }
+    if (CurChar == '/') {
+        NextChar();
+        if (CurChar == '/') {
+            SkipLine();
+        } else if (CurChar == '*') {
+            NextChar();
+            int star = 0;
+            while (!star || CurChar != '/') {
+                star = CurChar == '*';
+                NextChar();
+                if (!CurChar)
+                    Fatal("Unterminated comment");
+            }
+            NextChar();
+        } else {
+            StoredSlash = 1;
+            return;
+        }
+        goto Redo;
+    }
+}
+
+char Unescape(void)
+{
+    char ch = GetChar();
+    if (ch == 'n') {
+        return '\n';
+    } else if (ch == 'r') {
+        return '\r';
+    } else if (ch == 't') {
+        return '\t';
+    } else if (ch == '\'') {
+        return '\'';
+    } else if (ch == '"') {
+        return '"';
+    } else if (ch == '\\') {
+        return '\\';
+    } else {
+        Fatal("Unsupported character literal");
+    }
+}
+
+void GetStringLiteral(void)
+{
+    TokenStrLit = Output + CodeAddress + (64 - CODESTART); // Just leave a little head room for code to be outputted before consuming the string literal
+    TokenNumVal = 0;
+
+    char ch;
+    for (;;) {
+        while ((ch = GetChar()) != '"') {
+            if (ch == '\\') {
+                ch = Unescape();
+            }
+            if (!ch) {
+                Fatal("Unterminated string literal");
+            }
+            TokenStrLit[TokenNumVal++] = ch;
+        }
+        SkipWhitespace();
+        if (StoredSlash || CurChar != '"')
+            break;
+        NextChar();
+    }
+    TokenStrLit[TokenNumVal++] = 0;
+    Check(TokenStrLit+TokenNumVal-Output <= OUTPUT_MAX);
+}
+
+void GetToken(void)
+{
+Redo:
+    SkipWhitespace();
+    char ch = GetChar();
+    TokenType = ch;
+    if (ch == '#') {
+        SkipLine();
+        goto Redo;
+    } else if (IsDigit(ch)) {
+        TokenNumVal = ch - '0';
+        int base = 10;
+        if (ch == '0') {
+            base = 8;
+            if (CurChar == 'x' || CurChar == 'X') {
+                base = 16;
+                NextChar();
+            }
+        }
+        for (;;) {
+            if (IsDigit(CurChar)) {
+                CurChar -= '0';
+            } else if (IsAlpha(CurChar)) {
+                CurChar = (CurChar & 0xdf) - ('A'-10);
+            } else {
+                break;
+            }
+            if (CurChar < 0 || CurChar >= base)
+                break;
+            TokenNumVal = TokenNumVal*base + CurChar;
+            NextChar();
+        }
+        TokenType = TOK_NUM;
+        return;
+    } else if (IsAlpha(ch) || ch == '_') {
+        char* pc;
+        char* start;
+        start = pc = &IdBuffer[IdBufferIndex];
+        int Hash = HASHINIT*HASHMUL+ch;
+        *pc++ = ch;
+        while (CurChar == '_' || IsDigit(CurChar) || IsAlpha(CurChar)) {
+            *pc++ = CurChar;
+            Hash = Hash*HASHMUL+CurChar;
+            NextChar();
+        }
+        *pc++ = 0;
+        int Slot = 0;
+        for (;;) {
+            Hash &= ID_HASHMAX-1;
+            TokenType = IdHashTab[Hash];
+            if (TokenType == -1) {
+                Check(IdCount < ID_MAX);
+                TokenType = IdCount++;
+                IdOffset[TokenType] = IdBufferIndex;
+                IdBufferIndex += (int)(pc - start);
+                Check(IdBufferIndex <= IDBUFFER_MAX);
+                IdHashTab[Hash] = TokenType;
+                break;
+            }
+            if (StrEqual(start, IdText(TokenType))) {
+                break;
+            }
+            Hash += 1 + Slot++;
+        }
+        TokenType += TOK_BREAK;
+        return;
+    } else if (ch == '\'') {
+        TokenNumVal = GetChar();
+        if (TokenNumVal == '\\') {
+            TokenNumVal = Unescape();
+        }
+        if (GetChar() != '\'') {
+            Fatal("Invalid character literal");
+        }
+        TokenType = TOK_NUM;
+        return;
+    } else if (ch == '"') {
+        GetStringLiteral();
+        TokenType = TOK_STRLIT;
+        return;
+    }
+    switch (TokenType) {
+    case 0:
+    case '(':
+    case ')':
+    case '{':
+    case '}':
+    case '[':
+    case ']':
+    case ',':
+    case ':':
+    case ';':
+    case '~':
+    case '?':
+        return;
+    case '=':
+        TryGetChar('=', TOK_EQEQ);
+        return;
+    case '!':
+        TryGetChar('=', TOK_NOTEQ);
+        return;
+    case '<':
+        if (TryGetChar('<', TOK_LSH)) {
+            TryGetChar('=', TOK_LSHEQ);
+        } else{
+            TryGetChar('=', TOK_LTEQ);
+        }
+        return;
+    case '>':
+        if (TryGetChar('>', TOK_RSH)) {
+            TryGetChar('=', TOK_RSHEQ);
+        } else {
+            TryGetChar('=', TOK_GTEQ);
+        }
+        return;
+    case '&':
+        if (!TryGetChar('&', TOK_ANDAND)) {
+            TryGetChar('=', TOK_ANDEQ);
+        }
+        return;
+    case '|':
+        if (!TryGetChar('|', TOK_OROR)) {
+            TryGetChar('=', TOK_OREQ);
+        }
+        return;
+    case '^':
+        TryGetChar('=', TOK_XOREQ);
+        return;
+    case '+':
+        if (!TryGetChar('+', TOK_PLUSPLUS)) {
+            TryGetChar('=', TOK_PLUSEQ);
+        }
+        return;
+    case '-':
+        if (!TryGetChar('-', TOK_MINUSMINUS)) {
+            if (!TryGetChar('=', TOK_MINUSEQ))
+                TryGetChar('>', TOK_ARROW);
+        }
+        return;
+    case '*':
+        TryGetChar('=', TOK_STAREQ);
+        return;
+    case '/':
+        TryGetChar('=', TOK_SLASHEQ);
+        return;
+    case '%':
+        TryGetChar('=', TOK_MODEQ);
+        return;
+    case '.':
+        if (CurChar == '.') {
+            GetChar();
+            if (!TryGetChar('.', TOK_ELLIPSIS)) {
+                Fatal("Invalid token ..");
+            }
+        }
+        return;
+    }
+    Fatal("Unknown token encountered");
+}
+
+enum {
+    PRED_EQ = 14,
+    PRED_COMMA,
+};
+
+int OperatorPrecedence(int tok)
+{
+    switch (tok) {
+    case '*': case '/': case '%':
+        return 3;
+    case '+': case '-':
+        return 4;
+    case TOK_LSH: case TOK_RSH:
+        return 5;
+    case '<': case '>': case TOK_LTEQ: case TOK_GTEQ:
+        return 6;
+    case TOK_EQEQ: case TOK_NOTEQ:
+        return 7;
+    case '&':
+        return 8;
+    case '^':
+        return 9;
+    case '|':
+        return 10;
+    case TOK_ANDAND:
+        return 11;
+    case TOK_OROR:
+        return 12;
+    case '?':
+        return 13;
+    case '=': case TOK_PLUSEQ: case TOK_MINUSEQ: case TOK_STAREQ: case TOK_SLASHEQ: case TOK_MODEQ: case TOK_LSHEQ: case TOK_RSHEQ: case TOK_ANDEQ: case TOK_XOREQ: case TOK_OREQ:
+        return PRED_EQ;
+    case ',':
+        return PRED_COMMA;
+    }
+    return 100;
+}
+
+void PrintTokenType(int T)
+{
+    if (T >= TOK_BREAK) Printf("%s ", IdText(T-TOK_BREAK));
+    else if (T > ' ' && T < 128) Printf("%c ", T);
+    else Printf("%d ", T);
+}
+
+///////////////////////////////////////////////////////////////////////
+// Code output
+///////////////////////////////////////////////////////////////////////
 
 enum {
     JO , //  0x0
@@ -915,363 +1277,9 @@ void SetPendingPushAx(void)
     PendingPushAx = 1;
 }
 
-void NextChar(void)
-{
-    if (InBufCnt == InBufSize) {
-        InBufCnt = 0;
-        InBufSize = read(InFile, InBuf, INBUF_MAX);
-        if (!InBufSize) {
-            CurChar = 0;
-            return;
-        }
-    }
-    CurChar = InBuf[InBufCnt++];
-}
-
-char GetChar(void)
-{
-    if (StoredSlash) {
-        StoredSlash = 0;
-        return '/';
-    }
-    char ch = CurChar;
-    NextChar();
-    return ch;
-}
-
-int TryGetChar(char ch, int t)
-{
-    if (CurChar == ch) {
-        TokenType = t;
-        NextChar();
-        return 1;
-    }
-    return 0;
-}
-
-void SkipLine(void)
-{
-    while (CurChar && CurChar != '\n')
-        NextChar();
-    if (CurChar) NextChar();
-    ++Line;
-}
-
-void SkipWhitespace(void)
-{
-Redo:
-    while (CurChar <= ' ') {
-        if (!CurChar) {
-            return;
-        }
-        if (CurChar == '\n') {
-            ++Line;
-        }
-        NextChar();
-    }
-    if (CurChar == '/') {
-        NextChar();
-        if (CurChar == '/') {
-            SkipLine();
-        } else if (CurChar == '*') {
-            NextChar();
-            int star = 0;
-            while (!star || CurChar != '/') {
-                star = CurChar == '*';
-                NextChar();
-                if (!CurChar)
-                    Fatal("Unterminated comment");
-            }
-            NextChar();
-        } else {
-            StoredSlash = 1;
-            return;
-        }
-        goto Redo;
-    }
-}
-
-char Unescape(void)
-{
-    char ch = GetChar();
-    if (ch == 'n') {
-        return '\n';
-    } else if (ch == 'r') {
-        return '\r';
-    } else if (ch == 't') {
-        return '\t';
-    } else if (ch == '\'') {
-        return '\'';
-    } else if (ch == '"') {
-        return '"';
-    } else if (ch == '\\') {
-        return '\\';
-    } else {
-        Fatal("Unsupported character literal");
-    }
-}
-
-void GetStringLiteral(void)
-{
-    TokenStrLit = Output + CodeAddress + (64 - CODESTART); // Just leave a little head room for code to be outputted before consuming the string literal
-    TokenNumVal = 0;
-
-    char ch;
-    for (;;) {
-        while ((ch = GetChar()) != '"') {
-            if (ch == '\\') {
-                ch = Unescape();
-            }
-            if (!ch) {
-                Fatal("Unterminated string literal");
-            }
-            TokenStrLit[TokenNumVal++] = ch;
-        }
-        SkipWhitespace();
-        if (StoredSlash || CurChar != '"')
-            break;
-        NextChar();
-    }
-    TokenStrLit[TokenNumVal++] = 0;
-    Check(TokenStrLit+TokenNumVal-Output <= OUTPUT_MAX);
-}
-
-void GetToken(void)
-{
-Redo:
-    SkipWhitespace();
-    char ch = GetChar();
-    TokenType = ch;
-    if (ch == '#') {
-        SkipLine();
-        goto Redo;
-    } else if (IsDigit(ch)) {
-        TokenNumVal = ch - '0';
-        int base = 10;
-        if (ch == '0') {
-            base = 8;
-            if (CurChar == 'x' || CurChar == 'X') {
-                base = 16;
-                NextChar();
-            }
-        }
-        for (;;) {
-            if (IsDigit(CurChar)) {
-                CurChar -= '0';
-            } else if (IsAlpha(CurChar)) {
-                CurChar = (CurChar & 0xdf) - ('A'-10);
-            } else {
-                break;
-            }
-            if (CurChar < 0 || CurChar >= base)
-                break;
-            TokenNumVal = TokenNumVal*base + CurChar;
-            NextChar();
-        }
-        TokenType = TOK_NUM;
-        return;
-    } else if (IsAlpha(ch) || ch == '_') {
-        char* pc;
-        char* start;
-        start = pc = &IdBuffer[IdBufferIndex];
-        int Hash = HASHINIT*HASHMUL+ch;
-        *pc++ = ch;
-        while (CurChar == '_' || IsDigit(CurChar) || IsAlpha(CurChar)) {
-            *pc++ = CurChar;
-            Hash = Hash*HASHMUL+CurChar;
-            NextChar();
-        }
-        *pc++ = 0;
-        int Slot = 0;
-        for (;;) {
-            Hash &= ID_HASHMAX-1;
-            TokenType = IdHashTab[Hash];
-            if (TokenType == -1) {
-                Check(IdCount < ID_MAX);
-                TokenType = IdCount++;
-                IdOffset[TokenType] = IdBufferIndex;
-                IdBufferIndex += (int)(pc - start);
-                Check(IdBufferIndex <= IDBUFFER_MAX);
-                IdHashTab[Hash] = TokenType;
-                break;
-            }
-            if (StrEqual(start, IdText(TokenType))) {
-                break;
-            }
-            Hash += 1 + Slot++;
-        }
-        TokenType += TOK_BREAK;
-        return;
-    } else if (ch == '\'') {
-        TokenNumVal = GetChar();
-        if (TokenNumVal == '\\') {
-            TokenNumVal = Unescape();
-        }
-        if (GetChar() != '\'') {
-            Fatal("Invalid character literal");
-        }
-        TokenType = TOK_NUM;
-        return;
-    } else if (ch == '"') {
-        GetStringLiteral();
-        TokenType = TOK_STRLIT;
-        return;
-    }
-    switch (TokenType) {
-    case 0:
-    case '(':
-    case ')':
-    case '{':
-    case '}':
-    case '[':
-    case ']':
-    case ',':
-    case ':':
-    case ';':
-    case '~':
-    case '?':
-        return;
-    case '=':
-        TryGetChar('=', TOK_EQEQ);
-        return;
-    case '!':
-        TryGetChar('=', TOK_NOTEQ);
-        return;
-    case '<':
-        if (TryGetChar('<', TOK_LSH)) {
-            TryGetChar('=', TOK_LSHEQ);
-        } else{
-            TryGetChar('=', TOK_LTEQ);
-        }
-        return;
-    case '>':
-        if (TryGetChar('>', TOK_RSH)) {
-            TryGetChar('=', TOK_RSHEQ);
-        } else {
-            TryGetChar('=', TOK_GTEQ);
-        }
-        return;
-    case '&':
-        if (!TryGetChar('&', TOK_ANDAND)) {
-            TryGetChar('=', TOK_ANDEQ);
-        }
-        return;
-    case '|':
-        if (!TryGetChar('|', TOK_OROR)) {
-            TryGetChar('=', TOK_OREQ);
-        }
-        return;
-    case '^':
-        TryGetChar('=', TOK_XOREQ);
-        return;
-    case '+':
-        if (!TryGetChar('+', TOK_PLUSPLUS)) {
-            TryGetChar('=', TOK_PLUSEQ);
-        }
-        return;
-    case '-':
-        if (!TryGetChar('-', TOK_MINUSMINUS)) {
-            if (!TryGetChar('=', TOK_MINUSEQ))
-                TryGetChar('>', TOK_ARROW);
-        }
-        return;
-    case '*':
-        TryGetChar('=', TOK_STAREQ);
-        return;
-    case '/':
-        TryGetChar('=', TOK_SLASHEQ);
-        return;
-    case '%':
-        TryGetChar('=', TOK_MODEQ);
-        return;
-    case '.':
-        if (CurChar == '.') {
-            GetChar();
-            if (!TryGetChar('.', TOK_ELLIPSIS)) {
-                Fatal("Invalid token ..");
-            }
-        }
-        return;
-    }
-    Fatal("Unknown token encountered");
-}
-
-enum {
-    PRED_EQ = 14,
-    PRED_COMMA,
-};
-
-int OperatorPrecedence(int tok)
-{
-    switch (tok) {
-    case '*': case '/': case '%':
-        return 3;
-    case '+': case '-':
-        return 4;
-    case TOK_LSH: case TOK_RSH:
-        return 5;
-    case '<': case '>': case TOK_LTEQ: case TOK_GTEQ:
-        return 6;
-    case TOK_EQEQ: case TOK_NOTEQ:
-        return 7;
-    case '&':
-        return 8;
-    case '^':
-        return 9;
-    case '|':
-        return 10;
-    case TOK_ANDAND:
-        return 11;
-    case TOK_OROR:
-        return 12;
-    case '?':
-        return 13;
-    case '=': case TOK_PLUSEQ: case TOK_MINUSEQ: case TOK_STAREQ: case TOK_SLASHEQ: case TOK_MODEQ: case TOK_LSHEQ: case TOK_RSHEQ: case TOK_ANDEQ: case TOK_XOREQ: case TOK_OREQ:
-        return PRED_EQ;
-    case ',':
-        return PRED_COMMA;
-    }
-    return 100;
-}
-
-int SizeofType(int Type, int Extra)
-{
-    Type &= VT_BASEMASK|VT_PTRMASK|VT_ARRAY;
-    if (Type & VT_ARRAY) {
-        struct ArrayDecl* AD = &ArrayDecls[Extra];
-        Check(AD->Bound);
-        return AD->Bound * SizeofType(Type & ~VT_ARRAY, AD->Extra);
-    } else if (Type == VT_CHAR) {
-        return 1;
-    } else if (Type == VT_STRUCT) {
-        const int IsUnion = StructDecls[Extra].Id & IS_UNION_FLAG;
-        int Size = 0;
-        struct StructMember* SM = StructDecls[Extra].Members;
-        for (; SM; SM = SM->Next) {
-            const int MSize = SizeofType(SM->Type, SM->TypeExtra);
-            if (!IsUnion)
-                Size += MSize;
-            else if (MSize > Size)
-                Size = MSize;
-        }
-        return Size;
-    } else {
-        Check(Type == VT_INT || (Type & VT_PTRMASK));
-        return 2;
-    }
-}
-
-int SizeofCurrentType(void)
-{
-    return SizeofType(CurrentType, CurrentTypeExtra);
-}
-
-void PrintTokenType(int T)
-{
-    if (T >= TOK_BREAK) Printf("%s ", IdText(T-TOK_BREAK));
-    else if (T > ' ' && T < 128) Printf("%c ", T);
-    else Printf("%d ", T);
-}
+///////////////////////////////////////////////////////////////////////
+// Parser/Codegen
+///////////////////////////////////////////////////////////////////////
 
 void Unexpected(void)
 {
@@ -1323,6 +1331,38 @@ int IsTypeStart(void)
         return 1;
     }
     return 0;
+}
+
+int SizeofType(int Type, int Extra)
+{
+    Type &= VT_BASEMASK|VT_PTRMASK|VT_ARRAY;
+    if (Type & VT_ARRAY) {
+        struct ArrayDecl* AD = &ArrayDecls[Extra];
+        Check(AD->Bound);
+        return AD->Bound * SizeofType(Type & ~VT_ARRAY, AD->Extra);
+    } else if (Type == VT_CHAR) {
+        return 1;
+    } else if (Type == VT_STRUCT) {
+        const int IsUnion = StructDecls[Extra].Id & IS_UNION_FLAG;
+        int Size = 0;
+        struct StructMember* SM = StructDecls[Extra].Members;
+        for (; SM; SM = SM->Next) {
+            const int MSize = SizeofType(SM->Type, SM->TypeExtra);
+            if (!IsUnion)
+                Size += MSize;
+            else if (MSize > Size)
+                Size = MSize;
+        }
+        return Size;
+    } else {
+        Check(Type == VT_INT || (Type & VT_PTRMASK));
+        return 2;
+    }
+}
+
+int SizeofCurrentType(void)
+{
+    return SizeofType(CurrentType, CurrentTypeExtra);
 }
 
 void LvalToRval(void)
@@ -2836,34 +2876,6 @@ void AddBuiltins(const char* s)
         }
     } while(ch);
 }
-
-#ifdef __SCC__
-int DosCall(int* ax, int bx, int cx, int dx)
-{
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0x4]
-    _emit I_MOV_RM_R|1          _emit MODRM_BX                       // 8B07              MOV AX,[BX]
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 6 // 8B5E06            MOV BX,[BP+0x6]
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // 8B4E08            MOV CX,[BP+0x8]
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_DX<<3 _emit 10// 8B560A            MOV DX,[BP+0xA]
-    _emit I_INT                 _emit 0x21                           // CD21              INT 0x21
-    _emit I_MOV_RM_R|1          _emit MODRM_BP_DISP8|R_BX<<3 _emit 4 // 8B5E04            MOV BX,[BP+0x4]
-    _emit I_MOV_R_RM|1          _emit MODRM_BX                       // 8907              MOV [BX],AX
-    _emit I_MOV_R_IMM16|R_AX    _emit 0x00                   _emit 0 // B80000            MOV AX,0x0
-    _emit I_SBB|1               _emit MODRM_REG                      // 19C0              SBB AX,AX
-}
-
-void memset(char* dst, int val, int size)
-{
-    _emit I_PUSH|R_SI                                       // PUSH SI
-    _emit I_PUSH|R_DI                                       // PUSH DI
-    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_DI<<3 _emit 4 // MOV DI,[BP+0x4]
-    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_AX<<3 _emit 6 // MOV AX,[BP+0x6]
-    _emit I_MOV_RM_R|1 _emit MODRM_BP_DISP8|R_CX<<3 _emit 8 // MOV CX,[BP+0x8]
-    _emit I_REP        _emit I_STOSB                        // REP STOSB
-    _emit I_POP|R_DI                                        // POP DI
-    _emit I_POP|R_SI                                        // POP SI
-}
-#endif
 
 int main(int argc, char** argv)
 {
