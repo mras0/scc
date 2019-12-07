@@ -11,6 +11,7 @@ set(TESTS
     struct
     switch
     union
+    bug
     )
 
 set(TEST_CMDS "echo off\nscc.com scc.c\nscc.com scc.c\n")

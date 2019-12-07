@@ -1617,6 +1617,7 @@ void ParsePostfixExpression(void)
             while (TokenType != ')') {
                 enum { ArgsPerChunk = 4 };
                 if (NumArgs % ArgsPerChunk == 0) {
+                    FlushPushAx();
                     StackAdj += ArgsPerChunk*2;
                     LocalOffset -= ArgsPerChunk*2;
                     EmitAdjSp(-ArgsPerChunk*2);
