@@ -29,7 +29,7 @@ add_custom_target(test_scpp
     COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_SOURCE_DIR}/scpp.c" .
     COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_SOURCE_DIR}/sas.c" .
     COMMAND ${RM} ${TEST_CLEAN}
-    COMMAND dosbox runtests.bat
+    COMMAND ${DOSBOX} runtests.bat
     ${TEST_COMPARE}
     DEPENDS scc_com ${TEST_SOURCES} "${PROJECT_SOURCE_DIR}/scpp.c" "${PROJECT_SOURCE_DIR}/sas.c"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}

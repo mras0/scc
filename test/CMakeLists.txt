@@ -8,6 +8,14 @@ else()
     set(DIFF diff)
 endif()
 
+add_executable(dossim dossim.c)
+
+find_program(DOSBOX dosbox)
+if (NOT DOSBOX)
+    message(WARNING "DOSBox not found - Using simulator.")
+    set(DOSBOX $<TARGET_FILE:dossim> "$<TARGET_FILE:sim86>")
+endif()
+
 add_subdirectory(scc)
 add_subdirectory(scpp)
 add_subdirectory(sas)

@@ -36,7 +36,7 @@ add_custom_target(test_scc
     COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_BINARY_DIR}/scc.com" ./
     COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_SOURCE_DIR}/scc.c" ./
     COMMAND ${RM} ${TEST_CLEAN}
-    COMMAND dosbox runtests.bat
+    COMMAND ${DOSBOX} runtests.bat
     ${SIM_CMDS}
     DEPENDS scc_com ${TEST_SOURCES} "${PROJECT_SOURCE_DIR}/scc.c"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
