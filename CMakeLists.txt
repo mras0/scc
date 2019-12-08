@@ -33,4 +33,16 @@ SCC(scc)
 SCC(scpp)
 SCC(sas)
 
+# Simulator
+add_executable(sim86 sim86.c lib.h)
+add_custom_command(
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sim86.com"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/lib.h" .
+        COMMAND $<TARGET_FILE:scpp> "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c" ./sim86.i
+        COMMAND $<TARGET_FILE:scc>  sim86.i sim86.com
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c" "${CMAKE_CURRENT_SOURCE_DIR}/lib.h"
+    )
+add_custom_target(sim86_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sim86.com")
+
 add_subdirectory(test)

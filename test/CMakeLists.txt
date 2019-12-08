@@ -11,9 +11,10 @@ endif()
 add_subdirectory(scc)
 add_subdirectory(scpp)
 add_subdirectory(sas)
+add_subdirectory(sim86)
 
 add_custom_target(test
-    DEPENDS test_scc test_scpp test_sas
+    DEPENDS test_scc test_scpp test_sas test_sim86
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT Running tests
     )
