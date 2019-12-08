@@ -147,7 +147,7 @@ void _start(void)
 #endif
 
 enum {
-    INBUF_MAX = 1024,
+    INBUF_MAX = 512,
     SCOPE_MAX = 16,
     VARDECL_MAX = 400,
     ID_MAX = 550,
@@ -155,7 +155,7 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6180, // Warning: Very close to limit. Need at least 580 bytes of stack.
+    OUTPUT_MAX = 0x6380, // Warning: Very close to limit. Need at least 580 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -644,15 +644,11 @@ void GetToken(void)
 {
 Redo:
     SkipWhitespace();
-    char ch = GetChar();
-    TokenType = ch;
-    if (ch == '#') {
-        SkipLine();
-        goto Redo;
-    } else if (IsDigit(ch)) {
-        TokenNumVal = ch - '0';
+    TokenType = GetChar();
+    if (IsDigit(TokenType)) {
+        TokenNumVal = TokenType - '0';
         int base = 10;
-        if (ch == '0') {
+        if (!TokenNumVal) {
             base = 8;
             if (CurChar == 'x' || CurChar == 'X') {
                 base = 16;
@@ -667,19 +663,17 @@ Redo:
             } else {
                 break;
             }
-            if (CurChar < 0 || CurChar >= base)
-                break;
             TokenNumVal = TokenNumVal*base + CurChar;
             NextChar();
         }
         TokenType = TOK_NUM;
         return;
-    } else if (IsAlpha(ch) || ch == '_') {
+    } else if (IsAlpha(TokenType) || TokenType == '_') {
         char* pc;
         char* start;
         start = pc = &IdBuffer[IdBufferIndex];
-        int Hash = HASHINIT*HASHMUL+ch;
-        *pc++ = ch;
+        int Hash = HASHINIT*HASHMUL+TokenType;
+        *pc++ = TokenType;
         while (CurChar == '_' || IsDigit(CurChar) || IsAlpha(CurChar)) {
             *pc++ = CurChar;
             Hash = Hash*HASHMUL+CurChar;
@@ -706,7 +700,12 @@ Redo:
         }
         TokenType += TOK_BREAK;
         return;
-    } else if (ch == '\'') {
+    }
+    switch (TokenType) {
+    case '#':
+        SkipLine();
+        goto Redo;
+    case '\'':
         TokenNumVal = GetChar();
         if (TokenNumVal == '\\') {
             TokenNumVal = Unescape();
@@ -716,12 +715,10 @@ Redo:
         }
         TokenType = TOK_NUM;
         return;
-    } else if (ch == '"') {
+    case '"':
         GetStringLiteral();
         TokenType = TOK_STRLIT;
         return;
-    }
-    switch (TokenType) {
     case 0:
     case '(':
     case ')':
@@ -1879,11 +1876,11 @@ void DoBinOp(int Op)
     if (CC >= 0) {
         CurrentType = VT_BOOL;
         CurrentVal  = CC;
-        Op = I_CMP;
+        Op = I_CMP|1;
     } else if (Op == '+') {
-        Op = I_ADD;
+        Op = I_ADD|1;
     } else if (Op == '-') {
-        Op = I_SUB;
+        Op = I_SUB|1;
     } else if (Op == '*') {
         // IMUL : F7 /5
         Op = 0xF7;
@@ -1895,13 +1892,13 @@ void DoBinOp(int Op)
         }
         return;
     } else if (Op == '&') {
-        Op = I_AND;
+        Op = I_AND|1;
     } else if (Op == '^') {
-        Op = I_XOR;
+        Op = I_XOR|1;
     } else if (Op == '|') {
-        Op = I_OR;
+        Op = I_OR|1;
     } else if (Op == TOK_LSH) {
-        Op = 0xd3; // Don't care about |1 below
+        Op = 0xd3;
         RM = MODRM_REG|SHROT_SHL<<3;
     } else if (Op == TOK_RSH) {
         Op = 0xd3;
@@ -1909,7 +1906,7 @@ void DoBinOp(int Op)
     } else {
         Check(0);
     }
-    OutputBytes(Op|1, RM, -1);
+    OutputBytes(Op, RM, -1);
 }
 
 void DoRhsConstBinOp(int Op)
@@ -1918,7 +1915,7 @@ void DoRhsConstBinOp(int Op)
 
     if (CC >= 0) {
         CurrentType = VT_BOOL;
-        Op = I_CMP;
+        Op = I_CMP|5;
     } else if (Op == '+')  {
 Plus:
         EmitAddRegConst(R_AX, CurrentVal);
@@ -1928,11 +1925,11 @@ Plus:
         CurrentVal = -CurrentVal;
         goto Plus;
     } else if (Op == '&') {
-        Op = I_AND;
+        Op = I_AND|5;
     } else if (Op == '^') {
-        Op = I_XOR;
+        Op = I_XOR|5;
     } else if (Op == '|') {
-        Op = I_OR;
+        Op = I_OR|5;
     } else if (Op == '*') {
         EmitScaleAx(CurrentVal);
         return;
@@ -1944,7 +1941,7 @@ Plus:
         DoBinOp(Op);
         return;
     }
-    OutputBytes(Op|5, -1);
+    OutputBytes(Op, -1);
     OutputWord(CurrentVal);
     if (CC >= 0)
         CurrentVal = CC;
