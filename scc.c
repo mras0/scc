@@ -155,8 +155,7 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    // Was 0x6400 and 0x6300...
-    OUTPUT_MAX = 0x6180, // Warning: Close to limit. Need at least 512 bytes of stack.
+    OUTPUT_MAX = 0x6180, // Warning: Very close to limit. Need at least 580 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -1026,6 +1025,15 @@ void EmitGlobalLabel(struct VarDecl* vd)
     vd->Offset = CodeAddress;
     IsDeadCode = 0;
     DoFixups(vd->Ref, vd->Type & VT_FUN);
+
+
+    char* Buf = &IdBuffer[IdBufferIndex];
+    char* P = CvtHex(Buf, CodeAddress);
+    *P++ = ' ';
+    P = CopyStr(P, IdText(vd->Id));
+    *P++ = '\r';
+    *P++ = '\n';
+    write(MapFile, Buf, (int)(P - Buf));
 }
 
 void EmitGlobalRef(struct VarDecl* vd)
@@ -2784,14 +2792,6 @@ void ParseExternalDefition(void)
             ReturnUsed = 0;
             ReturnLabel = MakeLabel();
             BreakLabel = ContinueLabel = -1;
-
-            char* Buf = &IdBuffer[IdBufferIndex];
-            char* P = CvtHex(Buf, CodeAddress);
-            *P++ = ' ';
-            P = CopyStr(P, IdText(vd->Id));
-            *P++ = '\r';
-            *P++ = '\n';
-            write(MapFile, Buf, (int)(P - Buf));
 
             EmitGlobalLabel(vd);
             EmitPush(R_BP);
