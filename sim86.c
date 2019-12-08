@@ -669,6 +669,18 @@ int main(int argc, char** argv)
                 reg[R_DX] = reg[R_AX]&0x8000 ? -1 : 0;
                 if (verbose) printf("CWD");
                 break;
+            case 0xA4:
+                {
+                    assert(rep == 0xF3);
+                    if (verbose) printf("REP MOVSB");
+                    while (reg[R_CX]) {
+                        Write8(SR_ES, reg[R_DI], Read8(SR_DS, reg[R_SI]));
+                        reg[R_CX] -= 1;
+                        reg[R_DI] += 1;
+                        reg[R_SI] += 1;
+                    }
+                }
+                break;
             case 0xAA:
                 {
                     assert(rep == 0xF3);
@@ -704,6 +716,20 @@ int main(int argc, char** argv)
                 break;
             case 0xCD:
                 INT();
+                break;
+            case 0xD1:
+                {
+                    ModRM();
+                    int v = ReadRM();
+                    // TODO: Handle flags
+                    switch (modrm>>3&7) {
+                    case 7: // SAR R/M16, 1
+                        WriteRM(v >> 1);
+                        break;
+                    default:
+                        Fatal("TODO: D1/%d", modrm>>3&7);
+                    }
+                }
                 break;
             case 0xD3:
                 {
