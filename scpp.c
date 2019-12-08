@@ -333,6 +333,7 @@ struct File {
     int BufPos;
     int BufSize;
     int OldLine;
+    char LastChar;
     char Buf[FILE_BUF_SIZE];
 };
 
@@ -1307,6 +1308,7 @@ void HandleInclude(void)
         Filename = CurTok.Text;
     }
     RawGetToken();
+    CurFile->LastChar = CurrentChar;
     CurTok.Type = TOK_NEWLINE;
 
     if (Debug) printf("Entering '%s' (%d)\n", Filename, NumFiles);
@@ -1424,7 +1426,7 @@ void PPMain(void)
             if (NumFiles == 1) {
                 break;
             }
-            ReadChar();
+            CurrentChar = CurFile->LastChar;
             StartOfLine = 1;
             GetToken();
             continue;
