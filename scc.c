@@ -156,7 +156,7 @@ enum {
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
     // Was 0x6400 and 0x6300...
-    OUTPUT_MAX = 0x6200, // Warning: Close to limit. Need at least 512 bytes of stack.
+    OUTPUT_MAX = 0x6180, // Warning: Close to limit. Need at least 512 bytes of stack.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -2122,9 +2122,6 @@ void ParseExpr1(int OuterPrecedence)
         } else {
             LvalToRval();
         }
-        LhsType        = CurrentType;
-        LhsTypeExtra   = CurrentTypeExtra;
-        LhsVal         = CurrentVal;
 
         if (Op == TOK_ANDAND || Op == TOK_OROR) {
             LEnd = MakeLabel();
@@ -2139,14 +2136,20 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
+                EmitMovRImm(R_AX, Op != TOK_ANDAND);
                 EmitJcc(JZ | (Op != TOK_ANDAND), LEnd);
             }
         } else {
             LEnd = -1;
-            if (!(LhsType & VT_LOCMASK) && Op != ',' && !IsDeadCode) {
+            if (CurrentType == VT_BOOL)
+                GetVal();
+            if (!(CurrentType & VT_LOCMASK) && Op != ',' && !IsDeadCode) {
                 SetPendingPushAx();
             }
         }
+        LhsType        = CurrentType;
+        LhsTypeExtra   = CurrentTypeExtra;
+        LhsVal         = CurrentVal;
 
         ParseCastExpression(); // RHS
         for (;;) {
