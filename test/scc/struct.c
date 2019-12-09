@@ -214,6 +214,26 @@ void with_array() {
     assert_eq(CurFile->p, 0);
 }
 
+struct B2_A {
+    int b;
+    int e;
+} b2_a[1];
+
+int b2_st(int t, int e) {
+    if (t & 1) {
+        struct B2_A* a = &b2_a[e];
+        return b2_st(t & ~1, a->e) * a->b;
+    } else {
+        return 2;
+    }
+}
+
+void bug2() {
+    b2_a[0].b = 4;
+    b2_a[0].e = 0;
+    assert_eq(b2_st(3, 0), 8);
+}
+
 void main() {
     bug1();
     assign();
@@ -226,4 +246,5 @@ void main() {
     swap();
     cast();
     with_array();
+    bug2();
 }

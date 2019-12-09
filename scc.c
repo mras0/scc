@@ -1250,8 +1250,15 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
 void FlushSpAdj(void)
 {
     int Amm = PendingSpAdj;
-    PendingSpAdj = 0;
-    EmitAddRegConst(R_SP, Amm);
+    if (Amm) {
+        // Preserve state of PendingPushAx and avoid emitting
+        // a push before adjust the stack
+        const int ppa = PendingPushAx;
+        PendingPushAx = 0;
+        PendingSpAdj = 0;
+        EmitAddRegConst(R_SP, Amm);
+        PendingPushAx = ppa;
+    }
 }
 
 void FlushPushAx(void)
