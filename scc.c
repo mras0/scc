@@ -595,6 +595,16 @@ Redo:
     }
 }
 
+int GetDigit(void)
+{
+    if (IsDigit(CurChar)) {
+        return CurChar - '0';
+    } else if (IsAlpha(CurChar)) {
+        return (CurChar & 0xdf) - ('A'-10);
+    }
+    return 256;
+}
+
 char Unescape(void)
 {
     char ch = GetChar();
@@ -610,6 +620,13 @@ char Unescape(void)
         return '"';
     } else if (ch == '\\') {
         return '\\';
+    } else if (ch == 'x') {
+        int x = GetDigit()<<4;
+        NextChar();
+        x |= GetDigit();
+        NextChar();
+        Check(!(x&0xff00));
+        return x;
     } else {
         Fatal("Unsupported character literal");
     }
@@ -623,11 +640,11 @@ void GetStringLiteral(void)
     char ch;
     for (;;) {
         while ((ch = GetChar()) != '"') {
-            if (ch == '\\') {
-                ch = Unescape();
-            }
             if (!ch) {
                 Fatal("Unterminated string literal");
+            }
+            if (ch == '\\') {
+                ch = Unescape();
             }
             TokenStrLit[TokenNumVal++] = ch;
         }
@@ -656,14 +673,11 @@ Redo:
             }
         }
         for (;;) {
-            if (IsDigit(CurChar)) {
-                CurChar -= '0';
-            } else if (IsAlpha(CurChar)) {
-                CurChar = (CurChar & 0xdf) - ('A'-10);
-            } else {
+            int dig = GetDigit();
+            if (dig >= base) {
                 break;
             }
-            TokenNumVal = TokenNumVal*base + CurChar;
+            TokenNumVal = TokenNumVal*base + dig;
             NextChar();
         }
         TokenType = TOK_NUM;
