@@ -15,7 +15,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    char line[256];
+    char line[120];
     char cmdline[256];
     while (fgets(line, sizeof(line), fp)) {
         int l = (int)strlen(line);

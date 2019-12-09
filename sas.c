@@ -488,7 +488,7 @@ int HashStr(const char* Str)
 
 int AddId(const char* Str)
 {
-    int l = strlen(Str) + 1;
+    int l = (int)strlen(Str) + 1;
     assert(IdBufferIndex + l <= IDBUFFER_MAX);
     memcpy(IdBuffer + IdBufferIndex, Str, l);
     IdOffset[IdCount] = IdBufferIndex;
@@ -1648,7 +1648,6 @@ int main(int argc, char** argv)
                 L->Val = VirtAddress;
                 if (global) {
                     // Retire local labels
-                    int i;
                     for (i = 0; i < IdCount - (TOK_USER_ID-TOK_ID); ++i) {
                         if (Labels[i].Type && *IdText(i+TOK_USER_ID) == '.') {
                             Labels[i].Type = LABEL_NONE;

@@ -4,8 +4,9 @@ project(scc C)
 if (MSVC)
     set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "Supported build configurations" FORCE)
 
-	# warning C4715: 'XXX': not all control paths return a value
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /Zi /Zo /sdl /W4 /wd4715")
+	# warning C4715: 'X': not all control paths return a value
+    # warning C4244: 'X': conversion from 'T' to 'U', possible loss of data
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /Zi /Zo /sdl /W4 /wd4715 /wd4244")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG")
     add_definitions("-D_CRT_SECURE_NO_WARNINGS")
 else()
