@@ -914,11 +914,12 @@ enum {
 };
 
 enum {
-    MODRM_DISP16   = 0x06, // [disp16]
-    MODRM_SI       = 0x04, // [SI]
-    //MODRM_BX       = 0x07, // [BX]
-    MODRM_BP_DISP8 = 0x46, // [BP+disp8]
-    MODRM_REG      = 0xC0,
+    MODRM_DISP16    = 0x06, // [disp16]
+    MODRM_SI        = 0x04, // [SI]
+    //MODRM_BX        = 0x07, // [BX]
+    MODRM_BP_DISP8  = 0x46, // [BP+disp8]
+    MODRM_BP_DISP16 = 0x86, // [BP+disp16]
+    MODRM_REG       = 0xC0,
 };
 
 enum {
@@ -1118,15 +1119,21 @@ void EmitGlobalRefRel(struct VarDecl* vd)
 void EmitModrm(int Inst, int R, int Loc, int Val)
 {
     R <<= 3;
-    if (Loc == VT_LOCOFF) {
+    switch (Loc) {
+    case VT_LOCOFF:
         OutputBytes(Inst, MODRM_BP_DISP8|R, Val & 0xff, -1);
-    } else if (Loc == VT_LOCGLOB) {
+        if (Val != (char)Val && !IsDeadCode) {
+            Output[CodeAddress-(CODESTART+2)] += MODRM_BP_DISP16-MODRM_BP_DISP8;
+            OutputBytes((Val >> 8) & 0xff, -1);
+        }
+        return;
+    case VT_LOCGLOB:
         OutputBytes(Inst, MODRM_DISP16|R, -1);
         EmitGlobalRef(&VarDecls[Val]);
-    } else {
-        if (Loc) Fail();
-        OutputBytes(Inst, MODRM_SI|R, -1);
+        return;
     }
+    if (Loc) Fail();
+    OutputBytes(Inst, MODRM_SI|R, -1);
 }
 
 void EmitLoadAx(int Size, int Loc, int Val)
@@ -1217,11 +1224,6 @@ void EmitMovRImm(int r, int val)
     OutputWord(val);
 }
 
-void EmitLeaStackVar(int r, int off)
-{
-    OutputBytes(I_LEA, MODRM_BP_DISP8 | r<<3, off & 0xff, -1);
-}
-
 void EmitScaleAx(int Scale)
 {
     if (Scale & (Scale-1)) {
@@ -1298,7 +1300,7 @@ void EmitJcc(int cc, int l)
 void EmitLoadAddr(int Reg, int Loc, int Val)
 {
     if (Loc == VT_LOCOFF) {
-        EmitLeaStackVar(Reg, Val);
+        EmitModrm(I_LEA, Reg, VT_LOCOFF, Val);
     } else if (Loc == VT_LOCGLOB) {
         OutputBytes(I_MOV_R_IMM16 | Reg, -1);
         EmitGlobalRef(&VarDecls[Val]);
@@ -1569,7 +1571,7 @@ void HandleVarArg(void)
         id = ExpectId();
         vd = VarLookup[id];
         if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) Fail();
-        EmitLeaStackVar(R_AX, VarDecls[vd].Offset);
+        EmitModrm(I_LEA, R_AX, VT_LOCOFF, VarDecls[vd].Offset);
         EmitStoreAx(2, VT_LOCOFF, offset);
     } else if (func == TOK_VA_ARG) {
         Expect(',');
@@ -1699,8 +1701,8 @@ void ParsePostfixExpression(void)
                         PendingSpAdj -= ArgsPerChunk*2;
                         if (NumArgs) {
                             // Move arguments to new stack top
-                            EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
-                            EmitLeaStackVar(R_DI, LocalOffset);
+                            EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgsPerChunk*2);
+                            EmitModrm(I_LEA, R_DI, VT_LOCOFF, LocalOffset);
                             EmitMovRImm(R_CX, NumArgs);
                             OutputBytes(I_REP, I_MOVSW, -1);
                         }
@@ -2847,7 +2849,7 @@ Redo:
         GetToken();
         if (Accept(':')) {
             EmitLocalLabel(GetNamedLabel(id)->LabelId);
-            EmitLeaStackVar(R_SP, LocalOffset);
+            EmitModrm(I_LEA, R_SP, VT_LOCOFF, LocalOffset);
             goto Redo;
         } else {
             HandlePrimaryId(id);
