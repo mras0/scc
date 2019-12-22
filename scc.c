@@ -1375,8 +1375,7 @@ void LvalToRval(void)
 
         if (CurrentType & VT_ARRAY) {
             // Decay array
-            CurrentType &= ~VT_ARRAY;
-            CurrentType += VT_PTR1;
+            CurrentType = (CurrentType & ~VT_ARRAY) + VT_PTR1;
             CurrentTypeExtra = ArrayDecls[CurrentTypeExtra].Extra;
             if (loc)
                 EmitLoadAddr(R_AX, loc, CurrentVal);
@@ -1732,17 +1731,9 @@ void ParseUnaryExpression(void)
             }
             const int loc = CurrentType & VT_LOCMASK;
             if (loc) {
-                if (loc == VT_LOCOFF) {
-                    EmitLeaStackVar(R_AX, CurrentVal);
-                } else if (loc == VT_LOCGLOB) {
-                    OutputBytes(I_MOV_R_IMM16, -1);
-                    EmitGlobalRef(&VarDecls[CurrentVal]);
-                } else {
-                    Check(0);
-                }
-                CurrentType &= ~VT_LOCMASK;
+                EmitLoadAddr(R_AX, loc, CurrentVal);
             }
-            CurrentType = (CurrentType&~VT_LVAL) + VT_PTR1;
+            CurrentType = (CurrentType&~(VT_LVAL|VT_LOCMASK)) + VT_PTR1;
             return;
         }
 
