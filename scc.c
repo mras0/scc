@@ -2907,7 +2907,6 @@ void ParseExternalDefition(void)
 
     CurrentType = vd->Type &= ~VT_STATIC;
 
-    // Check for definition of previous forward declaration
     if (Accept('(')) {
         vd->Type |= VT_FUN | VT_LOCGLOB;
         // Make room for "late globals"

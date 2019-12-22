@@ -71,6 +71,19 @@ const char* filename;
 int stack_low = 0xffff;
 int file_size;
 int do_profile;
+
+struct StackFrame {
+    int bp;
+    int ip;
+};
+
+struct Stack {
+    struct StackFrame frames[50];
+    int depth;
+};
+
+struct Stack max_stack;
+
 #endif
 
 #ifdef __SCC__
@@ -632,6 +645,20 @@ void DoExit(int ec)
             if (entries[i].Total)
                 printf("%llu;%s\n", entries[i].Total, entries[i].Id);
         }
+        printf("\nMax stack\n");
+        printf("\nBP;Return address;Size;Symbol\n");
+        for (int i = 0; i < max_stack.depth; ++i) {
+            struct StackFrame* f = &max_stack.frames[i];
+            for (entry = 0; entry < num_entries; ++entry) {
+                if (entries[entry].Addr > f->ip) {
+                    --entry;
+                    break;
+                }
+            }
+            const struct E* e = &entries[entry];
+            const int LastBP = i + 1 < max_stack.depth ? max_stack.frames[i+1].bp : 65536;
+            printf("0x%4X;0x%04X;%d;%s+0x%X\n", f->bp, f->ip, LastBP-f->bp, e->Id, f->ip - e->Addr);
+        }
     }
 #endif
     exit(ec);
@@ -686,6 +713,26 @@ void INT(void)
         Fatal("TODO: INT 0x21/AH=%02X", func);
     }
 }
+
+#ifdef PROFILING
+#define READSS(off) (mem[MAKEADDR(SR_SS, (off))]&0xff)|mem[MAKEADDR(SR_SS, (off)+1)]<<8
+
+struct Stack RecordStack(void)
+{
+    struct Stack s;
+    s.depth = 0;
+    int sip = TRIM(ip);
+    for (int bp = TRIM(reg[R_BP]); bp && s.depth < sizeof(s.frames)/sizeof(*s.frames);) {
+        struct StackFrame* f = &s.frames[s.depth++];
+        f->bp = bp;
+        f->ip = sip;
+        sip = TRIM(READSS(bp+2));
+        bp  = TRIM(READSS(bp));
+    }
+    return s;
+}
+#undef READSS
+#endif
 
 int main(int argc, char** argv)
 {
@@ -746,8 +793,10 @@ int main(int argc, char** argv)
         if (do_profile) {
             cycles = 0;
             reg[R_SP]=TRIM(reg[R_SP]);
-            if (reg[R_SP] && reg[R_SP] < stack_low)
+            if (reg[R_SP] && reg[R_SP] < stack_low) {
                 stack_low = reg[R_SP];
+                max_stack = RecordStack();
+            }
         }
 #endif
         if (verbose) printf("%04X ", TRIM(ip));
