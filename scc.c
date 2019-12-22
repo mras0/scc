@@ -347,6 +347,7 @@ struct VarDecl {
 };
 
 int CodeAddress = CODESTART;
+char* OutPtr;
 int BssSize;
 
 int MapFile;
@@ -648,7 +649,7 @@ char Unescape(void)
 
 void GetStringLiteral(void)
 {
-    TokenStrLit = Output + CodeAddress + (64 - CODESTART); // Just leave a little head room for code to be outputted before consuming the string literal
+    TokenStrLit = &OutPtr[CodeAddress + 64]; // Just leave a little head room for code to be outputted before consuming the string literal
     TokenNumVal = 0;
 
     for (;;) {
@@ -948,11 +949,10 @@ int EmitChecks(void);
 void OutputBytes(int first, ...)
 {
     if (EmitChecks()) return;
-    char* o = Output - CODESTART;
     va_list vl;
     va_start(vl, first);
     do {
-        o[CodeAddress++] = first;
+        OutPtr[CodeAddress++] = first;
     } while ((first = va_arg(vl, int)) != -1);
     va_end(vl);
     Check(CodeAddress <= OUTPUT_MAX+CODESTART);
@@ -998,7 +998,7 @@ void DoFixups(int r, int relative)
             o = r + 2;
             f -= o;
         }
-        c = Output + r - CODESTART;
+        c = &OutPtr[r];
         r = (c[0]&0xff)|c[1]<<8;
         // Is this a uselss jump we can avoid? (Too cumbersome if we already resolved fixups at this address)
         if (CodeAddress == o && LastFixup != CodeAddress) {
@@ -2982,6 +2982,7 @@ int main(int argc, char** argv)
     MakeOutputFilename(argv[2] ? argv[2] : argv[1], ".map");
     MapFile = OpenOutput();
 
+    OutPtr = Output - CODESTART;
     memset(IdHashTab, -1, sizeof(IdHashTab));
     memset(VarLookup, -1, sizeof(VarLookup));
 
