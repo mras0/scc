@@ -362,7 +362,7 @@ int Line = 1;
 int TokenType;
 int TokenNumVal;
 char* TokenStrLit;
-int OperatorPrecedence;
+char OperatorPrecedence;
 
 char IdBuffer[IDBUFFER_MAX];
 int IdBufferIndex;
@@ -748,9 +748,6 @@ Redo:
     }
 
     switch (TokenType) {
-    case '#':
-        SkipLine();
-        goto Redo;
     case '\'':
         TokenNumVal = GetChar();
         if (TokenNumVal == '\\') {
@@ -854,6 +851,9 @@ Redo:
             }
         }
         return;
+    case '#':
+        SkipLine();
+        goto Redo;
     }
     Fatal("Unknown token encountered");
 }
@@ -2207,13 +2207,29 @@ void ParseExpr1(int OuterPrecedence)
             }
             HandleLhsLvalLoc(LhsLoc);
             if (Op != '=') {
-                Check(LhsType == VT_INT || (LhsType & (VT_PTR1|VT_CHAR))); // For pointer types only += and -= should be allowed, and only support char* beacause we're lazy
                 Temp = CurrentType == (VT_INT|VT_LOCLIT);
+                if (Size == 2) {
+                    int Inst = GetSimpleALU(Op);
+                    if (Inst) {
+                        if (Temp) {
+                            EmitModrm(I_ALU_RM16_IMM16, Inst>>3, LhsLoc, LhsVal);
+                            OutputWord(CurrentVal);
+                        } else {
+                            GetVal();
+                            EmitModrm(Inst, R_AX, LhsLoc, LhsVal);
+                            if (!LhsLoc)
+                                EmitMovRR(R_AX, R_BX);
+                        }
+                        CurrentType = LhsType | LhsLoc | VT_LVAL;
+                        CurrentVal = LhsVal;
+                        continue;
+                    }
+                }
                 if (!Temp) {
                     Check(CurrentType == VT_INT);
                     EmitMovRR(R_CX, R_AX);
                 }
-                EmitLoadAx(2, LhsLoc, LhsVal);
+                EmitLoadAx(Size, LhsLoc, LhsVal);
                 if (Temp) {
                     DoRhsConstBinOp(Op);
                     CurrentType &= ~VT_LOCMASK;
