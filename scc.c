@@ -704,29 +704,30 @@ Redo:
     NextChar();
     OperatorPrecedence = PRED_STOP;
 
-    if (TokenType < '0') {
-    } else if (TokenType <= '9') {
-        TokenNumVal = TokenType - '0';
-        int base = 10;
-        if (!TokenNumVal) {
-            base = 8;
-            if (CurChar == 'x' || CurChar == 'X') {
-                base = 16;
+    if (TokenType < 'A') {
+        if (TokenType < '0') {
+        } else if (TokenType <= '9') {
+            TokenNumVal = TokenType - '0';
+            int base = 10;
+            if (!TokenNumVal) {
+                base = 8;
+                if (CurChar == 'x' || CurChar == 'X') {
+                    base = 16;
+                    NextChar();
+                }
+            }
+            for (;;) {
+                int dig = GetDigit();
+                if (dig >= base) {
+                    break;
+                }
+                TokenNumVal = TokenNumVal*base + dig;
                 NextChar();
             }
+            TokenType = TOK_NUM;
+            return;
         }
-        for (;;) {
-            int dig = GetDigit();
-            if (dig >= base) {
-                break;
-            }
-            TokenNumVal = TokenNumVal*base + dig;
-            NextChar();
-        }
-        TokenType = TOK_NUM;
-        return;
-    } else if (TokenType < 'A') {
-    } else if (TokenType <= 'Z') {
+    } else if ((TokenType & 0xDF) <= 'Z') {
     Identifier: ;
         char* start = &IdBuffer[IdBufferIndex];
         char* pc = start;
@@ -759,10 +760,6 @@ Redo:
         }
         TokenType += TOK_BREAK;
         return;
-    } else if (TokenType < 'a') {
-        if (TokenType == '_') goto Identifier;
-    } else if (TokenType <= 'z') {
-        goto Identifier;
     }
 
     switch (TokenType) {
@@ -848,6 +845,8 @@ Redo:
         OperatorPrecedence = 3;
         TryGetChar('=', TOK_MODEQ, PRED_EQ);
         return;
+    case '_':
+        goto Identifier;
     case '.':
         if (CurChar == '.') {
             NextChar();
