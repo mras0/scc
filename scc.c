@@ -749,21 +749,7 @@ Redo:
     }
 
     switch (TokenType) {
-    case '\'':
-        TokenNumVal = GetChar();
-        if (TokenNumVal == '\\') {
-            TokenNumVal = Unescape();
-        }
-        if (GetChar() != '\'') {
-            Fatal("Invalid character literal");
-        }
-        TokenType = TOK_NUM;
-        return;
-    case '"':
-        GetStringLiteral();
-        TokenType = TOK_STRLIT;
-        return;
-    case 0:
+    case ';':
     case '(':
     case ')':
     case '{':
@@ -771,18 +757,18 @@ Redo:
     case '[':
     case ']':
     case ':':
-    case ';':
     case '~':
+    case 0:
+        return;
+    case '=':
+        OperatorPrecedence = PRED_EQ;
+        TryGetChar('=', TOK_EQEQ, 7);
         return;
     case ',':
         OperatorPrecedence = PRED_COMMA;
         return;
     case '?':
         OperatorPrecedence = 13;
-        return;
-    case '=':
-        OperatorPrecedence = PRED_EQ;
-        TryGetChar('=', TOK_EQEQ, 7);
         return;
     case '!':
         TryGetChar('=', TOK_NOTEQ, 7);
@@ -851,6 +837,20 @@ Redo:
                 break;
             }
         }
+        return;
+    case '\'':
+        TokenNumVal = GetChar();
+        if (TokenNumVal == '\\') {
+            TokenNumVal = Unescape();
+        }
+        if (GetChar() != '\'') {
+            Fatal("Invalid character literal");
+        }
+        TokenType = TOK_NUM;
+        return;
+    case '"':
+        GetStringLiteral();
+        TokenType = TOK_STRLIT;
         return;
     case '#':
         SkipLine();
