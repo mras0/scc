@@ -1514,22 +1514,15 @@ void HandleVarArg(void)
     Expect('(');
     int id = ExpectId();
     int vd = VarLookup[id];
-    if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
-        Fatal("Invalid va_list");
-    }
+    Check(vd >= 0 && VarDecls[vd].Type == (VT_LOCOFF|VT_CHAR|VT_PTR1));
     const int offset = VarDecls[vd].Offset;
     if (func == TOK_VA_START) {
         Expect(',');
         id = ExpectId();
         vd = VarLookup[id];
-        if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) {
-            Fatal("Invalid argument to va_start");
-        }
+        Check(vd >= 0 && (VarDecls[vd].Type & VT_LOCMASK) == VT_LOCOFF);
         EmitLeaStackVar(R_AX, VarDecls[vd].Offset);
         EmitStoreAx(2, VT_LOCOFF, offset);
-        CurrentType = VT_VOID;
-    } else if (func == TOK_VA_END) {
-        CurrentType = VT_VOID;
     } else if (func == TOK_VA_ARG) {
         Expect(',');
         EmitLoadAx(2, VT_LOCOFF, offset);
