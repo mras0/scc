@@ -37,7 +37,6 @@ enum {
 };
 
 enum {
-    DEFAULT_SEGMENT = 0x1000,
     LOAD_OFFSET     = 0x100,
 };
 
@@ -46,14 +45,16 @@ int sreg[4];
 int ip;
 int flags;
 #ifndef __SCC__
-char mem[65536];
+char mem[1024*1024];
+enum { DEFAULT_SEGMENT = 0x2000 };
 #else
 int memseg;
 #endif
 
 int modrm;
 int addr;
-int dsize;
+char dsize;
+char seg;
 char rmtext[16];
 
 int verbose;
@@ -75,6 +76,7 @@ int do_profile;
 #define TRIM(x) x
 #else
 #define TRIM(x) ((x)&0xffff)
+#define MAKEADDR(sr, off) ((TRIM(sreg[sr])*16+TRIM(off))&0xfffff)
 #endif
 
 void PrintState(void);
@@ -104,6 +106,18 @@ const char* RegName(int r)
     case R_BP: return dsize ? "BP" : "CH";
     case R_SI: return dsize ? "SI" : "DH";
     case R_DI: return dsize ? "DI" : "BH";
+    }
+}
+
+const char* SRegName(int sr)
+{
+    switch (sr) {
+    default:
+        assert(0);
+    case SR_ES: return "ES";
+    case SR_CS: return "CS";
+    case SR_SS: return "SS";
+    case SR_DS: return "DS";
     }
 }
 
@@ -171,13 +185,6 @@ void FarPoke(int seg, int off, int val)
     _emit 0x88 _emit 0x07              // MOV [BX], AL
     _emit 0x1F                         // POP DS
 }
-#else
-void CheckMem(int sr, int off)
-{
-    if (sreg[sr] != DEFAULT_SEGMENT || off < 0 || off >= (int)sizeof(mem)) {
-        Fatal("Out of bounds memory access: %04X:%04X\n", sreg[sr], off);
-    }
-}
 #endif
 
 
@@ -188,11 +195,9 @@ int Read8(int sr, int off)
 #endif
 
 #ifdef __SCC__
-    return FarPeek(memseg, off);
+    return FarPeek(sreg[sr], off);
 #else
-    off = TRIM(off);
-    CheckMem(sr, off);
-    return mem[off] & 0xff;
+    return mem[MAKEADDR(sr, off)] & 0xff;
 #endif
 }
 
@@ -208,11 +213,9 @@ void Write8(int sr, int off, int val)
 #endif
 
 #ifdef __SCC__
-    FarPoke(memseg, off, val);
+    FarPoke(sreg[sr], off, val);
 #else
-    off = TRIM(off);
-    CheckMem(sr, off);
-    mem[off] = (char)val;
+    mem[MAKEADDR(sr, off)] = (char)val;
 #endif
 }
 
@@ -242,6 +245,8 @@ void ModRM(void)
         if ((modrm & 7) == 6) { // Pure disp16
             addr += Imm16();
             if (verbose) sprintf(rmtext, "[0x%04X]", addr);
+            if (seg == -1)
+                seg = SR_DS;
             return;
         }
         break;
@@ -252,31 +257,42 @@ void ModRM(void)
         addr += Imm16();
         break;
     case 3:
-        strcpy(rmtext, RegName(modrm&7));
+        if (verbose) strcpy(rmtext, RegName(modrm&7));
         return;
     }
     if (verbose) {
+        char sr[4];
+        sr[0] = 0;
+        if (seg != -1) {
+            sr[0] = "ECSD"[seg];
+            sr[1] = 'S';
+            sr[2] = ':';
+            sr[3] = 0;
+        }
         switch (modrm&7) {
-        case 0: sprintf(rmtext, "[BX+SI%+d]", addr);break;
-        case 1: sprintf(rmtext, "[BX+DI%+d]", addr);break;
-        case 2: sprintf(rmtext, "[BP+SI%+d]", addr);break;
-        case 3: sprintf(rmtext, "[BP+DI%+d]", addr);break;
-        case 4: sprintf(rmtext, "[SI%+d]", addr);   break;
-        case 5: sprintf(rmtext, "[DI%+d]", addr);   break;
-        case 6: sprintf(rmtext, "[BP%+d]", addr);   break;
-        case 7: sprintf(rmtext, "[BX%+d]", addr);   break;
+        case 0: sprintf(rmtext, "[%sBX+SI%+d]", sr, addr); break;
+        case 1: sprintf(rmtext, "[%sBX+DI%+d]", sr, addr); break;
+        case 2: sprintf(rmtext, "[%sBP+SI%+d]", sr, addr); break;
+        case 3: sprintf(rmtext, "[%sBP+DI%+d]", sr, addr); break;
+        case 4: sprintf(rmtext, "[%sSI%+d]", sr, addr);    break;
+        case 5: sprintf(rmtext, "[%sDI%+d]", sr, addr);    break;
+        case 6: sprintf(rmtext, "[%sBP%+d]", sr, addr);    break;
+        case 7: sprintf(rmtext, "[%sBX%+d]", sr, addr);    break;
         }
     }
+    int sr = SR_DS;
     switch (modrm&7) {
     case 0: addr += reg[R_BX] + reg[R_SI]; break;
     case 1: addr += reg[R_BX] + reg[R_DI]; break;
-    case 2: addr += reg[R_BP] + reg[R_SI]; break;
-    case 3: addr += reg[R_BP] + reg[R_DI]; break;
+    case 2: addr += reg[R_BP] + reg[R_SI]; sr = SR_SS; break;
+    case 3: addr += reg[R_BP] + reg[R_DI]; sr = SR_SS; break;
     case 4: addr += reg[R_SI]; break;
     case 5: addr += reg[R_DI]; break;
-    case 6: addr += reg[R_BP]; break;
+    case 6: addr += reg[R_BP]; sr = SR_SS; break;
     case 7: addr += reg[R_BX]; break;
     }
+    if (seg == -1)
+        seg = sr;
 }
 
 int ReadReg(int r)
@@ -307,7 +323,8 @@ int ReadRM(void)
     if (modrm>>6==3) {
         return ReadReg(modrm&7);
     }
-    return dsize ? Read16(SR_DS, addr) : Read8(SR_DS, addr);
+    assert(seg != -1);
+    return dsize ? Read16(seg, addr) : Read8(seg, addr);
 }
 
 void WriteRM(int val)
@@ -316,10 +333,11 @@ void WriteRM(int val)
         WriteReg(modrm&7, val);
         return;
     }
+    assert(seg != -1);
     if (dsize)
-        Write16(SR_DS, addr, val);
+        Write16(seg, addr, val);
     else
-        Write8(SR_DS, addr, val);
+        Write8(seg, addr, val);
 }
 
 void DoPush(int val)
@@ -427,7 +445,7 @@ int ReadToMem(int fd, int off, int size)
     _emit 0x0E // PUSH CS
     _emit 0x1F // POP DS
 #else
-    return read(fd, mem+off, size);
+    return read(fd, mem+MAKEADDR(SR_DS, off), size);
 #endif
 }
 
@@ -441,7 +459,7 @@ int WriteFromMem(int fd, int off, int size)
     _emit 0x0E // PUSH CS
     _emit 0x1F // POP DS
 #else
-    return write(fd, mem+off, size);
+    return write(fd, mem+MAKEADDR(SR_DS, off), size);
 #endif
 }
 
@@ -664,7 +682,10 @@ int main(int argc, char** argv)
     }
 #ifdef __SCC__
     memseg = GetDS() + 0x1000;
+#else
+    const int memseg = DEFAULT_SEGMENT;
 #endif
+    sreg[0] = sreg[1] = sreg[2] = sreg[3] = memseg;
 
     int argi = 1;
     for (; argv[argi]; ++argi) {
@@ -681,13 +702,13 @@ int main(int argc, char** argv)
     if (!argv[argi])
         goto Usage;
 
-    sreg[0] = sreg[1] = sreg[2] = sreg[3] = DEFAULT_SEGMENT;
 #ifdef PROFILING
     filename = argv[argi];
 #endif
     ReadFile(argv[argi]);
 
     Write16(SR_CS, 0, 0x20CD);
+    Write16(SR_CS, 2, memseg + 0x1000);
     reg[R_SP] = 0;
     int p = 0;
     int i;
@@ -704,26 +725,24 @@ int main(int argc, char** argv)
     for (;;) {
 #ifdef PROFILING
         const int orig_ip = TRIM(ip);
-        cycles = 0;
-        reg[R_SP]=TRIM(reg[R_SP]);
-        if (reg[R_SP] && reg[R_SP] < stack_low)
-            stack_low = reg[R_SP];
+        if (do_profile) {
+            cycles = 0;
+            reg[R_SP]=TRIM(reg[R_SP]);
+            if (reg[R_SP] && reg[R_SP] < stack_low)
+                stack_low = reg[R_SP];
+        }
 #endif
         if (verbose) printf("%04X ", TRIM(ip));
 
         modrm = -1;
         addr = 0;
         dsize = 1;
+        seg = -1;
 
         int rep = 0;
 
     Restart: ;
         const int inst = ReadIByte();
-
-        if (inst == 0xF3) {
-            rep = inst;
-            goto Restart;
-        }
 
         if (inst < 0x40) {
             const int type = inst&6;
@@ -740,8 +759,22 @@ int main(int argc, char** argv)
                 modrm = 0xc0;
                 DoOp(op, reg[R_AX], Imm);
                 if (verbose) printf("%s A%c, 0x%04X", OpName(op), dsize?'X':'L', Imm);
+            } else if (type == 6) {
+                if (inst < 0x26) {
+                    const int sr = inst>>3;
+                    if (verbose) printf("%s %s", inst&1?"POP":"PUSH", SRegName(sr));
+                    if (inst&1)
+                        sreg[sr] = DoPop();
+                    else
+                        DoPush(sreg[sr]);
+                } else {
+                    assert(!(inst&1));
+                    seg = (inst-0x26)>>3;
+                    if (verbose) printf("%s: ", SRegName(seg));
+                    goto Restart;
+                }
             } else {
-                Fatal("TODO: %02X", inst);
+                goto Unhandled;
             }
         } else if (inst >= 0x40 && inst < 0x48) {
             int r = inst - 0x40;
@@ -792,12 +825,24 @@ int main(int argc, char** argv)
                 dsize = inst&1;
                 MOV(inst&2);
                 break;
+            case 0x8C:
+                ModRM();
+                assert((modrm>>3&7) < 4);
+                if (verbose) printf("MOV %s, %s\n", rmtext, SRegName(modrm>>3&7));
+                WriteRM(sreg[modrm>>3&7]);
+                break;
             case 0x8D:
                 {
                     ModRM();
                     if (verbose) printf("LEA %s, %s", RegName(modrm>>3&7), rmtext);
                     reg[modrm>>3&7] = addr;
                 }
+                break;
+            case 0x8E:
+                ModRM();
+                assert((modrm>>3&7) < 4);
+                if (verbose) printf("MOV %s, %s\n", SRegName(modrm>>3&7), rmtext);
+                sreg[modrm>>3&7] = ReadRM();
                 break;
             case 0x98:
                 reg[R_AX] = (char)reg[R_AX];
@@ -952,6 +997,9 @@ int main(int argc, char** argv)
             case 0xEB:
                 JMP((char)ReadIByte());
                 break;
+            case 0xF3:
+                rep = inst;
+                goto Restart;
             case 0xF7:
                 {
                     ModRM();
@@ -1004,14 +1052,17 @@ int main(int argc, char** argv)
                 }
                 break;
             default:
+            Unhandled:
                 Fatal("Unimplemented/invalid instruction %02X", inst);
             }
         }
         if (verbose)
             PrintState();
 #ifdef PROFILING
-        total_cycles += cycles;
-        counts[orig_ip] += cycles;
+        if (do_profile) {
+            total_cycles += cycles;
+            counts[orig_ip] += cycles;
+        }
 #endif
     }
 }
