@@ -381,6 +381,7 @@ void ALUOp(int op, int swap)
     int rmval = ReadRM();
 
     if (swap) {
+        modrm = 0xc0|r; // Need to write to register
         DoOp(op, rval, rmval);
         if (verbose) printf("%s %s, %s", OpName(op), RegName(r), rmtext);
     } else {

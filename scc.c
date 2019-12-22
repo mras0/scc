@@ -1861,22 +1861,39 @@ int RemoveAssign(int Op)
     Check(0);
 }
 
+int GetSimpleALU(int Op)
+{
+    switch (Op) {
+    case '+': return I_ADD|1;
+    case '-': return I_SUB|1;
+    case '&': return I_AND|1;
+    case '^': return I_XOR|1;
+    case '|': return I_OR|1;
+    }
+    int CC = RelOpToCC(Op);
+    if (CC >= 0)
+        return I_CMP | 1 | CC<<8;
+    return 0;
+}
+
+void FinishOp(int Inst)
+{
+    if (Inst >>= 8) {
+        CurrentType = VT_BOOL;
+        CurrentVal  = Inst;
+    }
+}
+
 // Emit: AX <- AX 'OP' CX, Must preserve BX.
 void DoBinOp(int Op)
 {
+    int Inst = GetSimpleALU(Op);
     int RM = MODRM_REG|R_CX<<3;
-    int CC = RelOpToCC(Op);
-    if (CC >= 0) {
-        CurrentType = VT_BOOL;
-        CurrentVal  = CC;
-        Op = I_CMP|1;
-    } else if (Op == '+') {
-        Op = I_ADD|1;
-    } else if (Op == '-') {
-        Op = I_SUB|1;
-    } else if (Op == '*') {
+    if (Inst)
+        goto HasInst;
+    if (Op == '*') {
         // IMUL : F7 /5
-        Op = 0xF7;
+        Inst = 0xF7;
         RM = MODRM_REG | (5<<3) | R_CX;
     } else if (Op == '/' || Op == '%') {
         OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1);
@@ -1884,60 +1901,53 @@ void DoBinOp(int Op)
             EmitMovRR(R_AX, R_DX);
         }
         return;
-    } else if (Op == '&') {
-        Op = I_AND|1;
-    } else if (Op == '^') {
-        Op = I_XOR|1;
-    } else if (Op == '|') {
-        Op = I_OR|1;
     } else if (Op == TOK_LSH) {
-        Op = 0xd3;
+        Inst = 0xd3;
         RM = MODRM_REG|SHROT_SHL<<3;
     } else if (Op == TOK_RSH) {
-        Op = 0xd3;
+        Inst = 0xd3;
         RM = MODRM_REG|SHROT_SAR<<3;
     } else {
         Check(0);
     }
-    OutputBytes(Op, RM, -1);
+HasInst:
+    OutputBytes(Inst, RM, -1);
+    FinishOp(Inst);
+}
+
+void DoRhsLvalBinOp(int Op)
+{
+    const int Loc = CurrentType & VT_LOCMASK;
+    int Inst = GetSimpleALU(Op);
+    if (!Inst) {
+        OutputBytes(I_XCHG_AX|R_CX, -1);
+        EmitLoadAx(2, Loc, CurrentVal);
+        OutputBytes(I_XCHG_AX|R_CX, -1);
+        DoBinOp(Op);
+        return;
+    }
+    EmitModrm(Inst|3, R_AX, Loc, CurrentVal);
+    FinishOp(Inst);
 }
 
 void DoRhsConstBinOp(int Op)
 {
-    int CC = RelOpToCC(Op);
+    switch (Op) {
+    case '+': EmitAddRegConst(R_AX, CurrentVal); return;
+    case '-': EmitAddRegConst(R_AX, -CurrentVal); return;
+    case '*': EmitScaleAx(CurrentVal); return;
+    case '/': EmitDivAxConst(CurrentVal); return;
+    }
 
-    if (CC >= 0) {
-        CurrentType = VT_BOOL;
-        Op = I_CMP|5;
-    } else if (Op == '+')  {
-Plus:
-        EmitAddRegConst(R_AX, CurrentVal);
-        return;
-    } else if (Op == '-') {
-        // Ease optimizations
-        CurrentVal = -CurrentVal;
-        goto Plus;
-    } else if (Op == '&') {
-        Op = I_AND|5;
-    } else if (Op == '^') {
-        Op = I_XOR|5;
-    } else if (Op == '|') {
-        Op = I_OR|5;
-    } else if (Op == '*') {
-        EmitScaleAx(CurrentVal);
-        return;
-    } else if (Op == '/') {
-        EmitDivAxConst(CurrentVal);
-        return;
+    int Inst = GetSimpleALU(Op);
+    if (Inst) {
+        OutputBytes(Inst|5, -1);
+        OutputWord(CurrentVal);
+        FinishOp(Inst);
     } else {
         EmitMovRImm(R_CX, CurrentVal);
         DoBinOp(Op);
-        return;
     }
-    OutputBytes(Op, -1);
-    OutputWord(CurrentVal);
-    if (CC >= 0)
-        CurrentVal = CC;
 }
 
 int DoConstBinOp(int Op, int L, int R)
@@ -2232,34 +2242,44 @@ void ParseExpr1(int OuterPrecedence)
                     CurrentVal *= LhsPointeeSize;
                     CurrentType = LhsType;
                 }
+RhsConst:
                 DoRhsConstBinOp(Op);
             } else {
-                GetVal();
-                Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                if (Op == '+' && LhsPointeeSize) {
-                    EmitScaleAx(LhsPointeeSize);
-                    CurrentType = LhsType;
-                }
                 Temp = OpCommutes(Op);
                 if (LhsLoc == VT_LOCLIT) {
                     Check(LhsType == VT_INT);
+                    GetVal();
                     if (Temp) {
                         CurrentVal = LhsVal;
-                        DoRhsConstBinOp(Op);
-                        continue;
+                        goto RhsConst;
                     } else {
                         EmitMovRImm(R_CX, LhsVal);
                     }
                 } else {
                     Check(LhsType == VT_INT || LhsPointeeSize);
-                    EmitPop(R_CX);
+                    if (Op == '+' && LhsPointeeSize) {
+                        GetVal();
+                        EmitScaleAx(LhsPointeeSize);
+                        CurrentType = LhsType;
+                    } else if (PendingPushAx && !(CurrentType & VT_ARRAY)) {
+                        if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
+                            Check(CurrentType&VT_LVAL);
+                            PendingPushAx = 0;
+                            DoRhsLvalBinOp(Op);
+                            CurrentType &= ~(VT_LOCMASK|VT_LVAL);
+                            goto CheckSub;
+                        }
+                    }
+                    GetVal();
                     Check(!PendingPushAx);
+                    EmitPop(R_CX);
                     LocalOffset += 2;
                 }
                 if (!Temp)
                     OutputBytes(I_XCHG_AX | R_CX, -1);
                 DoBinOp(Op);
             }
+CheckSub:
             if (Op == '-' && LhsPointeeSize) {
                 EmitDivAxConst(LhsPointeeSize);
                 CurrentType = VT_INT;
