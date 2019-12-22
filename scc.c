@@ -1480,8 +1480,8 @@ struct VarDecl* AddLateGlobalVar(int Id)
 
 void HandlePrimaryId(int id)
 {
-    const int vd = VarLookup[id];
-    if (vd < 0) {
+    const int idx = VarLookup[id];
+    if (idx < 0) {
         // Lookup failed. Assume function returning int.
         CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
         CurrentTypeExtra = 0;
@@ -1493,19 +1493,15 @@ void HandlePrimaryId(int id)
         }
         return;
     }
-    CurrentType      = VarDecls[vd].Type;
-    CurrentTypeExtra = VarDecls[vd].TypeExtra;
-    CurrentVal       = VarDecls[vd].Offset;
+    struct VarDecl* vd = &VarDecls[idx];
+    CurrentType      = vd->Type;
+    CurrentVal       = vd->Offset;
     if (CurrentType == (VT_LOCLIT | VT_INT)) {
         return;
     }
-    const int Loc = CurrentType & VT_LOCMASK;
-    if (Loc != VT_LOCOFF) {
-        Check(Loc == VT_LOCGLOB);
-        CurrentVal = vd;
-        if (CurrentType & VT_FUN) {
-            return;
-        }
+    CurrentTypeExtra = vd->TypeExtra;
+    if ((CurrentType & VT_LOCMASK) == VT_LOCGLOB) {
+        CurrentVal = idx;
     }
     CurrentType |= VT_LVAL;
 }
@@ -1645,7 +1641,7 @@ void ParsePostfixExpression(void)
                 // Function call
                 Check((CurrentType & (VT_FUN|VT_LOCMASK)) == (VT_FUN|VT_LOCGLOB));
                 struct VarDecl* Func = &VarDecls[CurrentVal];
-                const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
+                const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK|VT_LVAL);
                 int NumArgs = 0;
                 int StackAdj = 0;
                 while (TokenType != ')') {
@@ -1827,7 +1823,7 @@ void ParseUnaryExpression(void)
             Unexpected();
         }
         return;
-        case TOK_SIZEOF:
+    case TOK_SIZEOF:
         {
             GetToken();
             const int WasDead = IsDeadCode;
