@@ -535,9 +535,8 @@ void Fatal(const char* Msg)
 
 void Check(int ok)
 {
-    if (!ok) {
-        Fatal("Check failed");
-    }
+    if (ok) return;
+    Fatal("Check failed");
 }
 
 #ifndef __SCC__
@@ -2377,19 +2376,26 @@ void ParseDeclSpecs(void)
     // Could check if legal type, but we want to keep the code small...
     CurrentType = VT_INT;
     for (;;) {
-        if (Accept(TOK_VOID))
+        switch (TokenType) {
+        case TOK_VOID:
             CurrentType = VT_VOID;
-        else if (Accept(TOK_CHAR))
+            break;
+        case TOK_CHAR:
             CurrentType = VT_CHAR;
-        else if (Accept(TOK_INT))
+            break;
+        case TOK_INT:
             CurrentType = VT_INT;
-        else if (Accept(TOK_VA_LIST))
+            break;
+        case TOK_VA_LIST:
             CurrentType = VT_CHAR | VT_PTR1;
-        else if (Accept(TOK_CONST))   // Ignore but accept const for now
-            ;
-        else if (Accept(TOK_STATIC))
+            break;
+        case TOK_CONST: // Ignore but accept const for now
+            break;
+        case TOK_STATIC:
             Storage |= VT_STATIC;
-        else if (Accept(TOK_ENUM)) {
+            break;
+        case TOK_ENUM:
+            GetToken();
             if (TokenType >= TOK_ID) {
                 // TODO: Store and use the enum identifier
                 GetToken();
@@ -2416,58 +2422,64 @@ void ParseDeclSpecs(void)
                 --IgnoreRedef;
             }
             CurrentType = VT_INT;
-        } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
-            int id = 0;
-            if (TokenType == TOK_UNION)
-                id = IS_UNION_FLAG;
-            GetToken();
-            CurrentTypeExtra = -1;
-            if (TokenType >= TOK_ID) {
-                id |= ExpectId();
-                int i;
-                for (i = StructCount - 1; i >= 0; --i) {
-                    if (StructDecls[i].Id == id) {
-                        CurrentTypeExtra = i;
-                        break;
-                    }
-                }
-            } else {
-                id |= ID_MAX; // Should never match in above loop
-            }
-            if (Accept('{') || CurrentTypeExtra < 0) {
-                Check(StructCount < STRUCT_MAX);
-                const int SI = StructCount++;
-                struct StructDecl* SD = &StructDecls[SI];
-                SD->Id = id;
-                struct StructMember** Last = &SD->Members;
-                while (!Accept('}')) {
-                    Check(StructMemCount < STRUCT_MEMBER_MAX);
-                    ParseAbstractDecl();
-                    int BaseType  = CurrentType;
-                    int BaseExtra = CurrentTypeExtra;
-                    while (TokenType != ';') {
-                        struct StructMember* SM = &StructMembers[StructMemCount++];
-                        ParseDeclarator(&SM->Id);
-                        SM->Type      = CurrentType;
-                        SM->TypeExtra = CurrentTypeExtra;
-                        *Last = SM;
-                        Last = &SM->Next;
-                        if (!Accept(','))
+            continue;
+        case TOK_STRUCT:
+        case TOK_UNION:
+            {
+                int id = 0;
+                if (TokenType == TOK_UNION)
+                    id = IS_UNION_FLAG;
+                GetToken();
+                CurrentTypeExtra = -1;
+                if (TokenType >= TOK_ID) {
+                    id |= ExpectId();
+                    int i;
+                    for (i = StructCount - 1; i >= 0; --i) {
+                        if (StructDecls[i].Id == id) {
+                            CurrentTypeExtra = i;
                             break;
-                        CurrentType      = BaseType;
-                        CurrentTypeExtra = BaseExtra;
+                        }
                     }
-                    Expect(';');
+                } else {
+                    id |= ID_MAX; // Should never match in above loop
                 }
-                *Last = 0;
-                CurrentTypeExtra = SI;
+                if (Accept('{') || CurrentTypeExtra < 0) {
+                    Check(StructCount < STRUCT_MAX);
+                    const int SI = StructCount++;
+                    struct StructDecl* SD = &StructDecls[SI];
+                    SD->Id = id;
+                    struct StructMember** Last = &SD->Members;
+                    while (!Accept('}')) {
+                        Check(StructMemCount < STRUCT_MEMBER_MAX);
+                        ParseAbstractDecl();
+                        int BaseType  = CurrentType;
+                        int BaseExtra = CurrentTypeExtra;
+                        while (TokenType != ';') {
+                            struct StructMember* SM = &StructMembers[StructMemCount++];
+                            ParseDeclarator(&SM->Id);
+                            SM->Type      = CurrentType;
+                            SM->TypeExtra = CurrentTypeExtra;
+                            *Last = SM;
+                            Last = &SM->Next;
+                            if (!Accept(','))
+                                break;
+                            CurrentType      = BaseType;
+                            CurrentTypeExtra = BaseExtra;
+                        }
+                        Expect(';');
+                    }
+                    *Last = 0;
+                    CurrentTypeExtra = SI;
+                }
+                CurrentType = VT_STRUCT;
             }
-            CurrentType = VT_STRUCT;
-        } else {
-            break;
+            continue;
+        default:
+            CurrentType |= Storage;
+            return;
         }
+        GetToken();
     }
-    CurrentType |= Storage;
 }
 
 void ParseDeclarator(int* Id)
