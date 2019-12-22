@@ -1690,43 +1690,41 @@ void ParsePostfixExpression(void)
                 if ((CurrentType & (VT_FUN|VT_LOCMASK)) != (VT_FUN|VT_LOCGLOB)) Fail();
                 struct VarDecl* Func = &VarDecls[CurrentVal];
                 const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK|VT_LVAL);
-                int NumArgs = 0;
-                int StackAdj = 0;
+                int ArgSize = 0;
+                enum { ArgChunkSize = 8 }; // Must be power of 2
                 while (TokenType != ')') {
-                    enum { ArgsPerChunk = 4 }; // Must be power of 2
-                    if (!(NumArgs & (ArgsPerChunk-1))) {
+                    if (!(ArgSize & (ArgChunkSize-1))) {
                         FlushPushAx();
-                        StackAdj += ArgsPerChunk*2;
-                        LocalOffset -= ArgsPerChunk*2;
-                        PendingSpAdj -= ArgsPerChunk*2;
-                        if (NumArgs) {
+                        LocalOffset  -= ArgChunkSize;
+                        PendingSpAdj -= ArgChunkSize;
+                        if (ArgSize) {
                             // Move arguments to new stack top
-                            EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgsPerChunk*2);
+                            EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize*2);
                             EmitModrm(I_LEA, R_DI, VT_LOCOFF, LocalOffset);
-                            EmitMovRImm(R_CX, NumArgs);
+                            EmitMovRImm(R_CX, ArgSize*2);
                             OutputBytes(I_REP, I_MOVSW, -1);
                         }
                     }
                     ParseAssignmentExpression();
-                    const int off = LocalOffset + NumArgs*2;
                     if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                        EmitStoreConst(2, VT_LOCOFF, off);
+                        EmitStoreConst(2, VT_LOCOFF, LocalOffset + ArgSize);
                     } else {
                         GetVal();
                         if (CurrentType != VT_INT && !(CurrentType & VT_PTRMASK)) Fail();
-                        EmitStoreAx(2, VT_LOCOFF, off);
+                        EmitStoreAx(2, VT_LOCOFF, LocalOffset + ArgSize);
                     }
-                    ++NumArgs;
-
-                    if (!Accept(',')) {
-                        break;
+                    ArgSize += 2;
+                    if (TokenType == ',') {
+                        GetToken();
+                        continue;
                     }
+                    break;
                 }
                 Expect(')');
                 OutputBytes(I_CALL, -1);
                 EmitGlobalRefRel(Func);
-                PendingSpAdj += StackAdj;
-                LocalOffset += StackAdj;
+                PendingSpAdj += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
+                LocalOffset  += ArgSize;
                 CurrentType = RetType;
                 if (CurrentType == VT_CHAR) {
                     CurrentType = VT_INT;
