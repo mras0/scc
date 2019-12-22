@@ -261,6 +261,12 @@ enum {
 };
 
 enum {
+    PRED_EQ = 14,
+    PRED_COMMA,
+    PRED_STOP = 100,
+};
+
+enum {
     CODESTART = 0x100,
 };
 
@@ -321,6 +327,7 @@ int Line = 1;
 int TokenType;
 int TokenNumVal;
 char* TokenStrLit;
+int OperatorPrecedence;
 
 char IdBuffer[IDBUFFER_MAX];
 int IdBufferIndex;
@@ -549,10 +556,11 @@ char GetChar(void)
     return ch;
 }
 
-int TryGetChar(char ch, int t)
+int TryGetChar(char ch, int t, int p)
 {
     if (CurChar == ch) {
         TokenType = t;
+        OperatorPrecedence = p;
         NextChar();
         return 1;
     }
@@ -668,6 +676,7 @@ void GetToken(void)
 Redo:
     SkipWhitespace();
     TokenType = GetChar();
+    OperatorPrecedence = PRED_STOP;
     if (IsDigit(TokenType)) {
         TokenNumVal = TokenType - '0';
         int base = 10;
@@ -746,113 +755,90 @@ Redo:
     case '}':
     case '[':
     case ']':
-    case ',':
     case ':':
     case ';':
     case '~':
+        return;
+    case ',':
+        OperatorPrecedence = PRED_COMMA;
+        return;
     case '?':
+        OperatorPrecedence = 13;
         return;
     case '=':
-        TryGetChar('=', TOK_EQEQ);
+        OperatorPrecedence = PRED_EQ;
+        TryGetChar('=', TOK_EQEQ, 7);
         return;
     case '!':
-        TryGetChar('=', TOK_NOTEQ);
+        TryGetChar('=', TOK_NOTEQ, 7);
         return;
     case '<':
-        if (TryGetChar('<', TOK_LSH)) {
-            TryGetChar('=', TOK_LSHEQ);
+        OperatorPrecedence = 6;
+        if (TryGetChar('<', TOK_LSH, 5)) {
+            TryGetChar('=', TOK_LSHEQ, PRED_EQ);
         } else{
-            TryGetChar('=', TOK_LTEQ);
+            TryGetChar('=', TOK_LTEQ, 6);
         }
         return;
     case '>':
-        if (TryGetChar('>', TOK_RSH)) {
-            TryGetChar('=', TOK_RSHEQ);
+        OperatorPrecedence = 6;
+        if (TryGetChar('>', TOK_RSH, 5)) {
+            TryGetChar('=', TOK_RSHEQ, PRED_EQ);
         } else {
-            TryGetChar('=', TOK_GTEQ);
+            TryGetChar('=', TOK_GTEQ, 6);
         }
         return;
     case '&':
-        if (!TryGetChar('&', TOK_ANDAND)) {
-            TryGetChar('=', TOK_ANDEQ);
+        OperatorPrecedence = 8;
+        if (!TryGetChar('&', TOK_ANDAND, 11)) {
+            TryGetChar('=', TOK_ANDEQ, PRED_EQ);
         }
         return;
     case '|':
-        if (!TryGetChar('|', TOK_OROR)) {
-            TryGetChar('=', TOK_OREQ);
+        OperatorPrecedence = 10;
+        if (!TryGetChar('|', TOK_OROR, 12)) {
+            TryGetChar('=', TOK_OREQ, PRED_EQ);
         }
         return;
     case '^':
-        TryGetChar('=', TOK_XOREQ);
+        OperatorPrecedence = 9;
+        TryGetChar('=', TOK_XOREQ, PRED_EQ);
         return;
     case '+':
-        if (!TryGetChar('+', TOK_PLUSPLUS)) {
-            TryGetChar('=', TOK_PLUSEQ);
+        OperatorPrecedence = 4;
+        if (!TryGetChar('+', TOK_PLUSPLUS, PRED_STOP)) {
+            TryGetChar('=', TOK_PLUSEQ, PRED_EQ);
         }
         return;
     case '-':
-        if (!TryGetChar('-', TOK_MINUSMINUS)) {
-            if (!TryGetChar('=', TOK_MINUSEQ))
-                TryGetChar('>', TOK_ARROW);
+        OperatorPrecedence = 4;
+        if (!TryGetChar('-', TOK_MINUSMINUS, PRED_STOP)) {
+            if (!TryGetChar('=', TOK_MINUSEQ, PRED_EQ))
+                TryGetChar('>', TOK_ARROW, PRED_STOP);
         }
         return;
     case '*':
-        TryGetChar('=', TOK_STAREQ);
+        OperatorPrecedence = 3;
+        TryGetChar('=', TOK_STAREQ, PRED_EQ);
         return;
     case '/':
-        TryGetChar('=', TOK_SLASHEQ);
+        OperatorPrecedence = 3;
+        TryGetChar('=', TOK_SLASHEQ, PRED_EQ);
         return;
     case '%':
-        TryGetChar('=', TOK_MODEQ);
+        OperatorPrecedence = 3;
+        TryGetChar('=', TOK_MODEQ, PRED_EQ);
         return;
     case '.':
         if (CurChar == '.') {
             GetChar();
-            if (!TryGetChar('.', TOK_ELLIPSIS)) {
+            if (!TryGetChar('.', TOK_ELLIPSIS, PRED_STOP)) {
                 Fatal("Invalid token ..");
             }
         }
         return;
     }
     Fatal("Unknown token encountered");
-}
-
-enum {
-    PRED_EQ = 14,
-    PRED_COMMA,
-};
-
-int OperatorPrecedence(int tok)
-{
-    switch (tok) {
-    case '*': case '/': case '%':
-        return 3;
-    case '+': case '-':
-        return 4;
-    case TOK_LSH: case TOK_RSH:
-        return 5;
-    case '<': case '>': case TOK_LTEQ: case TOK_GTEQ:
-        return 6;
-    case TOK_EQEQ: case TOK_NOTEQ:
-        return 7;
-    case '&':
-        return 8;
-    case '^':
-        return 9;
-    case '|':
-        return 10;
-    case TOK_ANDAND:
-        return 11;
-    case TOK_OROR:
-        return 12;
-    case '?':
-        return 13;
-    case '=': case TOK_PLUSEQ: case TOK_MINUSEQ: case TOK_STAREQ: case TOK_SLASHEQ: case TOK_MODEQ: case TOK_LSHEQ: case TOK_RSHEQ: case TOK_ANDEQ: case TOK_XOREQ: case TOK_OREQ:
-        return PRED_EQ;
-    case ',':
-        return PRED_COMMA;
-    }
-    return 100;
 }
 
 void PrintTokenType(int T)
@@ -2154,7 +2140,7 @@ void ParseExpr1(int OuterPrecedence)
     int LhsLoc;
     for (;;) {
         Op   = TokenType;
-        Prec = OperatorPrecedence(Op);
+        Prec = OperatorPrecedence;
         if (Prec > OuterPrecedence) {
             break;
         }
@@ -2208,10 +2194,9 @@ void ParseExpr1(int OuterPrecedence)
 
         ParseCastExpression(); // RHS
         for (;;) {
-            const int LookAheadPrecedence = OperatorPrecedence(TokenType);
-            if (LookAheadPrecedence > Prec || (LookAheadPrecedence == Prec && LookAheadPrecedence != PRED_EQ)) // LookAheadOp != PRED_EQ => !IsRightAssociative
+            if (OperatorPrecedence > Prec || (OperatorPrecedence == Prec && OperatorPrecedence != PRED_EQ)) // LookAheadOp != PRED_EQ => !IsRightAssociative
                 break;
-            ParseExpr1(LookAheadPrecedence);
+            ParseExpr1(OperatorPrecedence);
         }
 
         LhsLoc = LhsType & VT_LOCMASK;
