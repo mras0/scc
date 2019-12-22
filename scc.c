@@ -371,7 +371,7 @@ int CurrentTypeExtra;
 int ReturnUsed;
 int PendingPushAx; // Remember to adjsust LocalOffset!
 int PendingSpAdj;
-int PendingJump = -1;
+int LastFixup;
 int IsDeadCode;
 
 int NextSwitchCase = -1; // Where to go if we haven't matched
@@ -922,7 +922,6 @@ enum {
 };
 
 void FlushSpAdj(void);
-void FlushJump(void);
 int EmitChecks(void);
 
 void OutputBytes(int first, ...)
@@ -983,14 +982,23 @@ void DoFixups(int r, int relative)
     int f;
     char* c;
     while (r) {
+        int o = 0;
         f  = CodeAddress;
-        if (relative)
-            f -= r + 2;
+        if (relative) {
+            o = r + 2;
+            f -= o;
+        }
         c = Output + r - CODESTART;
         r = (c[0]&0xff)|(c[1]&0xff)<<8;
+        // Is this a uselss jump we can avoid? (Too cumbersome if we already resolved fixups at this address)
+        if (CodeAddress == o && LastFixup != CodeAddress) {
+            CodeAddress -= 3;
+            continue;
+        }
         c[0] = (char)(f);
         c[1] = (char)(f>>8);
     }
+    LastFixup = CodeAddress;
 }
 
 void AddFixup(int* f)
@@ -1004,14 +1012,10 @@ void AddFixup(int* f)
 void EmitLocalLabel(int l)
 {
     Check(l < LocalLabelCounter && !Labels[l].Addr);
-    if (PendingJump == l) {
-        PendingJump = -1;
-    }
-    FlushJump();
     FlushSpAdj();
-    Labels[l].Addr = CodeAddress;
     IsDeadCode = 0;
     DoFixups(Labels[l].Ref, 1);
+    Labels[l].Addr = CodeAddress;
     Labels[l].Ref = 0;
 }
 
@@ -1189,7 +1193,8 @@ void EmitLocalJump(int l)
             OutputWord(Addr-1);
         }
     } else {
-        PendingJump = l;
+        OutputBytes(I_JMP_REL16, -1);
+        AddFixup(&Labels[l].Ref);
     }
 }
 
@@ -1219,7 +1224,6 @@ void EmitJcc(int cc, int l)
 
     OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
     EmitLocalJump(l);
-    FlushJump();
 }
 
 void EmitCall(struct VarDecl* Func)
@@ -1264,17 +1268,6 @@ void FlushPushAx(void)
     }
 }
 
-void FlushJump(void)
-{
-    if (PendingJump != -1) {
-        int* f = &Labels[PendingJump].Ref;
-        PendingJump = -1;
-        IsDeadCode = 0;
-        OutputBytes(I_JMP_REL16, -1);
-        AddFixup(f);
-    }
-}
-
 void EmitAdjSp(int Amm)
 {
     PendingSpAdj += Amm;
@@ -1287,14 +1280,7 @@ int EmitChecks(void)
     }
     FlushSpAdj();
     FlushPushAx();
-    FlushJump();
     return 0;
-}
-
-void SetPendingPushAx(void)
-{
-    Check(!PendingPushAx);
-    PendingPushAx = 1;
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -1713,7 +1699,7 @@ void ParsePostfixExpression(void)
             const int ResType  = CurrentType | VT_LVAL;
             const int ResExtra = CurrentTypeExtra;
             if (!IsDeadCode)
-                SetPendingPushAx();
+                PendingPushAx = 1;
             ParseExpr();
             Expect(']');
             if (CurrentType == (VT_INT|VT_LOCLIT)) {
@@ -2185,7 +2171,7 @@ void ParseExpr1(int OuterPrecedence)
             if (CurrentType == VT_BOOL)
                 GetVal();
             if (!(CurrentType & VT_LOCMASK) && Op != ',' && !IsDeadCode) {
-                SetPendingPushAx();
+                PendingPushAx = 1;
             }
         }
         LhsType        = CurrentType;
