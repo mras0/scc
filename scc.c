@@ -1881,19 +1881,6 @@ void ParseCastExpression(void)
     }
 }
 
-int RelOpToCC(int Op)
-{
-    switch (Op) {
-    case '<':       return JL;
-    case TOK_LTEQ:  return JNG;
-    case '>':       return JG;
-    case TOK_GTEQ:  return JNL;
-    case TOK_EQEQ:  return JZ;
-    case TOK_NOTEQ: return JNZ;
-    }
-    return -1;
-}
-
 int RemoveAssign(int Op)
 {
     switch (Op) {
@@ -1914,15 +1901,18 @@ int RemoveAssign(int Op)
 int GetSimpleALU(int Op)
 {
     switch (Op) {
-    case '+': return I_ADD|1;
-    case '-': return I_SUB|1;
-    case '&': return I_AND|1;
-    case '^': return I_XOR|1;
-    case '|': return I_OR|1;
+    case '+':       return I_ADD|1;
+    case '-':       return I_SUB|1;
+    case '&':       return I_AND|1;
+    case '^':       return I_XOR|1;
+    case '|':       return I_OR|1;
+    case '<':       return I_CMP|1|JL<<8;
+    case TOK_LTEQ:  return I_CMP|1|JNG<<8;
+    case '>':       return I_CMP|1|JG<<8;
+    case TOK_GTEQ:  return I_CMP|1|JNL<<8;
+    case TOK_EQEQ:  return I_CMP|1|JZ<<8;
+    case TOK_NOTEQ: return I_CMP|1|JNZ<<8;
     }
-    int CC = RelOpToCC(Op);
-    if (CC >= 0)
-        return I_CMP | 1 | CC<<8;
     return 0;
 }
 
