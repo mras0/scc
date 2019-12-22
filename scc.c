@@ -352,8 +352,8 @@ int MapFile;
 
 int InFile;
 char InBuf[INBUF_MAX];
-int InBufCnt;
-int InBufSize;
+char* InBufPtr;
+char* InBufEnd;
 char CurChar;
 char StoredSlash;
 
@@ -545,15 +545,15 @@ const char* IdText(int id)
 
 void NextChar(void)
 {
-    if (InBufCnt == InBufSize) {
-        InBufCnt = 0;
-        InBufSize = read(InFile, InBuf, INBUF_MAX);
-        if (!InBufSize) {
+    if (InBufPtr == InBufEnd) {
+        InBufPtr = InBuf;
+        InBufEnd = InBufPtr + read(InFile, InBuf, INBUF_MAX);
+        if (InBufPtr == InBufEnd) {
             CurChar = 0;
             return;
         }
     }
-    CurChar = InBuf[InBufCnt++];
+    CurChar = *InBufPtr++;
 }
 
 char GetChar(void)
@@ -922,6 +922,7 @@ enum {
     I_CWD            = 0x99,
     I_MOV_R_IMM16    = 0xb8,
     I_MOVSB          = 0xa4,
+    I_MOVSW          = 0xa5,
     I_STOSB          = 0xaa,
     I_RET            = 0xc3,
     I_INT            = 0xcd,
@@ -1608,17 +1609,14 @@ void ParsePostfixExpression(void)
     for (;;) {
         if (Accept('(')) {
             // Function call
-            if (!(CurrentType & VT_FUN)) {
-                Fatal("Not a function");
-            }
-            Check((CurrentType & VT_LOCMASK) == VT_LOCGLOB);
+            Check((CurrentType & (VT_FUN|VT_LOCMASK)) == (VT_FUN|VT_LOCGLOB));
             struct VarDecl* Func = &VarDecls[CurrentVal];
             const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
             int NumArgs = 0;
             int StackAdj = 0;
             while (TokenType != ')') {
-                enum { ArgsPerChunk = 4 };
-                if (NumArgs % ArgsPerChunk == 0) {
+                enum { ArgsPerChunk = 4 }; // Must be power of 2
+                if (!(NumArgs & (ArgsPerChunk-1))) {
                     FlushPushAx();
                     StackAdj += ArgsPerChunk*2;
                     LocalOffset -= ArgsPerChunk*2;
@@ -1630,8 +1628,8 @@ void ParsePostfixExpression(void)
                         EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
                         EmitMovRR(R_DI, R_SI);
                         EmitAddRegConst(R_DI, -ArgsPerChunk*2);
-                        EmitMovRImm(R_CX, NumArgs*2);
-                        OutputBytes(I_REP, I_MOVSB, -1);
+                        EmitMovRImm(R_CX, NumArgs);
+                        OutputBytes(I_REP, I_MOVSW, -1);
                         EmitPop(R_DI);
                         EmitPop(R_SI);
                     }
@@ -1639,8 +1637,7 @@ void ParsePostfixExpression(void)
                 ParseAssignmentExpression();
                 LvalToRval();
                 const int off = LocalOffset + NumArgs*2;
-                if (CurrentType & VT_LOCMASK) {
-                    Check(CurrentType == (VT_INT|VT_LOCLIT));
+                if (CurrentType == (VT_INT|VT_LOCLIT)) {
                     EmitStoreConst(2, VT_LOCOFF, off);
                 } else {
                     GetVal();
@@ -1656,10 +1653,8 @@ void ParsePostfixExpression(void)
             Expect(')');
             OutputBytes(I_CALL, -1);
             EmitGlobalRefRel(Func);
-            if (StackAdj) {
-                EmitAdjSp(StackAdj);
-                LocalOffset += StackAdj;
-            }
+            EmitAdjSp(StackAdj);
+            LocalOffset += StackAdj;
             CurrentType = RetType;
             if (CurrentType == VT_CHAR) {
                 CurrentType = VT_INT;
