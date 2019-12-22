@@ -2572,7 +2572,6 @@ void EnsureSwitchStmt(void)
 void ParseStatement(void)
 {
 Redo:
-
     // Get compund statements out of the way to simplify switch handling
     if (TokenType == '{') {
         ParseCompoundStatement();
@@ -2583,9 +2582,10 @@ Redo:
         // switch is active
         // NextSwitchStmt == -1 ? Handling statements : handling cases
 
-        if (Accept(TOK_CASE)) {
+        switch (TokenType) {
+        case TOK_CASE:
+            GetToken();
             EnsureSwitchStmt();
-
             for (;;) {
                 ParseExpr();
                 Expect(':');
@@ -2600,13 +2600,15 @@ Redo:
             }
             EmitJcc(JNZ, NextSwitchCase);
             goto Stmt;
-        } else if (Accept(TOK_DEFAULT)) {
+        case TOK_DEFAULT:
+            GetToken();
             Expect(':');
             Check(SwitchDefault == -1);
             EnsureSwitchStmt();
             SwitchDefault = NextSwitchStmt;
             goto Redo;
-        } else if (NextSwitchStmt >= 0) {
+        }
+        if (NextSwitchStmt >= 0) {
             EmitJmp(NextSwitchCase);
         Stmt:
             EmitLocalLabel(NextSwitchStmt);
@@ -2615,7 +2617,190 @@ Redo:
         }
     }
 
-    if (Accept(';')) {
+    switch (TokenType) {
+    case ';':
+        GetToken();
+        return;
+    case TOK_RETURN:
+        GetToken();
+        if (TokenType != ';') {
+            ParseExpr();
+            GetVal();
+        }
+        if (LocalOffset) {
+            ReturnUsed = 1;
+            EmitJmp(ReturnLabel);
+        } else {
+            OutputBytes(I_POP|R_BP, I_RET, -1);
+            IsDeadCode = 1;
+        }
+    GetSemicolon:
+        Expect(';');
+        return;
+    case TOK_BREAK:
+        GetToken();
+        PendingSpAdj += BStackLevel - LocalOffset;
+        EmitJmp(BreakLabel);
+        goto GetSemicolon;
+    case TOK_CONTINUE:
+        GetToken();
+        PendingSpAdj += CStackLevel - LocalOffset;
+        EmitJmp(ContinueLabel);
+        goto GetSemicolon;
+    case TOK_GOTO:
+        GetToken();
+        EmitJmp(GetNamedLabel(ExpectId())->LabelId);
+        goto GetSemicolon;
+    case TOK__EMIT:
+        GetToken();
+        ParseExpr();
+        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
+        OutputBytes(CurrentVal & 0xff, -1);
+        return;
+    case TOK_IF:
+        {
+            GetToken();
+            const int ElseLabel = MakeLabel();
+            Accept('(');
+            DoCond(ElseLabel, 1);
+            Accept(')');
+            ParseStatement();
+            if (Accept(TOK_ELSE)) {
+                const int EndLabel  = MakeLabel();
+                EmitJmp(EndLabel);
+                EmitLocalLabel(ElseLabel);
+                ParseStatement();
+                EmitLocalLabel(EndLabel);
+            } else {
+                EmitLocalLabel(ElseLabel);
+            }
+        }
+        return;
+    case TOK_FOR:
+        {
+            GetToken();
+            const int CondLabel = MakeLabel();
+            const int BodyLabel = MakeLabel();
+            const int EndLabel  = MakeLabel();
+            int IterLabel       = CondLabel;
+        
+            Expect('(');
+
+            // Init
+            if (TokenType != ';') {
+                ParseExpr();
+            }
+            Expect(';');
+
+            // Cond
+            EmitLocalLabel(CondLabel);
+            if (TokenType != ';') {
+                DoCond(EndLabel, 1);
+            }
+            Expect(';');
+
+            // Iter
+            if (TokenType != ')') {
+                EmitJmp(BodyLabel);
+                IterLabel  = MakeLabel();
+                EmitLocalLabel(IterLabel);
+                ParseExpr();
+                EmitJmp(CondLabel);
+            }
+            Expect(')');
+
+            EmitLocalLabel(BodyLabel);
+            DoLoopStatements(EndLabel, IterLabel);
+            EmitJmp(IterLabel);
+            EmitLocalLabel(EndLabel);
+        }
+        return;
+    case TOK_WHILE:
+        {
+            GetToken();
+            const int StartLabel = MakeLabel();
+            const int EndLabel   = MakeLabel();
+            EmitLocalLabel(StartLabel);
+            Expect('(');
+            DoCond(EndLabel, 1);
+            Expect(')');
+            DoLoopStatements(EndLabel, StartLabel);
+            EmitJmp(StartLabel);
+            EmitLocalLabel(EndLabel);
+        }
+        return;
+    case TOK_DO:
+        {
+            GetToken();
+            const int StartLabel = MakeLabel();
+            const int CondLabel  = MakeLabel();
+            const int EndLabel   = MakeLabel();
+            EmitLocalLabel(StartLabel);
+            DoLoopStatements(EndLabel, CondLabel);
+            EmitLocalLabel(CondLabel);
+            Expect(TOK_WHILE);
+            Expect('(');
+            DoCond(StartLabel, 0);
+            Expect(')');            
+            EmitLocalLabel(EndLabel);
+            goto GetSemicolon;
+        }
+    case TOK_SWITCH:
+        {
+            GetToken();
+            Expect('(');
+            ParseExpr();
+            GetVal();
+            Expect(')');
+
+            const int OldBreakLevel  = BStackLevel;
+            const int OldBreakLabel  = BreakLabel;
+            const int LastSwitchCase = NextSwitchCase;
+            const int LastSwitchStmt = NextSwitchStmt;
+            const int LastSwitchDef  = SwitchDefault;
+            BStackLevel    = LocalOffset;
+            BreakLabel     = MakeLabel();
+            NextSwitchCase = MakeLabel();
+            NextSwitchStmt = MakeLabel();
+            SwitchDefault  = -1;
+            ParseStatement();
+            if (SwitchDefault >= 0) {
+                if (NextSwitchStmt < 0) {
+                    // We exited the switch by falling through, make sure we don't go to the default case
+                    NextSwitchStmt = MakeLabel();
+                    EmitJmp(NextSwitchStmt);
+                }
+                EmitLocalLabel(NextSwitchCase);
+                EmitJmp(SwitchDefault);
+            } else {
+                EmitLocalLabel(NextSwitchCase);
+            }
+            if (NextSwitchStmt >= 0)
+                EmitLocalLabel(NextSwitchStmt);
+            EmitLocalLabel(BreakLabel);
+
+            NextSwitchCase = LastSwitchCase;
+            NextSwitchStmt = LastSwitchStmt;
+            SwitchDefault  = LastSwitchDef;
+            BStackLevel    = OldBreakLevel;
+            BreakLabel     = OldBreakLabel;
+        }
+        return;
+    }
+
+    if (TokenType >= TOK_ID) {
+        // Expression statement / Labelled statement
+        const int id = TokenType - TOK_BREAK;
+        GetToken();
+        if (Accept(':')) {
+            EmitLocalLabel(GetNamedLabel(id)->LabelId);
+            EmitLeaStackVar(R_SP, LocalOffset);
+            goto Redo;
+        } else {
+            HandlePrimaryId(id);
+            ParsePostfixExpression();
+            ParseExpr1(PRED_COMMA);
+        }
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
         const int BaseType   = CurrentType & ~VT_PTRMASK;
@@ -2626,7 +2811,7 @@ Redo:
             if (CurrentType & VT_STATIC) {
                 vd->Type = (CurrentType & ~VT_STATIC) | VT_LOCGLOB;
                 BssSize += size;
-            } else { 
+            } else {
                 vd->Type |= VT_LOCOFF;
                 size = (size+1)&-2;
                 if (Accept('=')) {
@@ -2643,164 +2828,10 @@ Redo:
             CurrentTypeExtra = BaseStruct;
             vd = NextDecl();
         }
-        Expect(';');
-    } else if (Accept(TOK_RETURN)) {
-        if (TokenType != ';') {
-            ParseExpr();
-            GetVal();
-        }
-        if (LocalOffset) {
-            ReturnUsed = 1;
-            EmitJmp(ReturnLabel);
-        } else {
-            OutputBytes(I_POP|R_BP, I_RET, -1);
-            IsDeadCode = 1;
-        }
-        Expect(';');
-    } else if (Accept(TOK_BREAK)) {
-        PendingSpAdj += BStackLevel - LocalOffset;
-        EmitJmp(BreakLabel);
-        Expect(';');
-    } else if (Accept(TOK_CONTINUE)) {
-        PendingSpAdj += CStackLevel - LocalOffset;
-        EmitJmp(ContinueLabel);
-        Expect(';');
-    } else if (Accept(TOK_GOTO)) {
-        EmitJmp(GetNamedLabel(ExpectId())->LabelId);
-    } else if (Accept(TOK__EMIT)) {
-        ParseExpr();
-        Check(CurrentType == (VT_INT|VT_LOCLIT)); // Constant expression expected
-        OutputBytes(CurrentVal & 0xff, -1);
-    } else if (Accept(TOK_IF)) {
-        const int ElseLabel = MakeLabel();
-
-        Accept('(');
-        DoCond(ElseLabel, 1);
-        Accept(')');
-        ParseStatement();
-        if (Accept(TOK_ELSE)) {
-            const int EndLabel  = MakeLabel();
-            EmitJmp(EndLabel);
-            EmitLocalLabel(ElseLabel);
-            ParseStatement();
-            EmitLocalLabel(EndLabel);
-        } else {
-            EmitLocalLabel(ElseLabel);
-        }
-    } else if (Accept(TOK_FOR)) {
-        const int CondLabel = MakeLabel();
-        const int BodyLabel = MakeLabel();
-        const int EndLabel  = MakeLabel();
-        int IterLabel       = CondLabel;
-        
-        Expect('(');
-
-        // Init
-        if (TokenType != ';') {
-            ParseExpr();
-        }
-        Expect(';');
-
-        // Cond
-        EmitLocalLabel(CondLabel);
-        if (TokenType != ';') {
-            DoCond(EndLabel, 1);
-        }
-        Expect(';');
-
-        // Iter
-        if (TokenType != ')') {
-            EmitJmp(BodyLabel);
-            IterLabel  = MakeLabel();
-            EmitLocalLabel(IterLabel);
-            ParseExpr();
-            EmitJmp(CondLabel);
-        }
-        Expect(')');
-
-        EmitLocalLabel(BodyLabel);
-        DoLoopStatements(EndLabel, IterLabel);
-        EmitJmp(IterLabel);
-        EmitLocalLabel(EndLabel);
-    } else if (Accept(TOK_WHILE)) {
-        const int StartLabel = MakeLabel();
-        const int EndLabel   = MakeLabel();
-        EmitLocalLabel(StartLabel);
-        Expect('(');
-        DoCond(EndLabel, 1);
-        Expect(')');
-        DoLoopStatements(EndLabel, StartLabel);
-        EmitJmp(StartLabel);
-        EmitLocalLabel(EndLabel);
-    } else if (Accept(TOK_DO)) {
-        const int StartLabel = MakeLabel();
-        const int CondLabel  = MakeLabel();
-        const int EndLabel   = MakeLabel();
-        EmitLocalLabel(StartLabel);
-        DoLoopStatements(EndLabel, CondLabel);
-        EmitLocalLabel(CondLabel);
-        Expect(TOK_WHILE);
-        Expect('(');
-        DoCond(StartLabel, 0);
-        Expect(')');
-        Expect(';');
-        EmitLocalLabel(EndLabel);
-    } else if (Accept(TOK_SWITCH)) {
-        Expect('(');
-        ParseExpr();
-        GetVal();
-        Expect(')');
-
-        const int OldBreakLevel  = BStackLevel;
-        const int OldBreakLabel  = BreakLabel;
-        const int LastSwitchCase = NextSwitchCase;
-        const int LastSwitchStmt = NextSwitchStmt;
-        const int LastSwitchDef  = SwitchDefault;
-        BStackLevel    = LocalOffset;
-        BreakLabel     = MakeLabel();
-        NextSwitchCase = MakeLabel();
-        NextSwitchStmt = MakeLabel();
-        SwitchDefault  = -1;
-        ParseStatement();
-        if (SwitchDefault >= 0) {
-            if (NextSwitchStmt < 0) {
-                // We exited the switch by falling through, make sure we don't go to the default case
-                NextSwitchStmt = MakeLabel();
-                EmitJmp(NextSwitchStmt);
-            }
-            EmitLocalLabel(NextSwitchCase);
-            EmitJmp(SwitchDefault);
-        } else {
-            EmitLocalLabel(NextSwitchCase);
-        }
-        if (NextSwitchStmt >= 0)
-            EmitLocalLabel(NextSwitchStmt);
-        EmitLocalLabel(BreakLabel);
-
-        NextSwitchCase = LastSwitchCase;
-        NextSwitchStmt = LastSwitchStmt;
-        SwitchDefault  = LastSwitchDef;
-        BStackLevel    = OldBreakLevel;
-        BreakLabel     = OldBreakLabel;
     } else {
-        // Expression statement / Labelled statement
-        if (TokenType >= TOK_ID) {
-            const int id = TokenType - TOK_BREAK;
-            GetToken();
-            if (Accept(':')) {
-                EmitLocalLabel(GetNamedLabel(id)->LabelId);
-                EmitLeaStackVar(R_SP, LocalOffset);
-                goto Redo;
-            } else {
-                HandlePrimaryId(id);
-                ParsePostfixExpression();
-                ParseExpr1(PRED_COMMA);
-            }
-        } else {
-            ParseExpr();
-        }
-        Expect(';');
+        ParseExpr();
     }
+    goto GetSemicolon;
 }
 
 void PushScope(void)
