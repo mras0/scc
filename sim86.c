@@ -283,6 +283,7 @@ int ReadRM(void)
 {
     assert(modrm != -1);
     if (modrm>>6==3) {
+        assert(dsize || !(modrm&4));//TODO: AH-DH
         return reg[modrm&7];
     }
     return dsize ? Read16(SR_DS, addr) : Read8(SR_DS, addr);
@@ -291,9 +292,14 @@ int ReadRM(void)
 void WriteRM(int val)
 {
     if (modrm>>6==3) {
-        if (!dsize)
-            Fatal("TODO: Write reg: %s %d", rmtext, val);
-        reg[modrm&7] = val;
+        int r = modrm&7;
+        if (!dsize) {
+            if (r&4)
+                val = (val<<8)|(reg[r]&0xff);
+            else
+                val = (val&0xff)|(reg[r]&0xff00);
+        }
+        reg[r] = val;
         return;
     }
     if (dsize)
@@ -317,18 +323,24 @@ int DoPop(void)
 
 void DoOp(int op, int l, int r)
 {
-    assert(dsize);
+    if (!dsize) {
+        l &= 0xff;
+        r &= 0xff;
+    }
     int res;
     int carry = 0;
     switch (op) {
     case OP_ADD:
         res = l + r;
+    AddDone:
         carry = (l & r) | ((l | r) & ~res);
         break;
     case OP_OR:
         res = l | r;
         break;
-    //case OP_ADC: break;
+    case OP_ADC:
+        res = l + r + (flags & FC);
+        goto AddDone;
     case OP_SBB:
         res = l - r - (flags & FC);
     SubDone:
@@ -347,14 +359,15 @@ void DoOp(int op, int l, int r)
     default:
         Fatal("TODO: %s %d, %d", OpName(op), l, r);
     }
+    const int mask = dsize ? 0x8000 : 0x80;
     flags = 0;
-    if (res & 0x8000)
+    if (res & mask)
         flags |= FS;
     if (!TRIM(res))
         flags |= FZ;
-    if (carry & 0x8000)
+    if (carry & mask)
         flags |= FC;
-    if (((carry >> 1) ^ carry) & 0x4000)
+    if (((carry << 1) ^ carry) & mask)
         flags |= FO;
     if (op != OP_CMP)
         WriteRM(res);
@@ -455,6 +468,10 @@ void JCC(int cc)
     case 2:
         n = e ? "JZ" : "JNZ";
         j = !!(flags & FZ);
+        break;
+    case 3:
+        n = e ? "JNA" : "JA";
+        j = (flags & FZ) || (flags & FC);
         break;
     case 6:
         n = e ? "JL" : "JNL";
@@ -737,12 +754,14 @@ int main(int argc, char** argv)
             if (verbose) printf("MOV %s, 0x%04X", RegName(inst-0xb8), reg[r]);
         } else {
             switch (inst) {
+            case 0x80:
             case 0x81:
+            case 0x82:
             case 0x83:
                 {
-                    dsize = 1;
+                    dsize = inst&1;
                     ModRM();
-                    const int imm = inst&2 ? (char)ReadIByte() : Imm16();
+                    const int imm = inst == 0x81 ? Imm16() : (char)ReadIByte();
                     DoOp(modrm>>3&7, ReadRM(), imm);
                     if (verbose) printf("%s %s, %04X", OpName(modrm>>3&7), rmtext, imm);
                 }

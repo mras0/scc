@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -33,16 +35,16 @@ int main(int argc, char** argv);
 
 int DosCall(int* ax, int bx, int cx, int dx)
 {
-    _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
-    _emit 0x8B _emit 0x07            // 8B07              MOV AX,[BX]
-    _emit 0x8B _emit 0x5E _emit 0x06 // 8B5E06            MOV BX,[BP+0x6]
-    _emit 0x8B _emit 0x4E _emit 0x08 // 8B4E08            MOV CX,[BP+0x8]
-    _emit 0x8B _emit 0x56 _emit 0x0A // 8B560A            MOV DX,[BP+0xA]
-    _emit 0xCD _emit 0x21            // CD21              INT 0x21
-    _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
-    _emit 0x89 _emit 0x07            // 8907              MOV [BX],AX
-    _emit 0xB8 _emit 0x00 _emit 0x00 // B80000            MOV AX,0x0
-    _emit 0x19 _emit 0xC0            // 19C0              SBB AX,AX
+    _emit 0x8B _emit 0x5E _emit 0x04 // MOV BX,[BP+0x4]
+    _emit 0x8B _emit 0x07            // MOV AX,[BX]
+    _emit 0x8B _emit 0x5E _emit 0x06 // MOV BX,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
+    _emit 0x8B _emit 0x56 _emit 0x0A // MOV DX,[BP+0xA]
+    _emit 0xCD _emit 0x21            // INT 0x21
+    _emit 0x8B _emit 0x5E _emit 0x04 // MOV BX,[BP+0x4]
+    _emit 0x89 _emit 0x07            // MOV [BX],AX
+    _emit 0xB8 _emit 0x00 _emit 0x00 // MOV AX,0x0
+    _emit 0x19 _emit 0xC0            // SBB AX,AX
 }
 
 void memset(void* ptr, int val, int size)
@@ -157,6 +159,26 @@ void _start(void)
     memset(&_SBSS, 0, &_EBSS-&_SBSS);
     exit(main(ParseArgs(), ARGS));
 }
+
+int isdigit(int c)
+{
+    _emit 0x31 _emit 0xC0               // XOR AX, AX
+    _emit 0x8A _emit 0x4E _emit 0x04    // MOV CL, [BP+4]
+    _emit 0x80 _emit 0xE9 _emit 0x30    // SUB CL, '0'
+    _emit 0x80 _emit 0xF9 _emit 0x0A    // CMP CL, 10
+    _emit 0x11 _emit 0xC0               // ADC AX, AX
+}
+
+int isalpha(int c)
+{
+    _emit 0x31 _emit 0xC0               // XOR AX, AX
+    _emit 0x8A _emit 0x4E _emit 0x04    // MOV CL, [BP+4]
+    _emit 0x80 _emit 0xE1 _emit 0xDF    // AND CL, 0xDF
+    _emit 0x80 _emit 0xE9 _emit 0x41    // SUB CL, 'A'
+    _emit 0x80 _emit 0xF9 _emit 0x1A    // CMP CL, 'Z'-'A'+1
+    _emit 0x11 _emit 0xC0               // ADC AX, AX
+}
+
 #endif
 
 enum {
@@ -399,18 +421,6 @@ char Output[OUTPUT_MAX]; // Place this last to allow partial stack overflows!
 // Helper functions
 ///////////////////////////////////////////////////////////////////////
 
-int IsDigit(int ch)
-{
-    return ch >= '0' && ch <= '9';
-}
-
-int IsAlpha(int ch)
-{
-    if ((ch = (ch & 0xDF) - 'A') < 0)
-        return 0;
-    return ch < 26;
-}
-
 char* CopyStr(char* dst, const char* src)
 {
     while (*src) *dst++ = *src++;
@@ -612,9 +622,9 @@ Redo:
 
 int GetDigit(void)
 {
-    if (IsDigit(CurChar)) {
+    if (isdigit(CurChar)) {
         return CurChar - '0';
-    } else if (IsAlpha(CurChar)) {
+    } else if (isalpha(CurChar)) {
         return (CurChar & 0xdf) - ('A'-10);
     }
     return 256;
@@ -671,7 +681,7 @@ Redo:
     SkipWhitespace();
     TokenType = GetChar();
     OperatorPrecedence = PRED_STOP;
-    if (IsDigit(TokenType)) {
+    if (isdigit(TokenType)) {
         TokenNumVal = TokenType - '0';
         int base = 10;
         if (!TokenNumVal) {
@@ -691,13 +701,13 @@ Redo:
         }
         TokenType = TOK_NUM;
         return;
-    } else if (IsAlpha(TokenType) || TokenType == '_') {
+    } else if (isalpha(TokenType) || TokenType == '_') {
         char* pc;
         char* start;
         start = pc = &IdBuffer[IdBufferIndex];
         int Hash = HASHINIT*HASHMUL+TokenType;
         *pc++ = TokenType;
-        while (CurChar == '_' || IsDigit(CurChar) || IsAlpha(CurChar)) {
+        while (CurChar == '_' || isdigit(CurChar) || isalpha(CurChar)) {
             *pc++ = CurChar;
             Hash = Hash*HASHMUL+CurChar;
             NextChar();
