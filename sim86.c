@@ -1,5 +1,15 @@
 #include "lib.h"
 
+#ifndef __SCC__
+//#define PROFILING
+#endif
+
+#ifdef PROFILING
+unsigned long long counts[65536];
+unsigned long long total_cycles;
+unsigned long long cycles;
+#endif
+
 enum {
     R_AX,
     R_CX,
@@ -170,6 +180,10 @@ void CheckMem(int sr, int off)
 
 int Read8(int sr, int off)
 {
+#ifdef PROFILING
+    ++cycles;
+#endif
+
 #ifdef __SCC__
     return FarPeek(memseg, off);
 #else
@@ -186,6 +200,10 @@ int Read16(int sr, int off)
 
 void Write8(int sr, int off, int val)
 {
+#ifdef PROFILING
+    ++cycles;
+#endif
+
 #ifdef __SCC__
     FarPoke(memseg, off, val);
 #else
@@ -494,13 +512,30 @@ void HandleOpen(int oflags)
     reg[R_AX] = fd;
 }
 
+void DoExit(int e)
+{
+    if (verbose) {
+        if (e)
+            printf("\nExiting with error code %d\n", e);
+        else
+            printf("\nNormal exit\n");
+    }
+#ifdef PROFILING
+    printf("\n%llu cylces\n", total_cycles);
+    for (int i = 0; i < 65536; ++i) {
+        if (counts[i])
+            printf("%8llu %X\n", counts[i], i);
+    }
+#endif
+    exit(e);
+}
+
 void INT(void)
 {
     const int intr = ReadIByte();
     if (verbose) printf("INT 0x%02X", intr);
     if (intr == 0x20) {
-        if (verbose) printf("\nNormal exit\n");
-        exit(0);
+        DoExit(0);
     }
     if (intr != 0x21) {
         Fatal("TODO: INT %02X", intr);
@@ -539,9 +574,7 @@ void INT(void)
         }
         reg[R_AX] = r;
     } else if (func == 0x4C) {
-        int ret = reg[R_AX]&0xff;
-        if (verbose) printf("\nExiting with error code %d\n", ret);
-        exit(ret);
+        DoExit(reg[R_AX]&0xff);
     } else {
         Fatal("TODO: INT 0x21/AH=%02X", func);
     }
@@ -583,6 +616,10 @@ int main(int argc, char** argv)
     DoPush(0);
     ip = LOAD_OFFSET;
     for (;;) {
+#ifdef PROFILING
+        const int orig_ip = TRIM(ip);
+        cycles = 0;
+#endif
         if (verbose) printf("%04X ", TRIM(ip));
 
         modrm = -1;
@@ -828,6 +865,10 @@ int main(int argc, char** argv)
         PrintState();
 #else
         puts("");
+#endif
+#ifdef PROFILING
+        total_cycles += cycles;
+        counts[orig_ip] += cycles;
 #endif
     }
 }

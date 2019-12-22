@@ -65,8 +65,7 @@ void exit(int retval)
 
 void raw_putchar(int ch)
 {
-    int ax;
-    ax = 0x200;
+    int ax = 0x200;
     DosCall(&ax, 0, 0, ch);
 }
 
@@ -91,15 +90,13 @@ int open(const char* filename, int flags, ...)
 
 void close(int fd)
 {
-    int ax;
-    ax = 0x3e00;
+    int ax = 0x3e00;
     DosCall(&ax, fd, 0, 0);
 }
 
 int read(int fd, char* buf, int count)
 {
-    int ax;
-    ax = 0x3f00;
+    int ax = 0x3f00;
     if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
@@ -107,8 +104,7 @@ int read(int fd, char* buf, int count)
 
 int write(int fd, const char* buf, int count)
 {
-    int ax;
-    ax = 0x4000;
+    int ax = 0x4000;
     if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
@@ -307,7 +303,6 @@ struct VarDecl {
     int TypeExtra;
     int Offset;
     int Ref; // Fixup address for globals, negative index for static variables (Won't work with output sizes >= 32K)
-
 };
 
 int CodeAddress = CODESTART;
@@ -346,6 +341,8 @@ struct ArrayDecl ArrayDecls[ARRAY_MAX];
 int ArrayCount;
 
 struct VarDecl VarDecls[VARDECL_MAX];
+int LookupCache[ID_MAX];
+int IgnoreRedef;
 
 int Scopes[SCOPE_MAX]; // -> Next free VarDecl index (conversely one more than index of last defined variable/id)
 int ScopesCount = 1; // First scope is global
@@ -1393,20 +1390,29 @@ void PushScope(void)
     Check(ScopesCount < SCOPE_MAX);
     Scopes[ScopesCount] = Scopes[ScopesCount-1];
     ++ScopesCount;
+    ++IgnoreRedef;
 }
 
 void PopScope(void)
 {
     Check(ScopesCount > 1);
     --ScopesCount;
+    --IgnoreRedef;
 }
 
 int Lookup(int id)
 {
     int vd;
     Check(ScopesCount);
+
+    vd = LookupCache[id];
+    if (vd < Scopes[ScopesCount-1] && VarDecls[vd].Id == id) {
+        return vd;
+    }
+
     for (vd = Scopes[ScopesCount-1] - 1; vd >= 0; vd--) {
         if (VarDecls[vd].Id == id) {
+            LookupCache[id] = vd;
             break;
         }
     }
@@ -1426,7 +1432,18 @@ struct VarDecl* AddVarDeclScope(int Scope, int Id)
 
 struct VarDecl* AddVarDecl(int Id)
 {
-    Check(Scopes[ScopesCount-1] < VARDECL_MAX);
+    const int idx = Scopes[ScopesCount-1];
+    Check(idx < VARDECL_MAX);
+
+    // Check if definition/re-declaration in global scope
+    if (!IgnoreRedef) {
+        int vd = Lookup(Id);
+        if (vd >= 0) {
+            return &VarDecls[vd];
+        }
+    }
+
+    LookupCache[Id] = idx;
     return AddVarDeclScope(ScopesCount-1, Id);
 }
 
@@ -2305,6 +2322,7 @@ void ParseDeclSpecs(void)
                 GetToken();
             }
             if (Accept('{')) {
+                ++IgnoreRedef;
                 int EnumVal = 0;
                 while (TokenType != '}') {
                     const int id = ExpectId();
@@ -2322,6 +2340,7 @@ void ParseDeclSpecs(void)
                     ++EnumVal;
                 }
                 Expect('}');
+                --IgnoreRedef;
             }
             CurrentType = VT_INT;
         } else if (TokenType == TOK_STRUCT || TokenType == TOK_UNION) {
@@ -2748,19 +2767,10 @@ void ParseExternalDefition(void)
     CurrentType = vd->Type &= ~VT_STATIC;
 
     // Check for definition of previous forward declaration
-    int i;
-    for (i = 0; i < *Scopes - 1; ++i) {
-        struct VarDecl* V = &VarDecls[i];
-        if (vd->Id != V->Id) continue;
-        --Scopes[0]; // Undo allocation by ParseFirstDecl
-        vd = V;
-        Check(vd->Offset == 0);
-        break;
-    }
-
     if (Accept('(')) {
         vd->Type |= VT_FUN | VT_LOCGLOB;
         // Make room for "late globals"
+        int i;
         for (i = 0; i < GLOBAL_RESERVE; ++i) {
             VarDecls[Scopes[0]++].Id = -1;
         }
