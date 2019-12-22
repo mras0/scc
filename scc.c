@@ -1259,11 +1259,6 @@ void FlushPushAx(void)
     }
 }
 
-void EmitAdjSp(int Amm)
-{
-    PendingSpAdj += Amm;
-}
-
 int EmitChecks(void)
 {
     if (IsDeadCode) {
@@ -1555,6 +1550,7 @@ void ParsePrimaryExpression(void)
     }
 }
 
+// Get current value to AX
 void GetVal(void)
 {
     if (CurrentType == VT_BOOL) {
@@ -1564,6 +1560,7 @@ void GetVal(void)
         return;
     }
 
+    LvalToRval();
     if (CurrentType & VT_LOCMASK) {
         Check(CurrentType == (VT_INT|VT_LOCLIT));
         CurrentType = VT_INT;
@@ -1620,7 +1617,7 @@ void ParsePostfixExpression(void)
                     FlushPushAx();
                     StackAdj += ArgsPerChunk*2;
                     LocalOffset -= ArgsPerChunk*2;
-                    EmitAdjSp(-ArgsPerChunk*2);
+                    PendingSpAdj -= ArgsPerChunk*2;
                     if (NumArgs) {
                         // Move arguments to new stack top
                         EmitPush(R_SI);
@@ -1635,7 +1632,6 @@ void ParsePostfixExpression(void)
                     }
                 }
                 ParseAssignmentExpression();
-                LvalToRval();
                 const int off = LocalOffset + NumArgs*2;
                 if (CurrentType == (VT_INT|VT_LOCLIT)) {
                     EmitStoreConst(2, VT_LOCOFF, off);
@@ -1653,7 +1649,7 @@ void ParsePostfixExpression(void)
             Expect(')');
             OutputBytes(I_CALL, -1);
             EmitGlobalRefRel(Func);
-            EmitAdjSp(StackAdj);
+            PendingSpAdj += StackAdj;
             LocalOffset += StackAdj;
             CurrentType = RetType;
             if (CurrentType == VT_CHAR) {
@@ -1817,7 +1813,6 @@ void ParseCastExpression(void)
             const int E = CurrentTypeExtra;
             Check(!(T & VT_LOCMASK));
             ParseCastExpression();
-            LvalToRval();
             GetVal(); // TODO: could optimize some constant expressions here
             CurrentType      = T;
             CurrentTypeExtra = E;
@@ -1978,7 +1973,6 @@ int OpCommutes(int Op)
 
 void DoCondHasExpr(int Label, int Forward) // forward => jump if label is false
 {
-    LvalToRval();
     if (CurrentType == VT_BOOL) {
         EmitJcc(CurrentVal^Forward, Label);
     } else if (CurrentType == (VT_LOCLIT|VT_INT)) {
@@ -2540,14 +2534,10 @@ Redo:
                 size = (size+1)&-2;
                 if (Accept('=')) {
                     ParseAssignmentExpression();
-                    LvalToRval();
                     GetVal();
-                    if (CurrentType == VT_CHAR) {
-                        OutputBytes(I_CBW, -1);
-                    }
                     EmitPush(R_AX);
                 } else {
-                    EmitAdjSp(-size);
+                    PendingSpAdj -= size;
                 }
                 LocalOffset -= size;
                 vd->Offset = LocalOffset;
@@ -2560,7 +2550,6 @@ Redo:
     } else if (Accept(TOK_RETURN)) {
         if (TokenType != ';') {
             ParseExpr();
-            LvalToRval();
             GetVal();
         }
         if (LocalOffset)
@@ -2568,11 +2557,11 @@ Redo:
         EmitJmp(ReturnLabel);
         Expect(';');
     } else if (Accept(TOK_BREAK)) {
-        EmitAdjSp(BStackLevel - LocalOffset);
+        PendingSpAdj += BStackLevel - LocalOffset;
         EmitJmp(BreakLabel);
         Expect(';');
     } else if (Accept(TOK_CONTINUE)) {
-        EmitAdjSp(CStackLevel - LocalOffset);
+        PendingSpAdj += CStackLevel - LocalOffset;
         EmitJmp(ContinueLabel);
         Expect(';');
     } else if (Accept(TOK_GOTO)) {
@@ -2658,7 +2647,6 @@ Redo:
     } else if (Accept(TOK_SWITCH)) {
         Expect('(');
         ParseExpr();
-        LvalToRval();
         GetVal();
         Expect(')');
 
@@ -2761,7 +2749,7 @@ void ParseCompoundStatement(void)
     }
     PopScope();
     if (OldOffset != LocalOffset) {
-        EmitAdjSp(OldOffset - LocalOffset);
+        PendingSpAdj += OldOffset - LocalOffset;
         LocalOffset = OldOffset;
     }
 
