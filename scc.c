@@ -2150,22 +2150,16 @@ void ParseExpr1(int OuterPrecedence)
             LvalToRval();
         }
 
-        if (Op == TOK_ANDAND || Op == TOK_OROR) {
+        Temp = Op == TOK_OROR;
+        if (Temp || Op == TOK_ANDAND) {
             LEnd = MakeLabel();
-            if (CurrentType == VT_BOOL) {
-                Temp = MakeLabel();
-                if (Op != TOK_ANDAND)
-                    CurrentVal ^= 1;
-                EmitJcc(CurrentVal, Temp);
-                EmitMovRImm(R_AX, Op != TOK_ANDAND);
-                EmitJmp(LEnd);
-                EmitLocalLabel(Temp);
-            } else {
+            if (CurrentType != VT_BOOL) {
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
                 EmitToBool();
-                EmitMovRImm(R_AX, Op != TOK_ANDAND);
-                EmitJcc(JZ | (Op != TOK_ANDAND), LEnd);
+                CurrentVal = JNZ;
             }
+            EmitMovRImm(R_AX, Temp);
+            EmitJcc(CurrentVal ^ !Temp, LEnd);
         } else {
             LEnd = -1;
             if (CurrentType == VT_BOOL)
