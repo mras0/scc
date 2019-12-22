@@ -1758,11 +1758,19 @@ void ParseUnaryExpression(void)
 {
     const int Op = TokenType;
     int IsConst = 0;
-    if (Op == TOK_PLUSPLUS || Op == TOK_MINUSMINUS) {
+    switch (Op) {
+    case TOK_PLUSPLUS:
+    case TOK_MINUSMINUS:
         GetToken();
         ParseUnaryExpression();
         DoIncDecOp(Op, 0);
-    } else if (Op == '&' || Op == '*' || Op == '+' || Op == '-' || Op == '~' || Op == '!') {
+        return;
+    case '&':
+    case '*':
+    case '+':
+    case '-':
+    case '~':
+    case '!':
         GetToken();
         ParseCastExpression();
         if (Op == '&') {
@@ -1818,29 +1826,32 @@ void ParseUnaryExpression(void)
         } else {
             Unexpected();
         }
-    } else if (Op == TOK_SIZEOF) {
-        GetToken();
-        const int WasDead = IsDeadCode;
-        IsDeadCode = 1;
-        if (Accept('(')) {
-            if (IsTypeStart()) {
-                ParseAbstractDecl();
-                CurrentVal = SizeofCurrentType();
+        return;
+        case TOK_SIZEOF:
+        {
+            GetToken();
+            const int WasDead = IsDeadCode;
+            IsDeadCode = 1;
+            if (Accept('(')) {
+                if (IsTypeStart()) {
+                    ParseAbstractDecl();
+                    CurrentVal = SizeofCurrentType();
+                } else {
+                    ParseAssignmentExpression();
+                }
+                Expect(')');
             } else {
-                ParseAssignmentExpression();
+                ParseUnaryExpression();
             }
-            Expect(')');
-        } else {
-            ParseUnaryExpression();
+            Check(IsDeadCode);
+            IsDeadCode = WasDead;
+            CurrentVal = SizeofCurrentType();
+            CurrentType = VT_LOCLIT | VT_INT;
+            return;
         }
-        Check(IsDeadCode);
-        IsDeadCode = WasDead;
-        CurrentVal = SizeofCurrentType();
-        CurrentType = VT_LOCLIT | VT_INT;
-    } else {
-        ParsePrimaryExpression();
-        ParsePostfixExpression();
     }
+    ParsePrimaryExpression();
+    ParsePostfixExpression();
 }
 
 void ParseCastExpression(void)
