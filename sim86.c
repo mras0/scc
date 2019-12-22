@@ -788,6 +788,33 @@ int main(int argc, char** argv)
                 reg[R_DX] = reg[R_AX]&0x8000 ? -1 : 0;
                 if (verbose) printf("CWD");
                 break;
+            case 0xA0:
+            case 0xA1:
+            case 0xA2:
+            case 0xA3:
+                {
+                    int Off = ReadIByte();
+                    Off |= ReadIByte()<<8;
+                    if (verbose) {
+                        if (inst & 2) printf("MOV [0x%04X], A%c", Off, inst&1?'X':'L');
+                        else          printf("MOV A%c, [0x%04X]", inst&1?'X':'L', Off);
+                    }
+                    if (inst & 2) {
+                        // Store
+                        if (inst & 1) {
+                            Write16(SR_DS, Off, reg[R_AX]);
+                        } else {
+                            Write8(SR_DS, Off, reg[R_AX] & 0xff);
+                        }
+                    } else {
+                        if (inst & 1) {
+                            reg[R_AX] = Read16(SR_DS, Off);
+                        } else {
+                            reg[R_AX] = (reg[R_AX]&0xff00) | Read8(SR_DS, Off);
+                        }
+                    }
+                }
+                break;
             case 0xA4:
                 {
                     assert(rep == 0xF3);

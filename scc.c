@@ -1077,14 +1077,23 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
 
 void EmitLoadAx(int Size, int Loc, int Val)
 {
-    EmitModrm(I_MOV_RM_R-1+Size, R_AX, Loc, Val);
+    if (Loc == VT_LOCGLOB) {
+        OutputBytes(0xA0-1+Size, -1);
+        EmitGlobalRef(&VarDecls[Val]);
+    } else {
+        EmitModrm(I_MOV_RM_R-1+Size, R_AX, Loc, Val);
+    }
     if (Size == 1)
         OutputBytes(I_CBW, -1);
 }
 
 void EmitStoreAx(int Size, int Loc, int Val)
 {
-    EmitModrm(I_MOV_R_RM-1+Size, R_AX, Loc, Val);
+    if (Loc == VT_LOCGLOB) {
+        OutputBytes(0xA2-1+Size, -1);
+        EmitGlobalRef(&VarDecls[Val]);
+    } else
+        EmitModrm(I_MOV_R_RM-1+Size, R_AX, Loc, Val);
 }
 
 void EmitStoreConst(int Size, int Loc, int Val)
