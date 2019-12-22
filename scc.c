@@ -1924,19 +1924,19 @@ HasInst:
     FinishOp(Inst);
 }
 
-void DoRhsLvalBinOp(int Op)
+int DoRhsLvalBinOp(int Op)
 {
     const int Loc = CurrentType & VT_LOCMASK;
+    CurrentType &= ~(VT_LOCMASK|VT_LVAL);
     int Inst = GetSimpleALU(Op);
     if (!Inst) {
         OutputBytes(I_XCHG_AX|R_CX, -1);
         EmitLoadAx(2, Loc, CurrentVal);
-        OutputBytes(I_XCHG_AX|R_CX, -1);
-        DoBinOp(Op);
-        return;
+        return 0;
     }
     EmitModrm(Inst|3, R_AX, Loc, CurrentVal);
     FinishOp(Inst);
+    return 1;
 }
 
 void DoRhsConstBinOp(int Op)
@@ -2291,8 +2291,8 @@ RhsConst:
                         if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
                             Check(CurrentType&VT_LVAL);
                             PendingPushAx = 0;
-                            DoRhsLvalBinOp(Op);
-                            CurrentType &= ~(VT_LOCMASK|VT_LVAL);
+                            if (!DoRhsLvalBinOp(Op))
+                                goto DoNormal;
                             goto CheckSub;
                         }
                     }
@@ -2301,6 +2301,7 @@ RhsConst:
                     EmitPop(R_CX);
                     LocalOffset += 2;
                 }
+DoNormal:
                 if (!Temp)
                     OutputBytes(I_XCHG_AX | R_CX, -1);
                 DoBinOp(Op);
