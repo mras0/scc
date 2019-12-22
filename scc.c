@@ -1560,28 +1560,26 @@ void GetVal(void)
 void HandleStructMember(void)
 {
     const int MemId = ExpectId();
-    int Off = 0;
     Check(CurrentTypeExtra >= 0 && CurrentTypeExtra < StructCount);
     struct StructMember* SM = StructDecls[CurrentTypeExtra].Members;
-    const int IsUnion       = StructDecls[CurrentTypeExtra].Id & IS_UNION_FLAG;
+    int Off = 0;
     for (; SM && SM->Id != MemId; SM = SM->Next) {
-        if (!IsUnion)
-            Off += SizeofType(SM->Type, SM->TypeExtra);
+        Off += SizeofType(SM->Type, SM->TypeExtra);
     }
     if (!SM) {
         Fatal("Invalid struct member");
     }
     int Loc = CurrentType & VT_LOCMASK;
-    if (Loc == VT_LOCGLOB) {
-        EmitLoadAddr(R_AX, Loc, CurrentVal);
-        Loc = 0;
-    }
-    if (!Loc) {
-        EmitAddRegConst(R_AX, Off);
-    } else if (Loc == VT_LOCOFF) {
-        CurrentVal += Off;
-    } else {
-        Check(0);
+    if (Off && !(StructDecls[CurrentTypeExtra].Id & IS_UNION_FLAG)) {
+        if (Loc == VT_LOCOFF) {
+            CurrentVal += Off;
+        } else {
+            if (Loc) {
+                EmitLoadAddr(R_AX, Loc, CurrentVal);
+                Loc = 0;
+            }
+            EmitAddRegConst(R_AX, Off);
+        }
     }
     CurrentType      = SM->Type | VT_LVAL | Loc;
     CurrentTypeExtra = SM->TypeExtra;
