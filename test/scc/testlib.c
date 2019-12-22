@@ -18,8 +18,20 @@ void putn(int n) {
     }
 }
 
+int* GetBP(void)
+{
+    _emit 0x8B _emit 0x46 _emit 0x00 // MOV AX, [BP]
+}
+
 void assert_eq(int a, int b) {
     if (a == b) return;
+    int* BP = GetBP();
+    putstr("\nBP   Return address\n");
+    int i = 0;
+    while (*BP && ++i < 10) {
+        putn(BP[0]); putstr(" "); putn(BP[1]); putstr("\n");
+        BP = (int*)BP[0];
+    }
     putn(a); putstr(" != "); putn(b); putstr("\n");
     _emit 0xcc                       // INT3
     _emit 0xB8 _emit 0xFF _emit 0x4C // MOV AX, 0x4CFF

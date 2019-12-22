@@ -58,6 +58,7 @@ char seg;
 char rmtext[16];
 
 int verbose;
+const char* filename;
 
 #ifndef __SCC__
 #define PROFILING
@@ -67,7 +68,6 @@ int verbose;
 unsigned long long counts[65536];
 unsigned long long total_cycles;
 unsigned long long cycles;
-const char* filename;
 int stack_low = 0xffff;
 int file_size;
 int do_profile;
@@ -98,6 +98,7 @@ void PrintState(void);
 NORETURN void Fatal(const char* fmt, ...)
 {
     PrintState();
+    printf("%s: ", filename);
     char buf[80];
     va_list vl;
     va_start(vl, fmt);
@@ -764,13 +765,11 @@ int main(int argc, char** argv)
             break;
         }
     }
-    if (!argv[argi])
+    filename = argv[argi];
+    if (!filename)
         goto Usage;
 
-#ifdef PROFILING
-    filename = argv[argi];
-#endif
-    ReadFile(argv[argi]);
+    ReadFile(filename);
 
     Write16(SR_CS, 0, 0x20CD);
     Write16(SR_CS, 2, memseg + 0x1000);
