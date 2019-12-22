@@ -991,17 +991,27 @@ void DoFixups(int r, int relative)
     char* c;
     while (r) {
         int o = 0;
-        f  = CodeAddress;
+        f = CodeAddress;
         if (relative) {
             o = r + 2;
             f -= o;
         }
         c = Output + r - CODESTART;
-        r = (c[0]&0xff)|(c[1]&0xff)<<8;
+        r = (c[0]&0xff)|c[1]<<8;
         // Is this a uselss jump we can avoid? (Too cumbersome if we already resolved fixups at this address)
         if (CodeAddress == o && LastFixup != CodeAddress) {
             CodeAddress -= 3;
             continue;
+        }
+        if (c[-1] == I_JMP_REL16-256) {
+            ++f;
+            if (f == (char)f) {
+                // Convert to short jump + nop (the nop is just to not throw off disassemblers more than necessary)
+                c[-1] = I_JMP_REL8-256;
+                f = (f&0xff)|0x9000;
+            } else {
+                --f;
+            }
         }
         c[0] = (char)(f);
         c[1] = (char)(f>>8);
