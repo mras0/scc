@@ -1220,11 +1220,6 @@ void EmitDivAxConst(int Amm)
     }
 }
 
-void EmitToBool(void)
-{
-    OutputBytes(I_AND|1, MODRM_REG, -1); // AND AX, AX
-}
-
 void EmitLocalJump(int l)
 {
     if (l < 0 || l >= LocalLabelCounter) Fail();
@@ -1767,6 +1762,14 @@ void ParsePostfixExpression(void)
 
 void ParseCastExpression(void);
 
+void ToBool(void)
+{
+    LvalToRval();
+    OutputBytes(I_AND|1, MODRM_REG, -1); // AND AX, AX
+    CurrentType = VT_BOOL;
+    CurrentVal  = JNZ;
+}
+
 void ParseUnaryExpression(void)
 {
     const int Op = TokenType;
@@ -1828,13 +1831,10 @@ void ParseUnaryExpression(void)
         } else if (Op == '!') {
             if (IsConst) {
                 CurrentVal = !CurrentVal;
-            } else if (CurrentType == VT_BOOL) {
-                CurrentVal ^= 1;
             } else {
-                if (CurrentType != VT_INT && !(CurrentType & VT_PTRMASK)) Fail();
-                EmitToBool();
-                CurrentType = VT_BOOL;
-                CurrentVal  = JZ;
+                if (CurrentType != VT_BOOL)
+                    ToBool();
+                CurrentVal ^= 1;
             }
         } else {
             Unexpected();
@@ -2037,18 +2037,16 @@ int OpCommutes(int Op)
 
 void DoCondHasExpr(int Label, int Forward) // forward => jump if label is false
 {
-    if (CurrentType == VT_BOOL) {
-        EmitJcc(CurrentVal^Forward, Label);
-    } else if (CurrentType == (VT_LOCLIT|VT_INT)) {
+    if (CurrentType == (VT_LOCLIT|VT_INT)) {
         // Constant condition
         if (!CurrentVal && Forward)
             EmitJmp(Label);
-    } else {
-        GetVal();
-        if (CurrentType != VT_INT && !(CurrentType&VT_PTRMASK)) Fail();
-        EmitToBool();
-        EmitJcc(JNZ^Forward, Label);
+        return;
     }
+
+    if (CurrentType != VT_BOOL)
+        ToBool();
+    EmitJcc(CurrentVal^Forward, Label);
 }
 
 
@@ -2188,11 +2186,8 @@ void ParseExpr1(int OuterPrecedence)
         Temp = Op == TOK_OROR;
         if (Temp || Op == TOK_ANDAND) {
             LEnd = MakeLabel();
-            if (CurrentType != VT_BOOL) {
-                if (CurrentType != VT_INT && !(CurrentType & VT_PTRMASK)) Fail();
-                EmitToBool();
-                CurrentVal = JNZ;
-            }
+            if (CurrentType != VT_BOOL)
+                ToBool();
             EmitMovRImm(R_AX, Temp);
             EmitJcc(CurrentVal ^ !Temp, LEnd);
         } else {
@@ -2250,7 +2245,10 @@ void ParseExpr1(int OuterPrecedence)
         }
 
         if (LEnd >= 0) {
-            GetVal();
+            if (CurrentType != VT_BOOL)
+                ToBool();
+            if (LhsVal != CurrentVal)
+                GetVal();
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
             LvalToRval();
