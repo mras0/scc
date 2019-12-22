@@ -177,19 +177,6 @@ int isalpha(int c)
     _emit 0x19 _emit 0xC0               // SBB AX, AX
 }
 
-int isalnum(int c)
-{
-    _emit 0x8A _emit 0x46 _emit 0x04   //         MOV AL, [BP+4]
-    _emit 0x2C _emit 0x41              //         SUB AL, 'A'
-    _emit 0x72 _emit 0x06              //         JC  ChkDig
-    _emit 0x24 _emit 0xDF              //         AND AL, 0xDF
-    _emit 0x3C _emit 0x1A              //         CMP AL, 'Z'-'A'+1
-    _emit 0xEB _emit 0x04              //         JMP Done
-    _emit 0x2C _emit 0xEF              // ChkDig: SUB AL, '0'-'A'
-    _emit 0x3C _emit 0x0A              //         CMP AL, 10
-    _emit 0x19 _emit 0xC0              // Done:   SBB AX, AX
-}
-
 #endif
 
 // Misc. constants
@@ -440,9 +427,9 @@ char* CopyStr(char* dst, const char* src)
     return dst;
 }
 
+const char HexD[] = "0123456789ABCDEF";
 char* CvtHex(char* dest, int n)
 {
-    const char* HexD = "0123456789ABCDEF";
     int i;
     for (i = 3; i >= 0; --i) {
         *dest++ = HexD[(n>>i*4)&0xf];
@@ -692,6 +679,8 @@ void GetStringLiteral(void)
     if (TokenStrLit+TokenNumVal-Output > OUTPUT_MAX) Fail();
 }
 
+const char IsIdChar[] = "\x00\x00\x00\x00\x00\x00\xFF\x03\xFE\xFF\xFF\x87\xFE\xFF\xFF\x07";
+
 void GetToken(void)
 {
 Redo:
@@ -733,7 +722,7 @@ Redo:
         char* start = &IdBuffer[IdBufferIndex];
         char* pc = start;
         int Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
-        while (isalnum(CurChar) || CurChar == '_') {
+        while ((IsIdChar[CurChar>>3]>>(CurChar&7)) & 1) {
             Hash = Hash*HASHMUL+(*pc++ = CurChar);
             if (InBufPtr != InBufEnd) {
                 CurChar = *InBufPtr++;
@@ -1063,6 +1052,7 @@ void EmitLocalLabel(int l)
     Labels[l].Ref = 0;
 }
 
+const char StaticName[] = "@static";
 void EmitGlobalLabel(struct VarDecl* vd)
 {
     if (vd->Offset) Fail();
@@ -1070,11 +1060,10 @@ void EmitGlobalLabel(struct VarDecl* vd)
     IsDeadCode = 0;
     DoFixups(vd->Ref, vd->Type & VT_FUN);
 
-
     char* Buf = &IdBuffer[IdBufferIndex];
     char* P = CvtHex(Buf, CodeAddress);
     *P++ = ' ';
-    P = CopyStr(P, vd->Id == -2 ? "@static" : IdText(vd->Id));
+    P = CopyStr(P, vd->Id == -2 ? StaticName : IdText(vd->Id));
     *P++ = '\r';
     *P++ = '\n';
     write(MapFile, Buf, (int)(P - Buf));
@@ -2981,8 +2970,8 @@ void ParseExternalDefition(void)
         vd->Type |= VT_LOCGLOB;
 
         if (Accept('=')) {
-            ParseAssignmentExpression();
             EmitGlobalLabel(vd);
+            ParseAssignmentExpression();
             switch (CurrentType) {
             case VT_INT|VT_LOCLIT:
                 // TODO: Could save one byte per global char...
