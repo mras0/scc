@@ -1352,14 +1352,6 @@ void Unexpected(void)
     Fatal("Unexpected token");
 }
 
-int Accept(int type)
-{
-    if (TokenType != type)
-        return 0;
-    GetToken();
-    return 1;
-}
-
 void Expect(int type)
 {
     if (TokenType == type) {
@@ -1891,7 +1883,8 @@ void ParseUnaryExpression(void)
             GetToken();
             const int WasDead = IsDeadCode;
             IsDeadCode = 1;
-            if (Accept('(')) {
+            if (TokenType == '(') {
+                GetToken();
                 if (IsTypeStart()) {
                     ParseAbstractDecl();
                     CurrentVal = SizeofCurrentType();
@@ -1915,7 +1908,8 @@ void ParseUnaryExpression(void)
 
 void ParseCastExpression(void)
 {
-    if (Accept('(')) {
+    if (TokenType == '(') {
+        GetToken();
         if (IsTypeStart()) {
             ParseAbstractDecl();
             Expect(')');
@@ -2453,12 +2447,14 @@ void ParseDeclSpecs(void)
                 // TODO: Store and use the enum identifier
                 GetToken();
             }
-            if (Accept('{')) {
+            if (TokenType == '{') {
+                GetToken();
                 ++IgnoreRedef;
                 int EnumVal = 0;
                 while (TokenType != '}') {
                     const int id = ExpectId();
-                    if (Accept('=')) {
+                    if (TokenType == '=') {
+                        GetToken();
                         ParseAssignmentExpression();
                         if (CurrentType != (VT_INT|VT_LOCLIT)) Fail();
                         EnumVal = CurrentVal;
@@ -2466,10 +2462,12 @@ void ParseDeclSpecs(void)
                     CurrentType = VT_INT|VT_LOCLIT;
                     struct VarDecl* vd = AddVarDecl(id);
                     vd->Offset = EnumVal;
-                    if (!Accept(',')) {
-                        break;
+                    if (TokenType == ',') {
+                        GetToken();
+                        ++EnumVal;
+                        continue;
                     }
-                    ++EnumVal;
+                    break;
                 }
                 Expect('}');
                 --IgnoreRedef;
@@ -2496,13 +2494,14 @@ void ParseDeclSpecs(void)
                 } else {
                     id |= ID_MAX; // Should never match in above loop
                 }
-                if (Accept('{') || CurrentTypeExtra < 0) {
+                if (TokenType == '{') {
+                    GetToken();
                     if (StructCount == STRUCT_MAX) Fail();
                     const int SI = StructCount++;
                     struct StructDecl* SD = &StructDecls[SI];
                     SD->Id = id;
                     struct StructMember** Last = &SD->Members;
-                    while (!Accept('}')) {
+                    while (TokenType != '}') {
                         ParseAbstractDecl();
                         int BaseType  = CurrentType;
                         int BaseExtra = CurrentTypeExtra;
@@ -2514,13 +2513,17 @@ void ParseDeclSpecs(void)
                             SM->TypeExtra = CurrentTypeExtra;
                             *Last = SM;
                             Last = &SM->Next;
-                            if (!Accept(','))
-                                break;
-                            CurrentType      = BaseType;
-                            CurrentTypeExtra = BaseExtra;
+                            if (TokenType == ',') {
+                                GetToken();
+                                CurrentType      = BaseType;
+                                CurrentTypeExtra = BaseExtra;
+                                continue;
+                            }
+                            break;
                         }
                         Expect(';');
                     }
+                    GetToken();
                     *Last = 0;
                     CurrentTypeExtra = SI;
                 }
@@ -2538,13 +2541,15 @@ void ParseDeclSpecs(void)
 void ParseDeclarator(int* Id)
 {
     // TODO: Could allow type qualifiers (const/volatile) here
-    while (Accept('*')) {
+    while (TokenType == '*') {
+        GetToken();
         CurrentType += VT_PTR1;
     }
     if (Id) {
         *Id = ExpectId();
     }
-    if (Accept('[')) {
+    if (TokenType == '[') {
+        GetToken();
         if (ArrayCount == ARRAY_MAX) Fail();
         struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
         AD->Extra = CurrentTypeExtra;
@@ -2588,8 +2593,9 @@ struct VarDecl* ParseFirstDecl(void)
 // Remember to reset CurrentType/CurrentTypeExtra before calling
 struct VarDecl* NextDecl(void)
 {
-    if (!Accept(','))
+    if (TokenType != ',')
         return 0;
+    GetToken();
     return DoDecl();
 }
 
@@ -2647,8 +2653,9 @@ Redo:
                 NextSwitchCase = MakeLabel();
                 OutputBytes(I_CMP|5, -1);
                 OutputWord(CurrentVal);
-                if (!Accept(TOK_CASE))
+                if (TokenType != TOK_CASE)
                     break;
+                GetToken();
                 EmitJcc(JZ, NextSwitchStmt);
             }
             EmitJcc(JNZ, NextSwitchCase);
@@ -2714,11 +2721,12 @@ Redo:
         {
             GetToken();
             const int ElseLabel = MakeLabel();
-            Accept('(');
+            Expect('(');
             DoCond(ElseLabel, 1);
-            Accept(')');
+            Expect(')');
             ParseStatement();
-            if (Accept(TOK_ELSE)) {
+            if (TokenType == TOK_ELSE) {
+                GetToken();
                 const int EndLabel  = MakeLabel();
                 EmitJmp(EndLabel);
                 EmitLocalLabel(ElseLabel);
@@ -2845,7 +2853,8 @@ Redo:
         // Expression statement / Labelled statement
         const int id = TokenType - TOK_BREAK;
         GetToken();
-        if (Accept(':')) {
+        if (TokenType == ':') {
+            GetToken();
             EmitLocalLabel(GetNamedLabel(id)->LabelId);
             EmitModrm(I_LEA, R_SP, VT_LOCOFF, LocalOffset);
             goto Redo;
@@ -2867,7 +2876,8 @@ Redo:
             } else {
                 vd->Type |= VT_LOCOFF;
                 size = (size+1)&-2;
-                if (Accept('=')) {
+                if (TokenType == '=') {
+                    GetToken();
                     ParseAssignmentExpression();
                     GetVal();
                     EmitPush(R_AX);
@@ -2924,9 +2934,10 @@ void ParseCompoundStatement(void)
 
     PushScope();
     Expect('{');
-    while (!Accept('}')) {
+    while (TokenType != '}') {
         ParseStatement();
     }
+    GetToken();
     PopScope();
     if (OldOffset != LocalOffset) {
         PendingSpAdj += OldOffset - LocalOffset;
@@ -2953,7 +2964,8 @@ void ParseExternalDefition(void)
 
     CurrentType = vd->Type &= ~VT_STATIC;
 
-    if (Accept('(')) {
+    if (TokenType == '(') {
+        GetToken();
         vd->Type |= VT_FUN | VT_LOCGLOB;
         // Make room for "late globals"
         int i;
@@ -2965,8 +2977,10 @@ void ParseExternalDefition(void)
         int ArgOffset;
         ArgOffset = 4;
         while (TokenType != ')') {
-            if (Accept(TOK_ELLIPSIS))
+            if (TokenType == TOK_ELLIPSIS) {
+                GetToken();
                 break;
+            }
             ParseAbstractDecl();
             if (CurrentType == VT_VOID)
                 break;
@@ -2974,12 +2988,14 @@ void ParseExternalDefition(void)
             arg->Type |= VT_LOCOFF;
             arg->Offset = ArgOffset;
             ArgOffset += 2;
-            if (!Accept(',')) {
-                break;
+            if (TokenType == ',') {
+                GetToken();
+                continue;
             }
+            break;
         }
         Expect(')');
-        if (!Accept(';')) {
+        if (TokenType != ';') {
             if (LocalLabelCounter) Fail();
             LocalOffset = 0;
             ReturnUsed = 0;
@@ -3000,6 +3016,8 @@ void ParseExternalDefition(void)
             //int l;for (l = 0; l < LocalLabelCounter; ++l)if (!(Labels[l].Ref == 0)) Fail();
             LocalLabelCounter = 0;
             NamedLabelCount = 0;
+        } else {
+            GetToken();
         }
         PopScope();
         return;
@@ -3010,7 +3028,8 @@ void ParseExternalDefition(void)
     while (vd) {
         vd->Type |= VT_LOCGLOB;
 
-        if (Accept('=')) {
+        if (TokenType == '=') {
+            GetToken();
             EmitGlobalLabel(vd);
             ParseAssignmentExpression();
             switch (CurrentType) {
