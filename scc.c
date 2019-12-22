@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <time.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -175,6 +176,15 @@ int isalpha(int c)
     _emit 0x2C _emit 0x41               // SUB AL, 'A'
     _emit 0x3C _emit 0x1A               // CMP AL, 'Z'-'A'+1
     _emit 0x19 _emit 0xC0               // SBB AX, AX
+}
+
+int clock()
+{
+    _emit 0x31 _emit 0xC0              // XOR  AX, AX
+    _emit 0x8E _emit 0xD8              // MOV  DS, AX
+    _emit 0xA1 _emit 0x6C _emit 0x04   // MOV  AX, [0x46C]
+    _emit 0x0E                         // PUSH CS
+    _emit 0x1F                         // POP  DS
 }
 
 #endif
@@ -3056,6 +3066,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    const int StartTime = clock();
+
     InFile = open(argv[1], 0); // O_RDONLY
     if (InFile < 0) {
         Fatal("Error opening input file");
@@ -3117,6 +3129,8 @@ int main(int argc, char** argv)
     const int OutFile = OpenOutput();
     write(OutFile, Output, CodeAddress - BssSize - CODESTART);
     close(OutFile);
+
+    Printf("%s %d\n", IdBuffer, clock()-StartTime);
 
     return 0;
 }
