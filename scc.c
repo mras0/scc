@@ -582,10 +582,15 @@ int TryGetChar(int ch, int t, int p)
 void SkipLine(void)
 {
     while (CurChar != '\n') {
+        while (InBufPtr != InBufEnd) {
+            if ((CurChar = *InBufPtr++) == '\n')
+                goto Found;
+        }
+        NextChar();
         if (!CurChar)
             return;
-        NextChar();
     }
+Found:
     NextChar();
     ++Line;
 }
@@ -594,14 +599,18 @@ void SkipWhitespace(void)
 {
     for (;;) {
         while (CurChar <= ' ') {
+            while (InBufPtr != InBufEnd) {
+                if ((CurChar = *InBufPtr++) > ' ')
+                    goto Found;
+                if (CurChar == '\n')
+                    ++Line;
+            }
+            NextChar();
             if (!CurChar) {
                 return;
             }
-            if (CurChar == '\n') {
-                ++Line;
-            }
-            NextChar();
         }
+    Found:
         if (CurChar != '/')
             return;
         NextChar();
