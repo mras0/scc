@@ -580,9 +580,12 @@ int TryGetChar(char ch, int t, int p)
 
 void SkipLine(void)
 {
-    while (CurChar && CurChar != '\n')
+    while (CurChar != '\n') {
+        if (!CurChar)
+            return;
         NextChar();
-    if (CurChar) NextChar();
+    }
+    NextChar();
     ++Line;
 }
 
@@ -598,26 +601,27 @@ Redo:
         }
         NextChar();
     }
+    if (CurChar != '/')
+        return;
+    NextChar();
     if (CurChar == '/') {
+        SkipLine();
+    } else if (CurChar == '*') {
         NextChar();
-        if (CurChar == '/') {
-            SkipLine();
-        } else if (CurChar == '*') {
+        int star = 0;
+        while (!star || CurChar != '/') {
+            star = CurChar == '*';
+            if (CurChar == '\n') ++Line;
             NextChar();
-            int star = 0;
-            while (!star || CurChar != '/') {
-                star = CurChar == '*';
-                NextChar();
-                if (!CurChar)
-                    Fatal("Unterminated comment");
-            }
-            NextChar();
-        } else {
-            StoredSlash = 1;
-            return;
+            if (!CurChar)
+                Fatal("Unterminated comment");
         }
-        goto Redo;
+        NextChar();
+    } else {
+        StoredSlash = 1;
+        return;
     }
+    goto Redo;
 }
 
 int GetDigit(void)
