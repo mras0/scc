@@ -915,7 +915,8 @@ enum {
 
 enum {
     MODRM_DISP16   = 0x06, // [disp16]
-    MODRM_BX       = 0x07, // [BX]
+    MODRM_SI       = 0x04, // [SI]
+    //MODRM_BX       = 0x07, // [BX]
     MODRM_BP_DISP8 = 0x46, // [BP+disp8]
     MODRM_REG      = 0xC0,
 };
@@ -1123,7 +1124,7 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
         EmitGlobalRef(&VarDecls[Val]);
     } else {
         if (Loc) Fail();
-        OutputBytes(Inst, MODRM_BX|R, -1);
+        OutputBytes(Inst, MODRM_SI|R, -1);
     }
 }
 
@@ -1438,7 +1439,7 @@ void LvalToRval(void)
             CurrentType = VT_INT;
         }
         if (!loc)
-            OutputBytes(I_XCHG_AX|R_BX, -1);
+            OutputBytes(I_XCHG_AX|R_SI, -1);
         EmitLoadAx(sz, loc, CurrentVal);
     }
 }
@@ -1449,7 +1450,7 @@ void DoIncDecOp(int Op, int Post)
     const int WordOp = ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR);
     const int Loc = CurrentType & VT_LOCMASK;
     if (!Loc) {
-        OutputBytes(I_XCHG_AX|R_BX, -1);
+        OutputBytes(I_XCHG_AX|R_SI, -1);
     }
     if (Post) {
         EmitLoadAx(1+WordOp, Loc, CurrentVal);
@@ -2166,9 +2167,9 @@ void HandleLhsLvalLoc(int LhsLoc)
     if (!LhsLoc) {
         if (PendingPushAx) {
             PendingPushAx = 0;
-            OutputBytes(I_XCHG_AX|R_BX, -1);
+            OutputBytes(I_XCHG_AX|R_SI, -1);
         } else {
-            EmitPop(R_BX);
+            EmitPop(R_SI);
             LocalOffset += 2;
         }
     } else {
@@ -2254,7 +2255,7 @@ void ParseExpr1(int OuterPrecedence)
             if (LhsLoc)
                 EmitLoadAddr(R_DI, LhsLoc, LhsVal);
             else
-                EmitMovRR(R_DI, R_BX);
+                EmitMovRR(R_DI, R_SI);
             if (Temp)
                 EmitLoadAddr(R_SI, Temp, CurrentVal);
             else
@@ -2298,7 +2299,7 @@ void ParseExpr1(int OuterPrecedence)
                             EmitModrm(Inst, R_AX, LhsLoc, LhsVal);
                         }
                         if (!LhsLoc)
-                            OutputBytes(I_XCHG_AX|R_BX, -1);
+                            OutputBytes(I_XCHG_AX|R_SI, -1);
                         CurrentType = LhsType | LhsLoc | VT_LVAL;
                         CurrentVal = LhsVal;
                         continue;
