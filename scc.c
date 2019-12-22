@@ -309,9 +309,9 @@ enum {
 
 // Operator precedence
 enum {
-    PRED_EQ = 14,
-    PRED_COMMA,
-    PRED_STOP = 100,
+    PREC_ASSIGN = 14,
+    PREC_COMMA,
+    PREC_STOP = 100,
 };
 
 struct Label {
@@ -703,7 +703,7 @@ Redo:
     }
     TokenType = CurChar;
     NextChar();
-    OperatorPrecedence = PRED_STOP;
+    OperatorPrecedence = PREC_STOP;
 
     if (TokenType < 'A') {
         if (TokenType < '0') {
@@ -776,11 +776,11 @@ Redo:
     case 0:
         return;
     case '=':
-        OperatorPrecedence = PRED_EQ;
+        OperatorPrecedence = PREC_ASSIGN;
         TryGetChar('=', TOK_EQEQ, 7);
         return;
     case ',':
-        OperatorPrecedence = PRED_COMMA;
+        OperatorPrecedence = PREC_COMMA;
         return;
     case '?':
         OperatorPrecedence = 13;
@@ -791,7 +791,7 @@ Redo:
     case '<':
         OperatorPrecedence = 6;
         if (TryGetChar('<', TOK_LSH, 5)) {
-            TryGetChar('=', TOK_LSHEQ, PRED_EQ);
+            TryGetChar('=', TOK_LSHEQ, PREC_ASSIGN);
         } else{
             TryGetChar('=', TOK_LTEQ, 6);
         }
@@ -799,7 +799,7 @@ Redo:
     case '>':
         OperatorPrecedence = 6;
         if (TryGetChar('>', TOK_RSH, 5)) {
-            TryGetChar('=', TOK_RSHEQ, PRED_EQ);
+            TryGetChar('=', TOK_RSHEQ, PREC_ASSIGN);
         } else {
             TryGetChar('=', TOK_GTEQ, 6);
         }
@@ -807,51 +807,51 @@ Redo:
     case '&':
         OperatorPrecedence = 8;
         if (!TryGetChar('&', TOK_ANDAND, 11)) {
-            TryGetChar('=', TOK_ANDEQ, PRED_EQ);
+            TryGetChar('=', TOK_ANDEQ, PREC_ASSIGN);
         }
         return;
     case '|':
         OperatorPrecedence = 10;
         if (!TryGetChar('|', TOK_OROR, 12)) {
-            TryGetChar('=', TOK_OREQ, PRED_EQ);
+            TryGetChar('=', TOK_OREQ, PREC_ASSIGN);
         }
         return;
     case '^':
         OperatorPrecedence = 9;
-        TryGetChar('=', TOK_XOREQ, PRED_EQ);
+        TryGetChar('=', TOK_XOREQ, PREC_ASSIGN);
         return;
     case '+':
         OperatorPrecedence = 4;
-        if (!TryGetChar('+', TOK_PLUSPLUS, PRED_STOP)) {
-            TryGetChar('=', TOK_PLUSEQ, PRED_EQ);
+        if (!TryGetChar('+', TOK_PLUSPLUS, PREC_STOP)) {
+            TryGetChar('=', TOK_PLUSEQ, PREC_ASSIGN);
         }
         return;
     case '-':
         OperatorPrecedence = 4;
-        if (!TryGetChar('-', TOK_MINUSMINUS, PRED_STOP)) {
-            if (!TryGetChar('=', TOK_MINUSEQ, PRED_EQ))
-                TryGetChar('>', TOK_ARROW, PRED_STOP);
+        if (!TryGetChar('-', TOK_MINUSMINUS, PREC_STOP)) {
+            if (!TryGetChar('=', TOK_MINUSEQ, PREC_ASSIGN))
+                TryGetChar('>', TOK_ARROW, PREC_STOP);
         }
         return;
     case '*':
         OperatorPrecedence = 3;
-        TryGetChar('=', TOK_STAREQ, PRED_EQ);
+        TryGetChar('=', TOK_STAREQ, PREC_ASSIGN);
         return;
     case '/':
  Slash:
         OperatorPrecedence = 3;
-        TryGetChar('=', TOK_SLASHEQ, PRED_EQ);
+        TryGetChar('=', TOK_SLASHEQ, PREC_ASSIGN);
         return;
     case '%':
         OperatorPrecedence = 3;
-        TryGetChar('=', TOK_MODEQ, PRED_EQ);
+        TryGetChar('=', TOK_MODEQ, PREC_ASSIGN);
         return;
     case '_':
         goto Identifier;
     case '.':
         if (CurChar == '.') {
             NextChar();
-            if (!TryGetChar('.', TOK_ELLIPSIS, PRED_STOP)) {
+            if (!TryGetChar('.', TOK_ELLIPSIS, PREC_STOP)) {
                 break;
             }
         }
@@ -2192,17 +2192,13 @@ void ParseExpr1(int OuterPrecedence)
     int Temp;
     int Op;
     int Prec;
-    int IsAssign;
     int LhsType;
     int LhsTypeExtra;
     int LhsVal;
     int LhsLoc;
-    for (;;) {
+    do {
         Op   = TokenType;
         Prec = OperatorPrecedence;
-        if (Prec > OuterPrecedence) {
-            break;
-        }
         GetToken();
 
         if (Op == '?') {
@@ -2210,9 +2206,7 @@ void ParseExpr1(int OuterPrecedence)
             continue;
         }
 
-        IsAssign = Prec == PRED_EQ;
-
-        if (IsAssign) {
+        if (Prec == PREC_ASSIGN) {
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("L-value required");
             }
@@ -2244,33 +2238,17 @@ void ParseExpr1(int OuterPrecedence)
 
         ParseCastExpression(); // RHS
         for (;;) {
-            if (OperatorPrecedence > Prec || (OperatorPrecedence == Prec && OperatorPrecedence != PRED_EQ)) // LookAheadOp != PRED_EQ => !IsRightAssociative
+            if (OperatorPrecedence > Prec || (OperatorPrecedence == Prec && OperatorPrecedence != PREC_ASSIGN)) // Precedence == PREC_ASSIGN <=> IsRightAssociative
                 break;
             ParseExpr1(OperatorPrecedence);
         }
 
-        LhsLoc = LhsType & VT_LOCMASK;
-        LhsType &= ~VT_LOCMASK;
-
         if (Op == ',') {
             continue;
-        } else if (Op == '=' && LhsType == VT_STRUCT) {
-            // Struct assignment
-            if ((CurrentType&~VT_LOCMASK) != (VT_STRUCT|VT_LVAL) || CurrentTypeExtra != LhsTypeExtra)
-                Fail();
-            Temp = CurrentType & VT_LOCMASK;
-
-            HandleLhsLvalLoc(LhsLoc);
-            if (LhsLoc)
-                EmitLoadAddr(R_DI, LhsLoc, LhsVal);
-            if (Temp)
-                EmitLoadAddr(R_SI, Temp, CurrentVal);
-            else
-                OutputBytes(I_XCHG_AX|R_SI, -1);
-            EmitMovRImm(R_CX, SizeofCurrentType());
-            OutputBytes(I_REP, I_MOVSB, -1);
-            continue;
         }
+
+        LhsLoc = LhsType & VT_LOCMASK;
+        LhsType &= ~VT_LOCMASK;
 
         if (LhsLoc == VT_LOCLIT && CurrentType == (VT_LOCLIT|VT_INT)) {
             if (LhsType != VT_INT) Fail();
@@ -2284,8 +2262,28 @@ void ParseExpr1(int OuterPrecedence)
             if (LhsVal != CurrentVal)
                 GetVal();
             EmitLocalLabel(LEnd);
-        } else if (IsAssign) {
+            continue;
+        }
+
+        if (Prec == PREC_ASSIGN) {
             HandleLhsLvalLoc(LhsLoc);
+            if (LhsType == VT_STRUCT) {
+                // Struct assignment
+                if ((CurrentType&~VT_LOCMASK) != (VT_STRUCT|VT_LVAL) || CurrentTypeExtra != LhsTypeExtra)
+                    Fail();
+                Temp = CurrentType & VT_LOCMASK;
+
+                if (LhsLoc)
+                    EmitLoadAddr(R_DI, LhsLoc, LhsVal);
+                if (Temp)
+                    EmitLoadAddr(R_SI, Temp, CurrentVal);
+                else
+                    OutputBytes(I_XCHG_AX|R_SI, -1);
+                EmitMovRImm(R_CX, SizeofCurrentType());
+                OutputBytes(I_REP, I_MOVSB, -1);
+                continue;
+            }
+
             LvalToRval();
             int Size = 2;
             if (LhsType == VT_CHAR) {
@@ -2338,81 +2336,79 @@ void ParseExpr1(int OuterPrecedence)
                 GetVal();
             }
             EmitStoreAx(Size, LhsLoc, LhsVal);
-        } else {
-            int LhsPointeeSize = 0;
-            if (LhsType & VT_PTRMASK) {
-                LhsPointeeSize = SizeofType(LhsType-VT_PTR1, LhsTypeExtra);
-                CurrentTypeExtra = LhsTypeExtra;
-            }
-            if (CurrentType == (VT_LOCLIT|VT_INT)) {
-                if (!(PendingPushAx|IsDeadCode)) Fail();
-                PendingPushAx = 0;
-                CurrentType = VT_INT;
-                if (LhsType & VT_PTRMASK) {
-                    CurrentVal *= LhsPointeeSize;
-                    CurrentType = LhsType;
-                }
-RhsConst:
-                DoRhsConstBinOp(Op);
-            } else {
-                Temp = OpCommutes(Op);
-                if (LhsLoc == VT_LOCLIT) {
-                    if (LhsType != VT_INT) Fail();
-                    GetVal();
-                    if (Temp) {
-                        CurrentVal = LhsVal;
-                        goto RhsConst;
-                    } else {
-                        EmitMovRImm(R_CX, LhsVal);
-                    }
-                } else {
-                    if (LhsType != VT_INT && !LhsPointeeSize) Fail();
-                    if (Op == '+' && LhsPointeeSize) {
-                        GetVal();
-                        EmitScaleAx(LhsPointeeSize);
-                        CurrentType = LhsType;
-                    } else if (PendingPushAx && !(CurrentType & VT_ARRAY)) {
-                        if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
-                            if (!(CurrentType&VT_LVAL)) Fail();
-                            PendingPushAx = 0;
-                            if (!DoRhsLvalBinOp(Op))
-                                goto DoNormal;
-                            goto CheckSub;
-                        }
-                    }
-                    GetVal();
-                    if (PendingPushAx) Fail();
-                    EmitPop(R_CX);
-                    LocalOffset += 2;
-                }
-DoNormal:
-                if (!Temp)
-                    OutputBytes(I_XCHG_AX | R_CX, -1);
-                DoBinOp(Op);
-            }
-CheckSub:
-            if (Op == '-' && LhsPointeeSize) {
-                EmitDivAxConst(LhsPointeeSize);
-                CurrentType = VT_INT;
-            }
+            continue;
         }
-    }
-}
-
-void ParseExpr0(int OuterPrecedence)
-{
-    ParseCastExpression();
-    ParseExpr1(OuterPrecedence);
+        int LhsPointeeSize = 0;
+        if (LhsType & VT_PTRMASK) {
+            LhsPointeeSize = SizeofType(LhsType-VT_PTR1, LhsTypeExtra);
+            CurrentTypeExtra = LhsTypeExtra;
+        }
+        if (CurrentType == (VT_LOCLIT|VT_INT)) {
+            if (!(PendingPushAx|IsDeadCode)) Fail();
+            PendingPushAx = 0;
+            CurrentType = VT_INT;
+            if (LhsType & VT_PTRMASK) {
+                CurrentVal *= LhsPointeeSize;
+                CurrentType = LhsType;
+            }
+RhsConst:
+            DoRhsConstBinOp(Op);
+        } else {
+            Temp = OpCommutes(Op);
+            if (LhsLoc == VT_LOCLIT) {
+                if (LhsType != VT_INT) Fail();
+                GetVal();
+                if (Temp) {
+                    CurrentVal = LhsVal;
+                    goto RhsConst;
+                } else {
+                    EmitMovRImm(R_CX, LhsVal);
+                }
+            } else {
+                if (LhsType != VT_INT && !LhsPointeeSize) Fail();
+                if (Op == '+' && LhsPointeeSize) {
+                    GetVal();
+                    EmitScaleAx(LhsPointeeSize);
+                    CurrentType = LhsType;
+                } else if (PendingPushAx && !(CurrentType & VT_ARRAY)) {
+                    if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
+                        if (!(CurrentType&VT_LVAL)) Fail();
+                        PendingPushAx = 0;
+                        if (!DoRhsLvalBinOp(Op))
+                            goto DoNormal;
+                        goto CheckSub;
+                    }
+                }
+                GetVal();
+                if (PendingPushAx) Fail();
+                EmitPop(R_CX);
+                LocalOffset += 2;
+            }
+DoNormal:
+            if (!Temp)
+                OutputBytes(I_XCHG_AX | R_CX, -1);
+            DoBinOp(Op);
+        }
+CheckSub:
+        if (Op == '-' && LhsPointeeSize) {
+            EmitDivAxConst(LhsPointeeSize);
+            CurrentType = VT_INT;
+        }
+    } while (OperatorPrecedence <= OuterPrecedence);
 }
 
 void ParseExpr(void)
 {
-    ParseExpr0(PRED_COMMA);
+    ParseCastExpression();
+    if (OperatorPrecedence <= PREC_COMMA)
+        ParseExpr1(PREC_COMMA);
 }
 
 void ParseAssignmentExpression(void)
 {
-    ParseExpr0(PRED_EQ);
+    ParseCastExpression();
+    if (OperatorPrecedence <= PREC_ASSIGN)
+        ParseExpr1(PREC_ASSIGN);
 }
 
 void ParseDeclarator(int* Id);
@@ -2861,7 +2857,8 @@ Redo:
         } else {
             HandlePrimaryId(id);
             ParsePostfixExpression();
-            ParseExpr1(PRED_COMMA);
+            if (OperatorPrecedence <= PREC_COMMA)
+                ParseExpr1(PREC_COMMA);
         }
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
