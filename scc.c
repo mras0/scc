@@ -155,10 +155,11 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6380, // Warning: Very close to limit. Need at least 580 bytes of stack.
+    OUTPUT_MAX = 0x6300, // Always try to reduce this if something fails unexpectedly...
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
+    GLOBAL_RESERVE = 4, // How many globals symbols to allow to be defined in functions (where static variables count as globals)
 };
 
 enum {
@@ -336,8 +337,8 @@ int ArrayCount;
 
 struct VarDecl VarDecls[VARDECL_MAX];
 
-int Scopes[SCOPE_MAX]; // VarDecl index
-int ScopesCount;
+int Scopes[SCOPE_MAX]; // -> Next free VarDecl index (conversely one more than index of last defined variable/id)
+int ScopesCount = 1; // First scope is global
 
 struct Label Labels[LABEL_MAX];
 int LocalLabelCounter;
@@ -1252,7 +1253,7 @@ void FlushSpAdj(void)
     int Amm = PendingSpAdj;
     if (Amm) {
         // Preserve state of PendingPushAx and avoid emitting
-        // a push before adjust the stack
+        // a push before adjusting the stack
         const int ppa = PendingPushAx;
         PendingPushAx = 0;
         PendingSpAdj = 0;
@@ -1448,18 +1449,14 @@ void DoIncDecOp(int Op, int Post)
 
 void PushScope(void)
 {
-    int End;
     Check(ScopesCount < SCOPE_MAX);
-    if (ScopesCount)
-        End = Scopes[ScopesCount-1];
-    else
-        End = -1;
-    Scopes[ScopesCount++] = End;
+    Scopes[ScopesCount] = Scopes[ScopesCount-1];
+    ++ScopesCount;
 }
 
 void PopScope(void)
 {
-    Check(ScopesCount);
+    Check(ScopesCount > 1);
     --ScopesCount;
 }
 
@@ -1467,7 +1464,7 @@ int Lookup(int id)
 {
     int vd;
     Check(ScopesCount);
-    for (vd = Scopes[ScopesCount-1]; vd >= 0; vd--) {
+    for (vd = Scopes[ScopesCount-1] - 1; vd >= 0; vd--) {
         if (VarDecls[vd].Id == id) {
             break;
         }
@@ -1475,36 +1472,54 @@ int Lookup(int id)
     return vd;
 }
 
+struct VarDecl* AddVarDeclScope(int Scope, int Id)
+{
+    struct VarDecl* vd = &VarDecls[Scopes[Scope]++];
+    vd->Type      = CurrentType;
+    vd->TypeExtra = CurrentTypeExtra;
+    vd->Id        = Id;
+    vd->Offset    = 0;
+    vd->Ref       = 0;
+    return vd;
+}
+
+struct VarDecl* AddVarDecl(int Id)
+{
+    Check(Scopes[ScopesCount-1] < VARDECL_MAX);
+    return AddVarDeclScope(ScopesCount-1, Id);
+}
+
 void HandlePrimaryId(int id)
 {
     const int vd = Lookup(id);
     if (vd < 0) {
-        // Lookup failed. TODO: Assume function returning int. (Needs to be global...)
+        // Lookup failed. Assume function returning int.
+        CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
+        CurrentTypeExtra = 0;
         if (IsDeadCode) {
-            // Hack: Allow undefined functions in dead code
-            CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
-            CurrentVal  = 0;
+            CurrentVal = 0;
             return;
         }
-        Printf("Undefined identifier: \"%s\"\n", IdText(id));
-        Fatal("TODO");
+        CurrentVal = Scopes[0];
+        Check(CurrentVal < Scopes[1]);
+        AddVarDeclScope(0, id);
+        return;
     }
     CurrentType      = VarDecls[vd].Type;
     CurrentTypeExtra = VarDecls[vd].TypeExtra;
     CurrentVal       = VarDecls[vd].Offset;
-    const int Loc = CurrentType & VT_LOCMASK;
-    if (Loc == VT_LOCLIT) {
-        Check(CurrentType == (VT_LOCLIT | VT_INT));
+    if (CurrentType == (VT_LOCLIT | VT_INT)) {
         return;
     }
-    CurrentType |= VT_LVAL;
+    const int Loc = CurrentType & VT_LOCMASK;
     if (Loc != VT_LOCOFF) {
         Check(Loc == VT_LOCGLOB);
         CurrentVal = vd;
         if (CurrentType & VT_FUN) {
-            CurrentType &= ~VT_LVAL;
+            return;
         }
     }
+    CurrentType |= VT_LVAL;
 }
 
 void ParseExpr(void);
@@ -2320,19 +2335,6 @@ void ParseAssignmentExpression(void)
     ParseExpr0(PRED_EQ);
 }
 
-struct VarDecl* AddVarDecl(int Id)
-{
-    Check(ScopesCount);
-    Check(Scopes[ScopesCount-1] < VARDECL_MAX-1);
-    struct VarDecl* vd = &VarDecls[++Scopes[ScopesCount-1]];
-    vd->Type      = CurrentType;
-    vd->TypeExtra = CurrentTypeExtra;
-    vd->Id        = Id;
-    vd->Offset    = 0;
-    vd->Ref       = 0;
-    return vd;
-}
-
 void ParseDeclarator(int* Id);
 
 void ParseDeclSpecs(void)
@@ -2775,7 +2777,7 @@ void ParseExternalDefition(void)
 
     // Check for definition of previous forward declaration
     int i;
-    for (i = 0; i < *Scopes; ++i) {
+    for (i = 0; i < *Scopes - 1; ++i) {
         struct VarDecl* V = &VarDecls[i];
         if (vd->Id != V->Id) continue;
         --Scopes[0]; // Undo allocation by ParseFirstDecl
@@ -2786,7 +2788,12 @@ void ParseExternalDefition(void)
 
     if (Accept('(')) {
         vd->Type |= VT_FUN | VT_LOCGLOB;
+        // Make room for "late globals"
+        for (i = 0; i < GLOBAL_RESERVE; ++i) {
+            VarDecls[Scopes[0]++].Id = -1;
+        }
         PushScope();
+        Scopes[0] -= GLOBAL_RESERVE;
         int ArgOffset;
         ArgOffset = 4;
         while (TokenType != ')') {
@@ -2923,8 +2930,6 @@ int main(int argc, char** argv)
         " va_list va_start va_end va_arg _emit _start _SBSS _EBSS");
     Check(IdCount+TOK_BREAK-1 == TOK__EBSS);
 
-    PushScope();
-
     // Prelude
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
@@ -2941,9 +2946,10 @@ int main(int argc, char** argv)
         ParseExternalDefition();
     }
     close(InFile);
+    Check(ScopesCount == 1);
 
     EmitGlobalLabel(SBSS);
-    for (i = 0 ; i <= Scopes[0]; ++i) {
+    for (i = 0; i < *Scopes; ++i) {
         struct VarDecl* vd = &VarDecls[i];
         CurrentType      = vd->Type;
         CurrentTypeExtra = vd->TypeExtra;

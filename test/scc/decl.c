@@ -19,4 +19,8 @@ void main(void)
         int *pi, a, **pi;
     } s, s2;
     assert_eq(sizeof(s2), 10);
+
+    assert_eq(no_fwd(42), 43);
 }
+
+int no_fwd(int x) { return x+1; }
