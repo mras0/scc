@@ -47,3 +47,75 @@ add_custom_command(
 add_custom_target(sim86_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sim86.com")
 
 add_subdirectory(test)
+
+set(MAKE_DISKS FALSE CACHE BOOL "Build disk images? (Downloads SASM)")
+if (MAKE_DISKS)
+    include(ExternalProject)
+    ExternalProject_Add(SASM
+        GIT_REPOSITORY https://github.com/mras0/sasm.git
+        GIT_TAG v1.1
+        INSTALL_COMMAND ""
+        )
+    ExternalProject_Get_property(SASM SOURCE_DIR)
+    ExternalProject_Get_property(SASM BINARY_DIR)
+    set(DISKTOOL "${BINARY_DIR}/disktool")
+    set(BOOTSECT "${BINARY_DIR}/boot.bin")
+    macro(MAKEDISK NAME SIZE)
+        set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.img")
+        message(STATUS "Making disk: ${DISK_IMG} ${SIZE}K")
+        set(TEMPLATE COMMAND "${DISKTOOL}" "${DISK_IMG}")
+        set(CMDS "")
+        set(DEPS "")
+        foreach(n ${ARGN})
+            set(CMDS ${CMDS} ${TEMPLATE} put "${n}")
+            set(DEPS ${DEPS} "${n}")
+        endforeach()
+        add_custom_command(
+            OUTPUT "${DISK_IMG}"
+            ${TEMPLATE} create ${SIZE}
+            ${TEMPLATE} boot "${BINARY_DIR}/boot.bin"
+            ${TEMPLATE} put "${BINARY_DIR}/os.sys"
+            ${TEMPLATE} put "${BINARY_DIR}/cmdp.com"
+            ${TEMPLATE} put "${BINARY_DIR}/uvi.com"
+            ${TEMPLATE} put "${BINARY_DIR}/debug.com"
+            ${TEMPLATE} put "${BINARY_DIR}/sasm.com"
+            ${TEMPLATE} put "${PROJECT_SOURCE_DIR}/LICENSE.md"
+            ${CMDS}
+            DEPENDS ${DEPS}
+        )
+        add_custom_target(${NAME} ALL DEPENDS "${DISK_IMG}")
+    endmacro()
+    # TODO: Fix newlines on non-win32 platforms?
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/build.bat"
+        "echo scc  scc\nscc scc.c\n"
+        "echo scc  scc\nscc scc.c\n"
+        "echo scc  scpp\nscc scpp.c\n"
+        "echo scpp sim86\nscpp sim86.c\n"
+        "echo scc  sim86\nscc sim86.i\n"
+        "echo Run \"sim86 scc.com scc.c scc2.com\" to test\n"
+        )
+    set(SMALL_CONTENTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/scc.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scpp.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sas.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib.h"
+        "${PROJECT_BINARY_DIR}/scc.com"
+        "${PROJECT_BINARY_DIR}/scpp.com"
+        "${PROJECT_BINARY_DIR}/sas.com"
+        "${PROJECT_BINARY_DIR}/sim86.com"
+        "${CMAKE_CURRENT_BINARY_DIR}/build.bat"
+    )
+    MAKEDISK(small 360 ${SMALL_CONTENTS})
+    MAKEDISK(large 1440
+        ${SMALL_CONTENTS}
+        "${SOURCE_DIR}/strap.bat"
+        "${SOURCE_DIR}/sasm.asm"
+        "${SOURCE_DIR}/boot.asm"
+        "${SOURCE_DIR}/os.asm"
+        "${SOURCE_DIR}/cmdp.asm"
+        "${SOURCE_DIR}/insboot.asm"
+        "${SOURCE_DIR}/debug.asm"
+        "${SOURCE_DIR}/uvi.asm"
+        )
+endif()
