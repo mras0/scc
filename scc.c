@@ -177,6 +177,19 @@ int isalpha(int c)
     _emit 0x19 _emit 0xC0               // SBB AX, AX
 }
 
+int isalnum(int c)
+{
+    _emit 0x8A _emit 0x46 _emit 0x04   //         MOV AL, [BP+4]
+    _emit 0x2C _emit 0x41              //         SUB AL, 'A'
+    _emit 0x72 _emit 0x06              //         JC  ChkDig
+    _emit 0x24 _emit 0xDF              //         AND AL, 0xDF
+    _emit 0x3C _emit 0x1A              //         CMP AL, 'Z'-'A'+1
+    _emit 0xEB _emit 0x04              //         JMP Done
+    _emit 0x2C _emit 0xEF              // ChkDig: SUB AL, '0'-'A'
+    _emit 0x3C _emit 0x0A              //         CMP AL, 10
+    _emit 0x19 _emit 0xC0              // Done:   SBB AX, AX
+}
+
 #endif
 
 // Misc. constants
@@ -714,7 +727,7 @@ Redo:
         start = pc = &IdBuffer[IdBufferIndex];
         int Hash = HASHINIT*HASHMUL+TokenType;
         *pc++ = TokenType;
-        while (CurChar == '_' || isdigit(CurChar) || isalpha(CurChar)) {
+        while (isalnum(CurChar) || CurChar == '_') {
             *pc++ = CurChar;
             Hash = Hash*HASHMUL+CurChar;
             NextChar();

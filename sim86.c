@@ -501,7 +501,16 @@ void JCC(int cc)
     const char* n;
     const int e = !(cc & 1); // Expect true?
     int j;
-    switch (cc>>1) {
+    switch (cc>>1)
+    {
+    case 0:
+        n = e ? "JO" : "JNO";
+        j = !!(flags & FO);
+        break;
+    case 1:
+        n = e ? "JC" : "JNC";
+        j = !!(flags & FC);
+        break;
     case 2:
         n = e ? "JZ" : "JNZ";
         j = !!(flags & FZ);
@@ -509,6 +518,10 @@ void JCC(int cc)
     case 3:
         n = e ? "JNA" : "JA";
         j = (flags & FZ) || (flags & FC);
+        break;
+    case 4:
+        n = e ? "JS" : "JNS";
+        j = !!(flags & FS);
         break;
     case 6:
         n = e ? "JL" : "JNL";
