@@ -85,14 +85,17 @@ if (MAKE_DISKS)
         )
         add_custom_target(${NAME} ALL DEPENDS "${DISK_IMG}")
     endmacro()
-    # TODO: Fix newlines on non-win32 platforms?
+    set(NL "\n")
+    if (NOT WIN32)
+        set(NL "\r\n")
+    endif()
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/build.bat"
-        "echo scc  scc\nscc scc.c\n"
-        "echo scc  scc\nscc scc.c\n"
-        "echo scc  scpp\nscc scpp.c\n"
-        "echo scpp sim86\nscpp sim86.c\n"
-        "echo scc  sim86\nscc sim86.i\n"
-        "echo Run \"sim86 scc.com scc.c scc2.com\" to test\n"
+        "echo scc  scc${NL}scc scc.c${NL}"
+        "echo scc  scc${NL}scc scc.c${NL}"
+        "echo scc  scpp${NL}scc scpp.c${NL}"
+        "echo scpp sim86${NL}scpp sim86.c${NL}"
+        "echo scc  sim86${NL}scc sim86.i${NL}"
+        "echo Run \"sim86 scc.com scc.c scc2.com\" to test${NL}"
         )
     set(SMALL_CONTENTS
         "${CMAKE_CURRENT_SOURCE_DIR}/scc.c"
@@ -118,4 +121,16 @@ if (MAKE_DISKS)
         "${SOURCE_DIR}/debug.asm"
         "${SOURCE_DIR}/uvi.asm"
         )
+
+    find_program(QEMU qemu-system-i386)
+    if (QEMU)
+        message("Found qemu: ${QEMU}")
+        set(QEMU_EXTRA_ARGS "" CACHE STRING "Extra arguments to give QEMU. E.g. \"-s -S\" or \"-curses\"")
+        set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/large.img")
+        add_custom_target(
+            qemu_test
+            COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\",if=floppy ${QEMU_EXTRA_ARGS}
+            DEPENDS ${DISK_IMG}
+        )
+    endif()
 endif()
