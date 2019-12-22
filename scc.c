@@ -151,7 +151,7 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x62E0, // Always try to reduce this if something fails unexpectedly...
+    OUTPUT_MAX = 0x6000, // Always try to reduce this if something fails unexpectedly...
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -302,7 +302,8 @@ struct VarDecl {
     int Type;
     int TypeExtra;
     int Offset;
-    int Ref; // Fixup address for globals, negative index for static variables (Won't work with output sizes >= 32K)
+    int Ref; // Fixup address list for globals
+    int Prev;
 };
 
 int CodeAddress = CODESTART;
@@ -341,7 +342,7 @@ struct ArrayDecl ArrayDecls[ARRAY_MAX];
 int ArrayCount;
 
 struct VarDecl VarDecls[VARDECL_MAX];
-int LookupCache[ID_MAX];
+int VarLookup[ID_MAX];
 int IgnoreRedef;
 
 int Scopes[SCOPE_MAX]; // -> Next free VarDecl index (conversely one more than index of last defined variable/id)
@@ -1013,8 +1014,6 @@ void EmitGlobalRef(struct VarDecl* vd)
     int Addr = vd->Offset;
     if (Addr)
         OutputWord(Addr);
-    else if (vd->Ref < 0)
-        AddFixup(&VarDecls[-vd->Ref].Ref);
     else
         AddFixup(&vd->Ref);
 }
@@ -1385,40 +1384,6 @@ void DoIncDecOp(int Op, int Post)
     EmitModrm(I_INCDEC_RM|WordOp, Op, Loc, CurrentVal);
 }
 
-void PushScope(void)
-{
-    Check(ScopesCount < SCOPE_MAX);
-    Scopes[ScopesCount] = Scopes[ScopesCount-1];
-    ++ScopesCount;
-    ++IgnoreRedef;
-}
-
-void PopScope(void)
-{
-    Check(ScopesCount > 1);
-    --ScopesCount;
-    --IgnoreRedef;
-}
-
-int Lookup(int id)
-{
-    int vd;
-    Check(ScopesCount);
-
-    vd = LookupCache[id];
-    if (vd < Scopes[ScopesCount-1] && VarDecls[vd].Id == id) {
-        return vd;
-    }
-
-    for (vd = Scopes[ScopesCount-1] - 1; vd >= 0; vd--) {
-        if (VarDecls[vd].Id == id) {
-            LookupCache[id] = vd;
-            break;
-        }
-    }
-    return vd;
-}
-
 struct VarDecl* AddVarDeclScope(int Scope, int Id)
 {
     struct VarDecl* vd = &VarDecls[Scopes[Scope]++];
@@ -1436,28 +1401,28 @@ struct VarDecl* AddVarDecl(int Id)
     Check(idx < VARDECL_MAX);
 
     // Check if definition/re-declaration in global scope
+    int *C = &VarLookup[Id];
     if (!IgnoreRedef) {
-        int vd = Lookup(Id);
-        if (vd >= 0) {
-            return &VarDecls[vd];
+        if (*C >= 0) {
+            return &VarDecls[*C];
         }
     }
 
-    LookupCache[Id] = idx;
+    VarDecls[idx].Prev = *C;
+    *C = idx;
     return AddVarDeclScope(ScopesCount-1, Id);
 }
 
-void AddLateGlobalVar(int Id)
+struct VarDecl* AddLateGlobalVar(int Id)
 {
     CurrentVal = Scopes[0];
     Check(CurrentVal < Scopes[1]);
-    CurrentType |= VT_LOCGLOB;
-    AddVarDeclScope(0, Id);
+    return AddVarDeclScope(0, Id);
 }
 
 void HandlePrimaryId(int id)
 {
-    const int vd = Lookup(id);
+    const int vd = VarLookup[id];
     if (vd < 0) {
         // Lookup failed. Assume function returning int.
         CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
@@ -1465,6 +1430,7 @@ void HandlePrimaryId(int id)
         if (IsDeadCode) {
             CurrentVal = 0;
         } else {
+            VarLookup[id] = Scopes[0];
             AddLateGlobalVar(id);
         }
         return;
@@ -1524,7 +1490,7 @@ void ParsePrimaryExpression(void)
         GetToken();
         Expect('(');
         int id = ExpectId();
-        int vd = Lookup(id);
+        int vd = VarLookup[id];
         if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
             Fatal("Invalid va_list");
         }
@@ -1532,7 +1498,7 @@ void ParsePrimaryExpression(void)
         if (func == TOK_VA_START) {
             Expect(',');
             id = ExpectId();
-            vd = Lookup(id);
+            vd = VarLookup[id];
             if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) {
                 Fatal("Invalid argument to va_start");
             }
@@ -2539,10 +2505,7 @@ Redo:
             int size = SizeofCurrentType();
 
             if (CurrentType & VT_STATIC) {
-                CurrentType &= ~VT_STATIC;
-                AddLateGlobalVar(-2);
-                vd->Type = CurrentType;
-                vd->Ref = -CurrentVal;
+                vd->Type = (CurrentType & ~VT_STATIC) | VT_LOCGLOB;
                 BssSize += size;
             } else { 
                 vd->Type |= VT_LOCOFF;
@@ -2728,6 +2691,34 @@ Redo:
     }
 }
 
+void PushScope(void)
+{
+    Check(ScopesCount < SCOPE_MAX);
+    Scopes[ScopesCount] = Scopes[ScopesCount-1];
+    ++ScopesCount;
+    ++IgnoreRedef;
+}
+
+void PopScope(void)
+{
+    Check(ScopesCount > 1);
+    --ScopesCount;
+    --IgnoreRedef;
+    int i = Scopes[ScopesCount-1], e = Scopes[ScopesCount];
+    for (; i < e; ++i) {
+        struct VarDecl* vd = &VarDecls[i];
+        if (vd->Id < 0)
+            continue;
+        if (vd->Ref) {
+            // Move static variable for real to global scope
+            CurrentType = vd->Type;
+            CurrentTypeExtra = vd->TypeExtra;
+            AddLateGlobalVar(-2)->Ref = vd->Ref;
+        }
+        VarLookup[vd->Id] = vd->Prev;
+    }
+}
+
 void ParseCompoundStatement(void)
 {
     const int OldOffset         = LocalOffset;
@@ -2910,6 +2901,7 @@ int main(int argc, char** argv)
     MapFile = OpenOutput();
 
     memset(IdHashTab, -1, sizeof(IdHashTab));
+    memset(VarLookup, -1, sizeof(VarLookup));
 
     AddBuiltins("break case char const continue default do else enum for goto if"
         " int return sizeof static struct switch union void while"
