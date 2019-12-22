@@ -1638,102 +1638,117 @@ void ParseAssignmentExpression(void);
 void ParsePostfixExpression(void)
 {
     for (;;) {
-        if (Accept('(')) {
-            // Function call
-            Check((CurrentType & (VT_FUN|VT_LOCMASK)) == (VT_FUN|VT_LOCGLOB));
-            struct VarDecl* Func = &VarDecls[CurrentVal];
-            const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
-            int NumArgs = 0;
-            int StackAdj = 0;
-            while (TokenType != ')') {
-                enum { ArgsPerChunk = 4 }; // Must be power of 2
-                if (!(NumArgs & (ArgsPerChunk-1))) {
-                    FlushPushAx();
-                    StackAdj += ArgsPerChunk*2;
-                    LocalOffset -= ArgsPerChunk*2;
-                    PendingSpAdj -= ArgsPerChunk*2;
-                    if (NumArgs) {
-                        // Move arguments to new stack top
-                        EmitPush(R_SI);
-                        EmitPush(R_DI);
-                        EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
-                        EmitLeaStackVar(R_DI, LocalOffset);
-                        EmitMovRImm(R_CX, NumArgs);
-                        OutputBytes(I_REP, I_MOVSW, -1);
-                        EmitPop(R_DI);
-                        EmitPop(R_SI);
+        switch (TokenType) {
+        case '(':
+            {
+                GetToken();
+                // Function call
+                Check((CurrentType & (VT_FUN|VT_LOCMASK)) == (VT_FUN|VT_LOCGLOB));
+                struct VarDecl* Func = &VarDecls[CurrentVal];
+                const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK);
+                int NumArgs = 0;
+                int StackAdj = 0;
+                while (TokenType != ')') {
+                    enum { ArgsPerChunk = 4 }; // Must be power of 2
+                    if (!(NumArgs & (ArgsPerChunk-1))) {
+                        FlushPushAx();
+                        StackAdj += ArgsPerChunk*2;
+                        LocalOffset -= ArgsPerChunk*2;
+                        PendingSpAdj -= ArgsPerChunk*2;
+                        if (NumArgs) {
+                            // Move arguments to new stack top
+                            EmitPush(R_SI);
+                            EmitPush(R_DI);
+                            EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
+                            EmitLeaStackVar(R_DI, LocalOffset);
+                            EmitMovRImm(R_CX, NumArgs);
+                            OutputBytes(I_REP, I_MOVSW, -1);
+                            EmitPop(R_DI);
+                            EmitPop(R_SI);
+                        }
+                    }
+                    ParseAssignmentExpression();
+                    const int off = LocalOffset + NumArgs*2;
+                    if (CurrentType == (VT_INT|VT_LOCLIT)) {
+                        EmitStoreConst(2, VT_LOCOFF, off);
+                    } else {
+                        GetVal();
+                        Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
+                        EmitStoreAx(2, VT_LOCOFF, off);
+                    }
+                    ++NumArgs;
+
+                    if (!Accept(',')) {
+                        break;
                     }
                 }
-                ParseAssignmentExpression();
-                const int off = LocalOffset + NumArgs*2;
-                if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                    EmitStoreConst(2, VT_LOCOFF, off);
-                } else {
-                    GetVal();
-                    Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                    EmitStoreAx(2, VT_LOCOFF, off);
+                Expect(')');
+                OutputBytes(I_CALL, -1);
+                EmitGlobalRefRel(Func);
+                PendingSpAdj += StackAdj;
+                LocalOffset += StackAdj;
+                CurrentType = RetType;
+                if (CurrentType == VT_CHAR) {
+                    CurrentType = VT_INT;
                 }
-                ++NumArgs;
-
-                if (!Accept(',')) {
-                    break;
-                }
+                CurrentTypeExtra = Func->TypeExtra;
+                continue;
             }
-            Expect(')');
-            OutputBytes(I_CALL, -1);
-            EmitGlobalRefRel(Func);
-            PendingSpAdj += StackAdj;
-            LocalOffset += StackAdj;
-            CurrentType = RetType;
-            if (CurrentType == VT_CHAR) {
-                CurrentType = VT_INT;
-            }
-            CurrentTypeExtra = Func->TypeExtra;
-        } else if (Accept('[')) {
-            LvalToRval();
-            if (!(CurrentType & VT_PTRMASK)) {
-                Fatal("Expected pointer");
-            }
-            CurrentType -= VT_PTR1;
-            const int Scale    = SizeofCurrentType();
-            const int ResType  = CurrentType | VT_LVAL;
-            const int ResExtra = CurrentTypeExtra;
-            if (!IsDeadCode)
-                PendingPushAx = 1;
-            ParseExpr();
-            Expect(']');
-            if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                Check(PendingPushAx || IsDeadCode);
-                PendingPushAx = 0;
-                EmitAddRegConst(R_AX, CurrentVal * Scale);
-            } else {
+        case '[':
+            {
+                GetToken();
                 LvalToRval();
-                Check(CurrentType == VT_INT);
-                EmitScaleAx(Scale);
-                Check(!PendingPushAx);
-                EmitPop(R_CX);
-                LocalOffset += 2;
-                OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
+                if (!(CurrentType & VT_PTRMASK)) {
+                    Fatal("Expected pointer");
+                }
+                CurrentType -= VT_PTR1;
+                const int Scale    = SizeofCurrentType();
+                const int ResType  = CurrentType | VT_LVAL;
+                const int ResExtra = CurrentTypeExtra;
+                if (!IsDeadCode)
+                    PendingPushAx = 1;
+                ParseExpr();
+                Expect(']');
+                if (CurrentType == (VT_INT|VT_LOCLIT)) {
+                    Check(PendingPushAx || IsDeadCode);
+                    PendingPushAx = 0;
+                    EmitAddRegConst(R_AX, CurrentVal * Scale);
+                } else {
+                    LvalToRval();
+                    Check(CurrentType == VT_INT);
+                    EmitScaleAx(Scale);
+                    Check(!PendingPushAx);
+                    EmitPop(R_CX);
+                    LocalOffset += 2;
+                    OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
+                }
+                CurrentType      = ResType;
+                CurrentTypeExtra = ResExtra;
+                Check(!(CurrentType & VT_LOCMASK));
+                continue;
             }
-            CurrentType      = ResType;
-            CurrentTypeExtra = ResExtra;
-            Check(!(CurrentType & VT_LOCMASK));
-        } else if (Accept('.')) {
+        case '.':
+            GetToken();
             Check((CurrentType & ~VT_LOCMASK) == (VT_STRUCT|VT_LVAL));
             HandleStructMember();
-        } else if (Accept(TOK_ARROW)) {
+            continue;
+        case TOK_ARROW:
+            GetToken();
             LvalToRval();
             Check((CurrentType & ~VT_LOCMASK) == (VT_STRUCT|VT_PTR1));
             CurrentType -= VT_PTR1;
             HandleStructMember();
-        } else {
-            const int Op = TokenType;
-            if (Op != TOK_PLUSPLUS && Op != TOK_MINUSMINUS) {
-                break;
+            continue;
+        case TOK_PLUSPLUS:
+        case TOK_MINUSMINUS:
+            {
+                int Op = TokenType;
+                GetToken();
+                DoIncDecOp(Op, 1);
+                continue;
             }
-            GetToken();
-            DoIncDecOp(Op, 1);
         }
+        return;
     }
 }
 
