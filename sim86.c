@@ -452,7 +452,7 @@ void MOV(int swap)
 int ReadToMem(int fd, int off, int size)
 {
 #ifdef __SCC__
-    int s = memseg;
+    int s = sreg[SR_DS];
     _emit 0x1F // POP DS
     _emit 0x0E // PUSH CS (Match stack layout)
     read(fd, off, size);
@@ -466,7 +466,7 @@ int ReadToMem(int fd, int off, int size)
 int WriteFromMem(int fd, int off, int size)
 {
 #ifdef __SCC__
-    int s = memseg;
+    int s = sreg[SR_DS];
     _emit 0x1F // POP DS
     _emit 0x0E // PUSH CS (Match stack layout)
     write(fd, off, size);
