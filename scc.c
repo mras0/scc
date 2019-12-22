@@ -1570,16 +1570,17 @@ void ParsePrimaryExpression(void)
         CurrentType = VT_CHAR | VT_ARRAY | VT_LVAL;
         CurrentTypeExtra = ArrayCount++;
         if (!IsDeadCode) {
-            const int EndLab = MakeLabel();
-            FlushPushAx();
-            EmitJmp(EndLab);
-            const int Addr = CodeAddress;
-            IsDeadCode = 0;
+            int EndLab = -1;
+            if (ScopesCount != 1) {
+                OutputBytes(I_MOV_R_IMM16, -1);
+                OutputWord(CodeAddress+5);
+                EmitJmp(EndLab = MakeLabel());
+                IsDeadCode = 0;
+            }
             while (TokenNumVal--)
                 OutputBytes(*TokenStrLit++ & 0xff, -1);
-            EmitLocalLabel(EndLab);
-            OutputBytes(I_MOV_R_IMM16, -1);
-            OutputWord(Addr);
+            if (EndLab != -1)
+                EmitLocalLabel(EndLab);
         }
         GetToken();
         return;
@@ -2981,11 +2982,25 @@ void ParseExternalDefition(void)
 
         if (Accept('=')) {
             ParseAssignmentExpression();
-            if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Expecct constant expressions
-            // TODO: Could save one byte per global char...
-            //       Handle this if/when implementing complex initializers
             EmitGlobalLabel(vd);
-            OutputWord(CurrentVal);
+            switch (CurrentType) {
+            case VT_INT|VT_LOCLIT:
+                // TODO: Could save one byte per global char...
+                OutputWord(CurrentVal);
+                break;
+            case VT_LVAL|VT_ARRAY|VT_CHAR:
+                {
+                    if (vd->Type != (VT_LOCGLOB|VT_ARRAY|VT_CHAR)) Fail();
+                    struct ArrayDecl* AD = &ArrayDecls[vd->TypeExtra];
+                    if (AD->Bound) Fail(); // TODO
+                    AD->Bound = ArrayDecls[CurrentTypeExtra].Bound;
+                    if (CurrentTypeExtra != ArrayCount-1) Fail();
+                    --ArrayCount;
+                }
+                break;
+            default:
+                Fail();
+            }
         } else {
             BssSize += SizeofCurrentType();
         }

@@ -1,6 +1,8 @@
 char gc[3];
 int gi[2];
 
+char str1[] = "Test";
+
 void main(void)
 {
     char a[2], b[3];
@@ -70,6 +72,13 @@ void main(void)
     large[511] = 42;
     assert_eq(large[1], 60);
     assert_eq(large[511], 42);
+
+    assert_eq(sizeof(str1), 5);
+    assert_eq(str1[0], 'T');
+    assert_eq(str1[1], 'e');
+    assert_eq(str1[2], 's');
+    assert_eq(str1[3], 't');
+    assert_eq(str1[4], 0);
 
     // TODO: multi dimensional arrays
 }
