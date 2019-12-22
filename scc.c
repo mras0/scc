@@ -1810,74 +1810,82 @@ void ToBool(void)
 
 void ParseUnaryExpression(void)
 {
-    const int Op = TokenType;
-    int IsConst = 0;
-    switch (Op) {
-    case TOK_PLUSPLUS:
-    case TOK_MINUSMINUS:
-        GetToken();
-        ParseUnaryExpression();
-        DoIncDecOp(Op, 0);
-        return;
-    case '&':
-    case '*':
-    case '+':
+    switch (TokenType) {
+    case TOK_NUM:
+        break; // Fast path to ParsePrimaryExpression()
     case '-':
-    case '~':
     case '!':
-        GetToken();
-        ParseCastExpression();
-        if (Op == '&') {
-            if (!(CurrentType & VT_LVAL)) {
-                Fatal("Lvalue required for address-of operator");
+    case '*':
+    case '&':
+    case '~':
+    case '+':
+        {
+            const int Op = TokenType;
+
+            GetToken();
+            ParseCastExpression();
+            if (Op == '&') {
+                if (!(CurrentType & VT_LVAL)) {
+                    Fatal("Lvalue required for address-of operator");
+                }
+                const int loc = CurrentType & VT_LOCMASK;
+                if (loc) {
+                    EmitLoadAddr(R_AX, loc, CurrentVal);
+                }
+                CurrentType = (CurrentType&~(VT_LVAL|VT_LOCMASK)) + VT_PTR1;
+                return;
             }
-            const int loc = CurrentType & VT_LOCMASK;
-            if (loc) {
-                EmitLoadAddr(R_AX, loc, CurrentVal);
+
+            int IsConst = 0;
+            if ((CurrentType & VT_LOCMASK) == VT_LOCLIT) {
+                if (CurrentType != (VT_INT|VT_LOCLIT)) Fail();
+                IsConst = 1;
+            } else {
+                LvalToRval();
             }
-            CurrentType = (CurrentType&~(VT_LVAL|VT_LOCMASK)) + VT_PTR1;
+            if (Op == '-') {
+                if (IsConst) {
+                    CurrentVal = -CurrentVal;
+                } else {
+                    if (CurrentType != VT_INT) Fail();
+                    OutputBytes(0xF7, 0xD8, -1); // NEG AX
+                }
+            } else if (Op == '!') {
+                if (IsConst) {
+                    CurrentVal = !CurrentVal;
+                } else {
+                    if (CurrentType != VT_BOOL)
+                        ToBool();
+                    CurrentVal ^= 1;
+                }
+            } else if (Op == '*') {
+                if (!(CurrentType & VT_PTRMASK)) {
+                    Fatal("Pointer required for dereference");
+                }
+                CurrentType = (CurrentType-VT_PTR1) | VT_LVAL;
+            } else if (Op == '~') {
+                if (IsConst) {
+                    CurrentVal = ~CurrentVal;
+                } else {
+                    if (CurrentType != VT_INT) Fail();
+                    OutputBytes(0xF7, 0xD0, -1); // NOT AX
+                }
+            } else if (Op == '+') {
+                if (!IsConst && CurrentType != VT_INT) Fail();
+            } else {
+                Fail();
+            }
             return;
         }
-
-        if ((CurrentType & VT_LOCMASK) == VT_LOCLIT) {
-            if (CurrentType != (VT_INT|VT_LOCLIT)) Fail();
-            IsConst = 1;
-        } else {
-            LvalToRval();
+    case TOK_PLUSPLUS:
+    case TOK_MINUSMINUS:
+        {
+            const int Op = TokenType;
+            GetToken();
+            ParseUnaryExpression();
+            DoIncDecOp(Op, 0);
+            return;
         }
-        if (Op == '*') {
-            if (!(CurrentType & VT_PTRMASK)) {
-                Fatal("Pointer required for dereference");
-            }
-            CurrentType = (CurrentType-VT_PTR1) | VT_LVAL;
-        } else if (Op == '+') {
-            if (!IsConst && CurrentType != VT_INT) Fail();
-        } else if (Op == '-') {
-            if (IsConst) {
-                CurrentVal = -CurrentVal;
-            } else {
-                if (CurrentType != VT_INT) Fail();
-                OutputBytes(0xF7, 0xD8, -1); // NEG AX
-            }
-        } else if (Op == '~') {
-            if (IsConst) {
-                CurrentVal = ~CurrentVal;
-            } else {
-                if (CurrentType != VT_INT) Fail();
-                OutputBytes(0xF7, 0xD0, -1); // NOT AX
-            }
-        } else if (Op == '!') {
-            if (IsConst) {
-                CurrentVal = !CurrentVal;
-            } else {
-                if (CurrentType != VT_BOOL)
-                    ToBool();
-                CurrentVal ^= 1;
-            }
-        } else {
-            Unexpected();
-        }
-        return;
     case TOK_SIZEOF:
         {
             GetToken();
