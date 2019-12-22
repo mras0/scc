@@ -557,17 +557,6 @@ void NextChar(void)
     CurChar = *InBufPtr++;
 }
 
-char GetChar(void)
-{
-    if (StoredSlash) {
-        StoredSlash = 0;
-        return '/';
-    }
-    char ch = CurChar;
-    NextChar();
-    return ch;
-}
-
 int TryGetChar(int ch, int t, int p)
 {
     if (CurChar == ch) {
@@ -637,7 +626,9 @@ int GetDigit(void)
 
 char Unescape(void)
 {
-    switch (GetChar()) {
+    int ch = CurChar;
+    NextChar();
+    switch (ch) {
     case 'n':  return '\n';
     case 'r':  return '\r';
     case 't':  return '\t';
@@ -647,12 +638,12 @@ char Unescape(void)
     case 'x':  break;
     default: Check(0);
     }
-    int x = GetDigit()<<4;
+    ch = GetDigit()<<4;
     NextChar();
-    x |= GetDigit();
+    ch |= GetDigit();
     NextChar();
-    Check(!(x&0xff00));
-    return x;
+    Check(!(ch&0xff00));
+    return ch;
 }
 
 void GetStringLiteral(void)
@@ -660,17 +651,19 @@ void GetStringLiteral(void)
     TokenStrLit = Output + CodeAddress + (64 - CODESTART); // Just leave a little head room for code to be outputted before consuming the string literal
     TokenNumVal = 0;
 
-    char ch;
     for (;;) {
-        while ((ch = GetChar()) != '"') {
-            if (!ch) {
+        while (CurChar != '"') {
+            if (!CurChar) {
                 Fatal("Unterminated string literal");
             }
+            char ch = CurChar;
+            NextChar();
             if (ch == '\\') {
                 ch = Unescape();
             }
             TokenStrLit[TokenNumVal++] = ch;
         }
+        NextChar();
         SkipWhitespace();
         if (StoredSlash || CurChar != '"')
             break;
@@ -684,7 +677,13 @@ void GetToken(void)
 {
 Redo:
     SkipWhitespace();
-    TokenType = GetChar();
+    if (StoredSlash) {
+        TokenType = '/';
+        StoredSlash = 0;
+        goto Slash;
+    }
+    TokenType = CurChar;
+    NextChar();
     OperatorPrecedence = PRED_STOP;
 
     if (TokenType < '0') {
@@ -823,6 +822,7 @@ Redo:
         TryGetChar('=', TOK_STAREQ, PRED_EQ);
         return;
     case '/':
+ Slash:
         OperatorPrecedence = 3;
         TryGetChar('=', TOK_SLASHEQ, PRED_EQ);
         return;
@@ -832,20 +832,22 @@ Redo:
         return;
     case '.':
         if (CurChar == '.') {
-            GetChar();
+            NextChar();
             if (!TryGetChar('.', TOK_ELLIPSIS, PRED_STOP)) {
                 break;
             }
         }
         return;
     case '\'':
-        TokenNumVal = GetChar();
+        TokenNumVal = CurChar;
+        NextChar();
         if (TokenNumVal == '\\') {
             TokenNumVal = Unescape();
         }
-        if (GetChar() != '\'') {
+        if (CurChar != '\'') {
             Fatal("Invalid character literal");
         }
+        NextChar();
         TokenType = TOK_NUM;
         return;
     case '"':
@@ -1310,11 +1312,13 @@ int Accept(int type)
 
 void Expect(int type)
 {
-    if (!Accept(type)) {
-        PrintTokenType(type);
-        Printf("expected got ");
-        Unexpected();
+    if (TokenType == type) {
+        GetToken();
+        return;
     }
+    PrintTokenType(type);
+    Printf("expected got ");
+    Unexpected();
 }
 
 int ExpectId(void)
