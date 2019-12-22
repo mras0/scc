@@ -8,6 +8,7 @@
 unsigned long long counts[65536];
 unsigned long long total_cycles;
 unsigned long long cycles;
+const char* filename;
 #endif
 
 enum {
@@ -512,22 +513,55 @@ void HandleOpen(int oflags)
     reg[R_AX] = fd;
 }
 
-void DoExit(int e)
+void DoExit(int ec)
 {
     if (verbose) {
-        if (e)
-            printf("\nExiting with error code %d\n", e);
+        if (ec)
+            printf("\nExiting with error code %d\n", ec);
         else
             printf("\nNormal exit\n");
     }
 #ifdef PROFILING
+    struct E {
+        int Addr;
+        char Id[64];
+        unsigned long long Total;
+    } entries[4096] = {
+        { 0, "@@start", 0 },
+    };
+    int num_entries = 1;
+    char fname[256];
+    strcpy(fname, filename);
+    char* d = strrchr(fname, '.');
+    if (d) {
+        strcpy(d, ".map");
+        FILE* fp = fopen(fname, "rt");
+        if (fp) {
+            while (fscanf(fp, "%4X %63s\n", &entries[num_entries].Addr, &entries[num_entries].Id) == 2) {
+                ++num_entries;
+            }
+            fclose(fp);
+        }
+    }
+
     printf("\n%llu cylces\n", total_cycles);
+    int entry = 0;
+    printf("Count;Address;Name\n");
     for (int i = 0; i < 65536; ++i) {
+        if (entry+1 < num_entries && i >= entries[entry+1].Addr) {
+            ++entry;
+        }
         if (counts[i])
-            printf("%8llu %X\n", counts[i], i);
+            printf("%llu;0x%04X;%s+0x%X\n", counts[i], i, entries[entry].Id, i - entries[entry].Addr);
+        if (entry >= 0)
+            entries[entry].Total += counts[i];
+    }
+    printf("\nCount;Function\n");
+    for (int i = 0; i < num_entries; ++i) {
+        printf("%llu;%s\n", entries[i].Total, entries[i].Id);
     }
 #endif
-    exit(e);
+    exit(ec);
 }
 
 void INT(void)
@@ -599,6 +633,9 @@ int main(int argc, char** argv)
     }
 
     sreg[0] = sreg[1] = sreg[2] = sreg[3] = DEFAULT_SEGMENT;
+#ifdef PROFILING
+    filename = argv[argi];
+#endif
     ReadFile(argv[argi]);
 
     Write16(SR_CS, 0, 0x20CD);
@@ -718,6 +755,19 @@ int main(int argc, char** argv)
                     if (verbose) printf("REP MOVSB");
                     while (reg[R_CX]) {
                         Write8(SR_ES, reg[R_DI], Read8(SR_DS, reg[R_SI]));
+                        reg[R_CX] -= 1;
+                        reg[R_DI] += 1;
+                        reg[R_SI] += 1;
+                    }
+                }
+                break;
+            case 0xA6:
+                {
+                    assert(rep == 0xF3);
+                    if (verbose) printf("REPE CMPSB");
+                    flags = FZ;
+                    while ((flags & FZ) && reg[R_CX]) {
+                        DoOp(OP_CMP, Read8(SR_DS, reg[R_SI]), Read8(SR_ES, reg[R_DI]));
                         reg[R_CX] -= 1;
                         reg[R_DI] += 1;
                         reg[R_SI] += 1;

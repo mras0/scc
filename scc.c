@@ -57,6 +57,21 @@ void memset(void* ptr, int val, int size)
     _emit 0x5E                       // POP SI
 }
 
+int memcmp(void* l, void* r, int size)
+{
+    _emit 0x56                       // PUSH SI
+    _emit 0x57                       // PUSH DI
+    _emit 0x31 _emit 0xC0            // XOR AX, AX
+    _emit 0x8B _emit 0x7E _emit 0x04 // MOV DI,[BP+0x4]
+    _emit 0x8B _emit 0x76 _emit 0x06 // MOV SI,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
+    _emit 0xF3 _emit 0xA6            // REPE CMPSB
+    _emit 0x74 _emit 0x01            // JE  $+3
+    _emit 0x40                       // INC AX // XXX: TODO sometimes output -1
+    _emit 0x5F                       // POP DI
+    _emit 0x5E                       // POP SI
+}
+
 void exit(int retval)
 {
     retval = (retval & 0xff) | 0x4c00;
@@ -389,7 +404,9 @@ int IsDigit(int ch)
 
 int IsAlpha(int ch)
 {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+    if ((ch = (ch & 0xDF) - 'A') < 0)
+        return 0;
+    return ch < 26;
 }
 
 char* CopyStr(char* dst, const char* src)
@@ -397,15 +414,6 @@ char* CopyStr(char* dst, const char* src)
     while (*src) *dst++ = *src++;
     *dst = 0;
     return dst;
-}
-
-int StrEqual(const char* a, const char* b)
-{
-    while (*a && *b && *a == *b) {
-        ++a;
-        ++b;
-    }
-    return !*a && !*b;
 }
 
 char* CvtHex(char* dest, int n)
@@ -706,7 +714,7 @@ Redo:
                 IdHashTab[Hash] = TokenType;
                 break;
             }
-            if (StrEqual(start, IdText(TokenType))) {
+            if (!memcmp(start, IdBuffer + IdOffset[TokenType], pc-start)) {
                 break;
             }
             Hash += 1 + Slot++;
@@ -915,10 +923,10 @@ void OutputBytes(int first, ...)
     va_list vl;
     va_start(vl, first);
     do {
-        Check(CodeAddress < OUTPUT_MAX+CODESTART);
         o[CodeAddress++] = first;
     } while ((first = va_arg(vl, int)) != -1);
     va_end(vl);
+    Check(CodeAddress <= OUTPUT_MAX+CODESTART);
 }
 
 void OutputWord(int w)
