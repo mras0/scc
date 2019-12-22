@@ -50,20 +50,14 @@ int DosCall(int* ax, int bx, int cx, int dx)
 
 void memset(void* ptr, int val, int size)
 {
-    _emit 0x56                       // PUSH SI
-    _emit 0x57                       // PUSH DI
     _emit 0x8B _emit 0x7E _emit 0x04 // MOV DI,[BP+0x4]
     _emit 0x8B _emit 0x46 _emit 0x06 // MOV AX,[BP+0x6]
     _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
     _emit 0xF3 _emit 0xAA            // REP STOSB
-    _emit 0x5F                       // POP DI
-    _emit 0x5E                       // POP SI
 }
 
 int memcmp(void* l, void* r, int size)
 {
-    _emit 0x56                       // PUSH SI
-    _emit 0x57                       // PUSH DI
     _emit 0x31 _emit 0xC0            // XOR AX, AX
     _emit 0x8B _emit 0x7E _emit 0x04 // MOV DI,[BP+0x4]
     _emit 0x8B _emit 0x76 _emit 0x06 // MOV SI,[BP+0x6]
@@ -71,8 +65,6 @@ int memcmp(void* l, void* r, int size)
     _emit 0xF3 _emit 0xA6            // REPE CMPSB
     _emit 0x74 _emit 0x01            // JE  $+3
     _emit 0x40                       // INC AX // XXX: TODO sometimes output -1
-    _emit 0x5F                       // POP DI
-    _emit 0x5E                       // POP SI
 }
 
 void exit(int retval)

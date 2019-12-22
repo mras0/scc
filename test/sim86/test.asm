@@ -75,6 +75,12 @@ L2:
         cmp cx, 0xFE34
         jne ERR
 
+        mov cx, 0xABCD
+        shr cx, 1
+        jnc ERR
+        cmp cx, 0x55E6
+        jne ERR
+
         mov ax, 0x4c00
         int 0x21
 ERR:

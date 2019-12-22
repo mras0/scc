@@ -98,16 +98,16 @@ if (MAKE_DISKS)
         "echo Run \"sim86 scc.com scc.c scc2.com\" to test${NL}"
         )
     set(SMALL_CONTENTS
-        "${CMAKE_CURRENT_SOURCE_DIR}/scc.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scpp.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/sas.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/lib.h"
         "${PROJECT_BINARY_DIR}/scc.com"
         "${PROJECT_BINARY_DIR}/scpp.com"
         "${PROJECT_BINARY_DIR}/sas.com"
         "${PROJECT_BINARY_DIR}/sim86.com"
         "${CMAKE_CURRENT_BINARY_DIR}/build.bat"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scc.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scpp.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sas.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib.h"
     )
     MAKEDISK(small 360 ${SMALL_CONTENTS})
     MAKEDISK(large 1440

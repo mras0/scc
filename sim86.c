@@ -1059,10 +1059,16 @@ int main(int argc, char** argv)
             case 0xD1:
                 {
                     ModRM();
-                    int v = ReadRM();
+                    const int v = ReadRM();
                     // TODO: Handle flags
                     switch (modrm>>3&7) {
+                    case 5: // SHR R/M16, 1
+                        if (verbose) printf("SHR %s, 1", rmtext);
+                        WriteRM((v >> 1)&0x7fff);
+                        flags = (flags&~FC) | (v&1);
+                        break;
                     case 7: // SAR R/M16, 1
+                        if (verbose) printf("SAR %s, 1", rmtext);
                         WriteRM(v >> 1);
                         break;
                     default:
@@ -1073,14 +1079,17 @@ int main(int argc, char** argv)
             case 0xD3:
                 {
                     ModRM();
-                    int v = ReadRM();
+                    const int v = ReadRM();
+                    const int a = reg[R_CX]&15;
                     // TODO: Handle flags
                     switch (modrm>>3&7) {
                     case 4: // SHL R/M16, CL
-                        WriteRM(v << (reg[R_CX]&15));
+                        if (verbose) printf("SHL %s, CL", rmtext);
+                        WriteRM(v << a);
                         break;
                     case 7: // SAR R/M16, CL
-                        WriteRM(v >> (reg[R_CX]&15));
+                        if (verbose) printf("SAR %s, CL", rmtext);
+                        WriteRM(v >> a);
                         break;
                     default:
                         Fatal("TODO: D3/%d", modrm>>3&7);
