@@ -995,6 +995,23 @@ int main(int argc, char** argv)
                     }
                 }
                 break;
+            case 0xAC:
+                {
+                    assert(rep == 0x00);
+                    if (verbose) printf("LODSB");
+                    dsize = 0;
+                    WriteReg(R_AX, Read8(SR_DS, reg[R_SI]));
+                    reg[R_SI] += 1;
+                }
+                break;
+            case 0xAD:
+                {
+                    assert(rep == 0x00);
+                    if (verbose) printf("LODSW");
+                    WriteReg(R_AX, Read16(SR_DS, reg[R_SI]));
+                    reg[R_SI] += 2;
+                }
+                break;
             case 0xC3:
                 if (verbose) printf("RET");
                 ip = DoPop();

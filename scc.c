@@ -946,6 +946,7 @@ enum {
     I_MOVSB          = 0xa4,
     I_MOVSW          = 0xa5,
     I_STOSB          = 0xaa,
+    I_LODSB          = 0xac,
     I_RET            = 0xc3,
     I_INT            = 0xcd,
     I_SHROT16_CL     = 0xd3,
@@ -1438,8 +1439,11 @@ void LvalToRval(void)
             sz = 1;
             CurrentType = VT_INT;
         }
-        if (!loc)
-            OutputBytes(I_XCHG_AX|R_SI, -1);
+        if (!loc) {
+            OutputBytes(I_XCHG_AX|R_SI, I_LODSB-1+sz, -1);
+            if (sz == 1) OutputBytes(I_CBW, -1);
+            return;
+        }
         EmitLoadAx(sz, loc, CurrentVal);
     }
 }
