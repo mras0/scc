@@ -394,12 +394,6 @@ int IsAlpha(int ch)
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
-void PutStr(const char* s)
-{
-    while (*s)
-        putchar(*s++);
-}
-
 char* CopyStr(char* dst, const char* src)
 {
     while (*src) *dst++ = *src++;
@@ -468,9 +462,6 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
             dest  = CopyStr(dest, buf);
         } else if (ch == 'X') {
             dest = CvtHex(dest, va_arg(vl, int));
-        } else {
-            PutStr("Invalid format string");
-            exit(1);
         }
     }
     *dest = 0;
@@ -483,7 +474,9 @@ void Printf(const char* format, ...)
     va_list vl;
     va_start(vl, format);
     VSPrintf(LineBuf, format, vl);
-    PutStr(LineBuf);
+    char* s = LineBuf;
+    while (*s)
+        putchar(*s++);
     va_end(vl);
 }
 
@@ -621,29 +614,22 @@ int GetDigit(void)
 
 char Unescape(void)
 {
-    char ch = GetChar();
-    if (ch == 'n') {
-        return '\n';
-    } else if (ch == 'r') {
-        return '\r';
-    } else if (ch == 't') {
-        return '\t';
-    } else if (ch == '\'') {
-        return '\'';
-    } else if (ch == '"') {
-        return '"';
-    } else if (ch == '\\') {
-        return '\\';
-    } else if (ch == 'x') {
-        int x = GetDigit()<<4;
-        NextChar();
-        x |= GetDigit();
-        NextChar();
-        Check(!(x&0xff00));
-        return x;
-    } else {
-        Fatal("Unsupported character literal");
+    switch (GetChar()) {
+    case 'n':  return '\n';
+    case 'r':  return '\r';
+    case 't':  return '\t';
+    case '\'': return '\'';
+    case '"':  return '"';
+    case '\\': return '\\';
+    case 'x':  break;
+    default: Check(0);
     }
+    int x = GetDigit()<<4;
+    NextChar();
+    x |= GetDigit();
+    NextChar();
+    Check(!(x&0xff00));
+    return x;
 }
 
 void GetStringLiteral(void)
@@ -833,7 +819,7 @@ Redo:
         if (CurChar == '.') {
             GetChar();
             if (!TryGetChar('.', TOK_ELLIPSIS, PRED_STOP)) {
-                Fatal("Invalid token ..");
+                break;
             }
         }
         return;
@@ -932,7 +918,7 @@ void OutputBytes(int first, ...)
     va_start(vl, first);
     do {
         Check(CodeAddress < OUTPUT_MAX+CODESTART);
-        o[CodeAddress++] = (char)first;
+        o[CodeAddress++] = first;
     } while ((first = va_arg(vl, int)) != -1);
     va_end(vl);
 }
@@ -946,8 +932,7 @@ int MakeLabel(void)
 {
     Check(LocalLabelCounter < LABEL_MAX);
     const int l = LocalLabelCounter++;
-    Labels[l].Addr = 0;
-    Labels[l].Ref  = 0;
+    memset(&Labels[l], 0, sizeof(struct Label));
     return l;
 }
 
@@ -957,24 +942,14 @@ struct NamedLabel* GetNamedLabel(int Id)
     int l = NamedLabelCount;
     for (; l--; ++NL) {
         if (NL->Id == Id) {
-            goto Ret;
+            return NL;
         }
     }
     Check(NamedLabelCount < NAMED_LABEL_MAX);
     ++NamedLabelCount;
     NL->Id = Id;
     NL->LabelId = MakeLabel();
-Ret:
     return NL;
-}
-
-void ResetLabels(void)
-{
-    int l;
-    for (l = 0; l < LocalLabelCounter; ++l)
-        Check(Labels[l].Ref == 0);
-    LocalLabelCounter = 0;
-    NamedLabelCount = 0;
 }
 
 void DoFixups(int r, int relative)
@@ -1017,13 +992,6 @@ void EmitLocalLabel(int l)
     DoFixups(Labels[l].Ref, 1);
     Labels[l].Addr = CodeAddress;
     Labels[l].Ref = 0;
-}
-
-void EmitLocalRef(int l)
-{
-    int Addr = Labels[l].Addr;
-    Check(Addr);
-    OutputWord(Addr);
 }
 
 void EmitGlobalLabel(struct VarDecl* vd)
@@ -1224,13 +1192,6 @@ void EmitJcc(int cc, int l)
 
     OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
     EmitLocalJump(l);
-}
-
-void EmitCall(struct VarDecl* Func)
-{
-    Check(Func->Type & VT_FUN);
-    OutputBytes(I_CALL, -1);
-    EmitGlobalRefRel(Func);
 }
 
 void EmitLoadAddr(int Reg, int Loc, int Val)
@@ -1529,15 +1490,15 @@ void ParsePrimaryExpression(void)
         CurrentTypeExtra = ArrayCount++;
         if (!IsDeadCode) {
             const int EndLab = MakeLabel();
-            const int DatLab = MakeLabel();
             FlushPushAx();
             EmitJmp(EndLab);
-            EmitLocalLabel(DatLab);
+            const int Addr = CodeAddress;
+            IsDeadCode = 0;
             while (TokenNumVal--)
                 OutputBytes(*TokenStrLit++ & 0xff, -1);
             EmitLocalLabel(EndLab);
             OutputBytes(I_MOV_R_IMM16, -1);
-            EmitLocalRef(DatLab);
+            OutputWord(Addr);
         }
         GetToken();
     } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
@@ -1679,7 +1640,8 @@ void ParsePostfixExpression(void)
                 }
             }
             Expect(')');
-            EmitCall(Func);
+            OutputBytes(I_CALL, -1);
+            EmitGlobalRefRel(Func);
             if (StackAdj) {
                 EmitAdjSp(StackAdj);
                 LocalOffset += StackAdj;
@@ -1866,27 +1828,31 @@ void ParseCastExpression(void)
 
 int RelOpToCC(int Op)
 {
-    if (Op == '<')       return JL;
-    if (Op == TOK_LTEQ)  return JNG;
-    if (Op == '>')       return JG;
-    if (Op == TOK_GTEQ)  return JNL;
-    if (Op == TOK_EQEQ)  return JZ;
-    if (Op == TOK_NOTEQ) return JNZ;
+    switch (Op) {
+    case '<':       return JL;
+    case TOK_LTEQ:  return JNG;
+    case '>':       return JG;
+    case TOK_GTEQ:  return JNL;
+    case TOK_EQEQ:  return JZ;
+    case TOK_NOTEQ: return JNZ;
+    }
     return -1;
 }
 
 int RemoveAssign(int Op)
 {
-    if (Op == TOK_PLUSEQ)  return '+';
-    if (Op == TOK_MINUSEQ) return '-';
-    if (Op == TOK_STAREQ)  return '*';
-    if (Op == TOK_SLASHEQ) return '/';
-    if (Op == TOK_MODEQ)   return '%';
-    if (Op == TOK_LSHEQ)   return TOK_LSH;
-    if (Op == TOK_RSHEQ)   return TOK_RSH;
-    if (Op == TOK_ANDEQ)   return '&';
-    if (Op == TOK_XOREQ)   return '^';
-    if (Op == TOK_OREQ)    return '|';
+    switch (Op) {
+    case TOK_PLUSEQ:  return '+';
+    case TOK_MINUSEQ: return '-';
+    case TOK_STAREQ:  return '*';
+    case TOK_SLASHEQ: return '/';
+    case TOK_MODEQ:   return '%';
+    case TOK_LSHEQ:   return TOK_LSH;
+    case TOK_RSHEQ:   return TOK_RSH;
+    case TOK_ANDEQ:   return '&';
+    case TOK_XOREQ:   return '^';
+    case TOK_OREQ:    return '|';
+    }
     Check(0);
 }
 
@@ -1971,16 +1937,18 @@ Plus:
 
 int DoConstBinOp(int Op, int L, int R)
 {
-    if (Op == '+')     return L + R;
-    if (Op == '-')     return L - R;
-    if (Op == '*')     return L * R;
-    if (Op == '/')     return L / R;
-    if (Op == '%')     return L % R;
-    if (Op == '&')     return L & R;
-    if (Op == '^')     return L ^ R;
-    if (Op == '|')     return L | R;
-    if (Op == TOK_LSH) return L << R;
-    if (Op == TOK_RSH) return L >> R;
+    switch (Op) {
+    case '+':     return L + R;
+    case '-':     return L - R;
+    case '*':     return L * R;
+    case '/':     return L / R;
+    case '%':     return L % R;
+    case '&':     return L & R;
+    case '^':     return L ^ R;
+    case '|':     return L | R;
+    case TOK_LSH: return L << R;
+    case TOK_RSH: return L >> R;
+    }
     Check(0);
 }
 
@@ -2835,7 +2803,11 @@ void ParseExternalDefition(void)
             }
             EmitPop(R_BP);
             OutputBytes(I_RET, -1); // RET
-            ResetLabels();
+
+            // When debugging:
+            //int l;for (l = 0; l < LocalLabelCounter; ++l)Check(Labels[l].Ref == 0);
+            LocalLabelCounter = 0;
+            NamedLabelCount = 0;
         }
         PopScope();
         return;
