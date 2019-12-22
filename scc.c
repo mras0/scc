@@ -181,31 +181,32 @@ int isalpha(int c)
 
 #endif
 
+// Misc. constants
 enum {
+    CODESTART = 0x100,
     INBUF_MAX = 512,
     SCOPE_MAX = 16,
     VARDECL_MAX = 400,
     ID_MAX = 550,
-    ID_HASHMAX = 1024, // Must be power of 2 and (some what) greater than ID_MAX
+    ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6000, // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
+    OUTPUT_MAX = 0x6000,    // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
-    GLOBAL_RESERVE = 4, // How many globals symbols to allow to be defined in functions (where static variables count as globals)
-};
+    GLOBAL_RESERVE = 4,     // How many globals symbols to allow to be defined in functions (where static variables count as globals)
 
-enum {
     // Brute forced best values (when change was made)
     HASHINIT = 17,
     HASHMUL  = 89,
 };
 
+// Type flags and values
 enum {
     VT_VOID,
-    VT_BOOL,        // CurrentValue holds condition code for "true"
+    VT_BOOL,                // CurrentValue holds condition code for "true"
     VT_CHAR,
     VT_INT,
     VT_STRUCT,
@@ -217,21 +218,24 @@ enum {
     VT_ARRAY   = 1<<5,
 
     VT_PTR1    = 1<<6,
-    VT_PTRMASK = 3<<6, // 3 levels of indirection should be enough..
+    VT_PTRMASK = 3<<6,      // 3 levels of indirection should be enough..
 
-    VT_LOCLIT  = 1<<8,    // CurrentVal holds a literal value (or label)
-    VT_LOCOFF  = 2<<8,    // CurrentVal holds BP offset
-    VT_LOCGLOB = 3<<8,    // CurrentVal holds the VarDecl index of a global
+    VT_LOCLIT  = 1<<8,      // CurrentVal holds a literal value (or label)
+    VT_LOCOFF  = 2<<8,      // CurrentVal holds BP offset
+    VT_LOCGLOB = 3<<8,      // CurrentVal holds the VarDecl index of a global
     VT_LOCMASK = 3<<8,
 
     VT_STATIC  = 1<<10,
 };
 
+// Token types
 enum {
     TOK_EOF, // Must be zero
 
     TOK_NUM,
     TOK_STRLIT,
+
+    // Single character operators have their ASCII value as token type
 
     TOK_EQEQ = 128,
     TOK_NOTEQ,
@@ -295,14 +299,11 @@ enum {
     TOK__EBSS,
 };
 
+// Operator precedence
 enum {
     PRED_EQ = 14,
     PRED_COMMA,
     PRED_STOP = 100,
-};
-
-enum {
-    CODESTART = 0x100,
 };
 
 struct Label {
@@ -327,7 +328,7 @@ enum {
 };
 
 struct StructDecl {
-    int Id;
+    int Id; // OR'ed with IS_UNION_FLAG if union, id is ID_MAX for unnamed structs/unions
     struct StructMember* Members;
 };
 
@@ -1389,7 +1390,7 @@ void LvalToRval(void)
             CurrentType = VT_INT;
         }
         if (!loc)
-            EmitMovRR(R_BX, R_AX);
+            OutputBytes(I_XCHG_AX|R_BX, -1);
         EmitLoadAx(sz, loc, CurrentVal);
     }
 }
@@ -1400,7 +1401,7 @@ void DoIncDecOp(int Op, int Post)
     const int WordOp = ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR);
     const int Loc = CurrentType & VT_LOCMASK;
     if (!Loc) {
-        EmitMovRR(R_BX, R_AX);
+        OutputBytes(I_XCHG_AX|R_BX, -1);
     }
     if (Post) {
         EmitLoadAx(1+WordOp, Loc, CurrentVal);
@@ -1632,8 +1633,7 @@ void ParsePostfixExpression(void)
                         EmitPush(R_SI);
                         EmitPush(R_DI);
                         EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
-                        EmitMovRR(R_DI, R_SI);
-                        EmitAddRegConst(R_DI, -ArgsPerChunk*2);
+                        EmitLeaStackVar(R_DI, LocalOffset);
                         EmitMovRImm(R_CX, NumArgs);
                         OutputBytes(I_REP, I_MOVSW, -1);
                         EmitPop(R_DI);
@@ -1898,7 +1898,7 @@ void DoBinOp(int Op)
     } else if (Op == '/' || Op == '%') {
         OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1);
         if (Op == '%') {
-            EmitMovRR(R_AX, R_DX);
+            OutputBytes(I_XCHG_AX|R_DX, -1);
         }
         return;
     } else if (Op == TOK_LSH) {
@@ -2079,12 +2079,13 @@ void HandleCondOp(void)
     }
 }
 
+
 void HandleLhsLvalLoc(int LhsLoc)
 {
     if (!LhsLoc) {
         if (PendingPushAx) {
             PendingPushAx = 0;
-            EmitMovRR(R_BX, R_AX);
+            OutputBytes(I_XCHG_AX|R_BX, -1);
         } else {
             EmitPop(R_BX);
             LocalOffset += 2;
@@ -2180,7 +2181,7 @@ void ParseExpr1(int OuterPrecedence)
             if (Temp)
                 EmitLoadAddr(R_SI, Temp, CurrentVal);
             else
-                EmitMovRR(R_SI, R_AX);
+                OutputBytes(I_XCHG_AX|R_SI, -1);
             EmitMovRImm(R_CX, SizeofCurrentType());
             OutputBytes(I_REP, I_MOVSB, -1);
             EmitPop(R_DI);
@@ -2217,9 +2218,9 @@ void ParseExpr1(int OuterPrecedence)
                         } else {
                             GetVal();
                             EmitModrm(Inst, R_AX, LhsLoc, LhsVal);
-                            if (!LhsLoc)
-                                EmitMovRR(R_AX, R_BX);
                         }
+                        if (!LhsLoc)
+                            OutputBytes(I_XCHG_AX|R_BX, -1);
                         CurrentType = LhsType | LhsLoc | VT_LVAL;
                         CurrentVal = LhsVal;
                         continue;
@@ -2227,7 +2228,7 @@ void ParseExpr1(int OuterPrecedence)
                 }
                 if (!Temp) {
                     Check(CurrentType == VT_INT);
-                    EmitMovRR(R_CX, R_AX);
+                    OutputBytes(I_XCHG_AX|R_CX, -1);
                 }
                 EmitLoadAx(Size, LhsLoc, LhsVal);
                 if (Temp) {
@@ -2692,7 +2693,7 @@ Redo:
         const int LastSwitchStmt = NextSwitchStmt;
         const int LastSwitchDef  = SwitchDefault;
         EmitPush(R_SI);
-        EmitMovRR(R_SI, R_AX);
+        OutputBytes(I_XCHG_AX|R_SI, -1);
         LocalOffset -= 2;
         BStackLevel    = LocalOffset;
         BreakLabel     = MakeLabel();
