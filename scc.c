@@ -1449,7 +1449,7 @@ void LvalToRval(void)
             sz = 1;
             CurrentType = VT_INT;
         }
-        if (!loc) { ///XXX
+        if (!loc) {
             OutputBytes(I_XCHG_AX|R_SI, -1);
         }
         EmitLoadAx(sz, loc, CurrentVal);
@@ -2291,6 +2291,7 @@ void ParseExpr1(int OuterPrecedence)
                 GetVal();
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
+            HandleLhsLvalLoc(LhsLoc);
             LvalToRval();
             int Size = 2;
             if (LhsType == VT_CHAR) {
@@ -2298,7 +2299,6 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 if (LhsType != VT_INT && !(LhsType & VT_PTRMASK)) Fail();
             }
-            HandleLhsLvalLoc(LhsLoc);
             if (Op != '=') {
                 if (!LhsLoc)
                     EmitMovRR(R_SI, R_DI); // TODO: Can sometimes be avoided
