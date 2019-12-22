@@ -566,16 +566,16 @@ int TryGetChar(int ch, int t, int p)
 
 void SkipLine(void)
 {
-    while (CurChar != '\n') {
-        while (InBufPtr != InBufEnd) {
-            if ((CurChar = *InBufPtr++) == '\n')
-                goto Found;
-        }
+    while ((CurChar = *InBufPtr++) != '\n') {
+        if (CurChar)
+            continue;
+        --InBufPtr;
         NextChar();
+        if (CurChar == '\n')
+            break;
         if (!CurChar)
             return;
     }
-Found:
     NextChar();
     ++Line;
 }
@@ -583,26 +583,24 @@ Found:
 void SkipWhitespace(void)
 {
     for (;;) {
-        while (CurChar <= ' ') {
-            if (CurChar == '\n')
-                ++Line;
-            while (InBufPtr != InBufEnd) {
-                if ((CurChar = *InBufPtr++) > ' ') {
-                    if (CurChar != '/')
-                        return;
-                    goto Slash;
-                }
-                if (CurChar == '\n')
+        if (CurChar <= ' ') {
+            while ((CurChar = *InBufPtr++) <= ' ') {
+                switch (CurChar) {
+                case '\n':
                     ++Line;
-            }
-            NextChar();
-            if (!CurChar) {
-                return;
+                    continue;
+                case 0:
+                    --InBufPtr;
+                    NextChar();
+                    if (!CurChar)
+                        return;
+                    --InBufPtr; // Re-read character instead of duplicating logic
+                    continue;
+                }
             }
         }
         if (CurChar != '/')
             return;
-Slash:
         NextChar();
         switch (CurChar) {
         case '/':
@@ -731,10 +729,9 @@ Redo:
         int Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
         while ((IsIdChar[CurChar>>3]>>(CurChar&7)) & 1) {
             Hash = Hash*HASHMUL+(*pc++ = CurChar);
-            if (InBufPtr != InBufEnd) {
-                CurChar = *InBufPtr++;
+            if ((CurChar = *InBufPtr++))
                 continue;
-            }
+            --InBufPtr;
             NextChar();
         }
         *pc++ = 0;
