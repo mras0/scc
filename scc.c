@@ -24,13 +24,17 @@
 #include <unistd.h>
 #endif
 
-#define CREATE_FLAGS O_WRONLY | O_CREAT | O_TRUNC | O_BINARY
-
 #else
 // Only used when self-compiling
 // Small "standard library"
 
-enum { CREATE_FLAGS = 1 }; // Ugly hack
+enum {
+    O_RDONLY = 0,
+    O_WRONLY = 1,
+    O_CREAT  = 1,
+    O_TRUNC  = 1,
+    O_BINARY = 0,
+};
 
 int main(int argc, char** argv);
 
@@ -352,7 +356,7 @@ int BssSize;
 int MapFile;
 
 int InFile;
-char InBuf[INBUF_MAX];
+char InBuf[INBUF_MAX+1];
 char* InBufPtr;
 char* InBufEnd;
 char CurChar;
@@ -535,16 +539,18 @@ void Fail(void)
 // Tokenizer
 ///////////////////////////////////////////////////////////////////////
 
-int NextChar(void)
+void NextChar(void)
 {
+    if ((CurChar = *InBufPtr++))
+        return;
+    InBufPtr = InBuf;
+    InBufEnd = InBuf + read(InFile, InBuf, INBUF_MAX);
+    *InBufEnd = 0;
     if (InBufPtr == InBufEnd) {
-        InBufPtr = InBuf;
-        InBufEnd = InBufPtr + read(InFile, InBuf, INBUF_MAX);
-        if (InBufPtr == InBufEnd) {
-            return CurChar = 0;
-        }
+        CurChar = 0;
+        return;
     }
-    return CurChar = *InBufPtr++;
+    CurChar = *InBufPtr++;
 }
 
 int TryGetChar(int ch, int t, int p)
@@ -565,7 +571,8 @@ void SkipLine(void)
             if ((CurChar = *InBufPtr++) == '\n')
                 goto Found;
         }
-        if (!NextChar())
+        NextChar();
+        if (!CurChar)
             return;
     }
 Found:
@@ -588,14 +595,16 @@ void SkipWhitespace(void)
                 if (CurChar == '\n')
                     ++Line;
             }
-            if (!NextChar()) {
+            NextChar();
+            if (!CurChar) {
                 return;
             }
         }
         if (CurChar != '/')
             return;
 Slash:
-        switch (NextChar()) {
+        NextChar();
+        switch (CurChar) {
         case '/':
             SkipLine();
             continue;
@@ -606,7 +615,8 @@ Slash:
                 while (!star || CurChar != '/') {
                     star = CurChar == '*';
                     if (CurChar == '\n') ++Line;
-                    if (!NextChar()) Fail(); // Unterminated comment
+                    NextChar();
+                    if (!CurChar) Fail(); // Unterminated comment
                 }
                 NextChar();
             }
@@ -3069,7 +3079,7 @@ void MakeOutputFilename(const char* n, const char* ext)
 
 int OpenOutput(void)
 {
-    const int OutFile = open(IdBuffer, CREATE_FLAGS, 0600);
+    const int OutFile = open(IdBuffer, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
     if (OutFile < 0) {
         Fatal("Error creating output file");
     }
@@ -3109,7 +3119,7 @@ int main(int argc, char** argv)
 
     const int StartTime = clock();
 
-    InFile = open(argv[1], 0); // O_RDONLY
+    InFile = open(argv[1], O_RDONLY | O_BINARY);
     if (InFile < 0) {
         Fatal("Error opening input file");
     }
@@ -3135,6 +3145,7 @@ int main(int argc, char** argv)
     struct VarDecl* SBSS = AddVarDecl(TOK__SBSS-TOK_BREAK);
     struct VarDecl* EBSS = AddVarDecl(TOK__EBSS-TOK_BREAK);
 
+    InBufPtr = InBuf;
     NextChar();
     GetToken();
     while (TokenType != TOK_EOF) {
