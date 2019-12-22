@@ -549,17 +549,16 @@ const char* IdText(int id)
     return IdBuffer + IdOffset[id];
 }
 
-void NextChar(void)
+int NextChar(void)
 {
     if (InBufPtr == InBufEnd) {
         InBufPtr = InBuf;
         InBufEnd = InBufPtr + read(InFile, InBuf, INBUF_MAX);
         if (InBufPtr == InBufEnd) {
-            CurChar = 0;
-            return;
+            return CurChar = 0;
         }
     }
-    CurChar = *InBufPtr++;
+    return CurChar = *InBufPtr++;
 }
 
 int TryGetChar(int ch, int t, int p)
@@ -580,8 +579,7 @@ void SkipLine(void)
             if ((CurChar = *InBufPtr++) == '\n')
                 goto Found;
         }
-        NextChar();
-        if (!CurChar)
+        if (!NextChar())
             return;
     }
 Found:
@@ -596,37 +594,40 @@ void SkipWhitespace(void)
             if (CurChar == '\n')
                 ++Line;
             while (InBufPtr != InBufEnd) {
-                if ((CurChar = *InBufPtr++) > ' ')
-                    goto Found;
+                if ((CurChar = *InBufPtr++) > ' ') {
+                    if (CurChar != '/')
+                        return;
+                    goto Slash;
+                }
                 if (CurChar == '\n')
                     ++Line;
             }
-            NextChar();
-            if (!CurChar) {
+            if (!NextChar()) {
                 return;
             }
         }
-    Found:
         if (CurChar != '/')
             return;
-        NextChar();
-        if (CurChar == '/') {
+Slash:
+        switch (NextChar()) {
+        case '/':
             SkipLine();
-        } else if (CurChar == '*') {
-            NextChar();
-            int star = 0;
-            while (!star || CurChar != '/') {
-                star = CurChar == '*';
-                if (CurChar == '\n') ++Line;
+            continue;
+        case '*':
+            {
                 NextChar();
-                if (!CurChar)
-                    Fatal("Unterminated comment");
+                int star = 0;
+                while (!star || CurChar != '/') {
+                    star = CurChar == '*';
+                    if (CurChar == '\n') ++Line;
+                    if (!NextChar()) Fail(); // Unterminated comment
+                }
+                NextChar();
             }
-            NextChar();
-        } else {
-            StoredSlash = 1;
-            return;
+            continue;
         }
+        StoredSlash = 1;
+        return;
     }
 }
 
