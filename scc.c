@@ -2541,7 +2541,7 @@ Redo:
                 Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
                 EmitLocalLabel(NextSwitchCase);
                 NextSwitchCase = MakeLabel();
-                OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
+                OutputBytes(I_CMP|5, -1);
                 OutputWord(CurrentVal);
                 if (!Accept(TOK_CASE))
                     break;
@@ -2705,9 +2705,6 @@ Redo:
         const int LastSwitchCase = NextSwitchCase;
         const int LastSwitchStmt = NextSwitchStmt;
         const int LastSwitchDef  = SwitchDefault;
-        EmitPush(R_SI);
-        OutputBytes(I_XCHG_AX|R_SI, -1);
-        LocalOffset -= 2;
         BStackLevel    = LocalOffset;
         BreakLabel     = MakeLabel();
         NextSwitchCase = MakeLabel();
@@ -2728,8 +2725,6 @@ Redo:
         if (NextSwitchStmt >= 0)
             EmitLocalLabel(NextSwitchStmt);
         EmitLocalLabel(BreakLabel);
-        EmitPop(R_SI);
-        LocalOffset += 2;
 
         NextSwitchCase = LastSwitchCase;
         NextSwitchStmt = LastSwitchStmt;
