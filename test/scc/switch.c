@@ -99,6 +99,32 @@ void test5()
     assert_eq(sw5(5),  -6);
 }
 
+int sw6(int x) {
+    int y = 0;
+    switch (x) {
+    case 0:
+        y |= 1;
+    default:
+        y |= 8;
+    case 1:
+        y |= 2;
+        break;
+    case 2:
+    case 3:
+        y |= 4;
+    }
+    return y;
+}
+
+void test6()
+{
+    assert_eq(sw6(0), 11);
+    assert_eq(sw6(1), 2);
+    assert_eq(sw6(2), 4);
+    assert_eq(sw6(3), 4);
+    assert_eq(sw6(4), 10);
+}
+
 void main()
 {
     test1();
@@ -106,4 +132,5 @@ void main()
     test3();
     test4();
     test5();
+    test6();
 }

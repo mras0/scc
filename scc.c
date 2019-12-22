@@ -2490,6 +2490,15 @@ void DoLoopStatements(int BLabel, int CLabel)
     ContinueLabel = OldContinue;
 }
 
+void EnsureSwitchStmt(void)
+{
+    if (NextSwitchStmt < 0) {
+        // Continue execution after the case
+        NextSwitchStmt = MakeLabel();
+        EmitJmp(NextSwitchStmt);
+    }
+}
+
 void ParseStatement(void)
 {
 Redo:
@@ -2502,31 +2511,34 @@ Redo:
 
     if (NextSwitchCase >= 0) {
         // switch is active
-
-        if ((TokenType == TOK_CASE || TokenType == TOK_DEFAULT)
-            && NextSwitchStmt < 0) {
-            // Continue execution after the case
-            NextSwitchStmt = MakeLabel();
-            EmitJmp(NextSwitchStmt);
-        }
+        // NextSwitchStmt == -1 ? Handling statements : handling cases
 
         if (Accept(TOK_CASE)) {
-            EmitLocalLabel(NextSwitchCase);
-            NextSwitchCase = MakeLabel();
+            EnsureSwitchStmt();
+        DoCase:
             ParseExpr();
             Expect(':');
             Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
+            EmitLocalLabel(NextSwitchCase);
+            NextSwitchCase = MakeLabel();
             OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
             OutputWord(CurrentVal);
-            EmitJcc(JZ, NextSwitchStmt);
-            goto Redo;
+            if (Accept(TOK_CASE)) {
+                EmitJcc(JZ, NextSwitchStmt);
+                goto DoCase;
+            } else {
+                EmitJcc(JNZ, NextSwitchCase);
+                goto Stmt;
+            }
         } else if (Accept(TOK_DEFAULT)) {
             Expect(':');
             Check(SwitchDefault == -1);
+            EnsureSwitchStmt();
             SwitchDefault = NextSwitchStmt;
             goto Redo;
         } else if (NextSwitchStmt >= 0) {
             EmitJmp(NextSwitchCase);
+        Stmt:
             EmitLocalLabel(NextSwitchStmt);
             NextSwitchStmt = -1;
             goto Redo;
