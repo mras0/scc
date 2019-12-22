@@ -730,34 +730,34 @@ Redo:
     } else if (TokenType < 'A') {
     } else if (TokenType <= 'Z') {
     Identifier: ;
-        char* pc;
-        char* start;
-        start = pc = &IdBuffer[IdBufferIndex];
-        int Hash = HASHINIT*HASHMUL+TokenType;
-        *pc++ = TokenType;
+        char* start = &IdBuffer[IdBufferIndex];
+        char* pc = start;
+        int Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
         while (isalnum(CurChar) || CurChar == '_') {
-            *pc++ = CurChar;
-            Hash = Hash*HASHMUL+CurChar;
+            Hash = Hash*HASHMUL+(*pc++ = CurChar);
+            if (InBufPtr != InBufEnd) {
+                CurChar = *InBufPtr++;
+                continue;
+            }
             NextChar();
         }
         *pc++ = 0;
         int Slot = 0;
         for (;;) {
             Hash &= ID_HASHMAX-1;
-            TokenType = IdHashTab[Hash];
-            if (TokenType == -1) {
+            if ((TokenType = IdHashTab[Hash]) == -1) {
                 Check(IdCount < ID_MAX);
-                TokenType = IdCount++;
+                TokenType = IdHashTab[Hash] = IdCount++;
                 IdOffset[TokenType] = IdBufferIndex;
                 IdBufferIndex += (int)(pc - start);
                 Check(IdBufferIndex <= IDBUFFER_MAX);
-                IdHashTab[Hash] = TokenType;
                 break;
             }
-            if (!memcmp(start, IdBuffer + IdOffset[TokenType], pc-start)) {
-                break;
+            if (memcmp(start, IdBuffer + IdOffset[TokenType], pc - start)) {
+                Hash += 1 + Slot++;
+                continue;
             }
-            Hash += 1 + Slot++;
+            break;
         }
         TokenType += TOK_BREAK;
         return;
