@@ -368,7 +368,7 @@ char OperatorPrecedence;
 char IdBuffer[IDBUFFER_MAX];
 int IdBufferIndex;
 
-int IdOffset[ID_MAX];
+char* IdText[ID_MAX];
 int IdHashTab[ID_HASHMAX];
 int IdCount;
 
@@ -534,12 +534,6 @@ void Fail(void)
 ///////////////////////////////////////////////////////////////////////
 // Tokenizer
 ///////////////////////////////////////////////////////////////////////
-
-const char* IdText(int id)
-{
-    if (id < 0 || id >= IdCount) Fail();
-    return IdBuffer + IdOffset[id];
-}
 
 int NextChar(void)
 {
@@ -740,12 +734,12 @@ Redo:
             if ((TokenType = IdHashTab[Hash]) == -1) {
                 if (IdCount == ID_MAX) Fail();
                 TokenType = IdHashTab[Hash] = IdCount++;
-                IdOffset[TokenType] = IdBufferIndex;
+                IdText[TokenType] = start;
                 IdBufferIndex += (int)(pc - start);
                 if (IdBufferIndex > IDBUFFER_MAX) Fail();
                 break;
             }
-            if (memcmp(start, IdBuffer + IdOffset[TokenType], pc - start)) {
+            if (memcmp(start, IdText[TokenType], pc - start)) {
                 Hash += 1 + Slot++;
                 continue;
             }
@@ -873,7 +867,7 @@ Redo:
 
 void PrintTokenType(int T)
 {
-    if (T >= TOK_BREAK) Printf("%s ", IdText(T-TOK_BREAK));
+    if (T >= TOK_BREAK) Printf("%s ", IdText[T-TOK_BREAK]);
     else if (T > ' ' && T < 128) Printf("%c ", T);
     else Printf("%d ", T);
 }
@@ -1084,7 +1078,7 @@ void EmitGlobalLabel(struct VarDecl* vd)
     char* Buf = &IdBuffer[IdBufferIndex];
     char* P = CvtHex(Buf, CodeAddress);
     *P++ = ' ';
-    P = CopyStr(P, vd->Id == -2 ? StaticName : IdText(vd->Id));
+    P = CopyStr(P, vd->Id == -2 ? StaticName : IdText[vd->Id]);
     *P++ = '\r';
     *P++ = '\n';
     write(MapFile, Buf, (int)(P - Buf));
@@ -3088,7 +3082,7 @@ void AddBuiltins(const char* s)
     do {
         const int Id = IdCount++;
         int Hash = HASHINIT;
-        IdOffset[Id] = IdBufferIndex;
+        IdText[Id] = &IdBuffer[IdBufferIndex];
         while ((ch = *s++) > ' ') {
             IdBuffer[IdBufferIndex++] = ch;
             Hash = Hash*HASHMUL+ch;
@@ -3158,7 +3152,7 @@ int main(int argc, char** argv)
         if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB || vd->Offset || vd == EBSS)
             continue;
         if (CurrentType & VT_FUN) {
-            Printf("%s is undefined\n", IdText(vd->Id));
+            Printf("%s is undefined\n", IdText[vd->Id]);
             Fatal("Undefined function");
         }
         EmitGlobalLabel(vd);
