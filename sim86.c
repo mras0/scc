@@ -452,16 +452,22 @@ void JCC(int cc)
 }
 
 // TODO: INC/DEC shouldn't modify carry(?)
+void DoIncDec(int v)
+{
+    const int s = ReadRM();
+    WriteRM(s+v);
+}
+
 void INC(void)
 {
     if (verbose) printf("INC %s", rmtext);
-    DoOp(OP_ADD, ReadRM(), 1);
+    DoIncDec(1);
 }
 
 void DEC(void)
 {
     if (verbose) printf("DEC %s", rmtext);
-    DoOp(OP_SUB, ReadRM(), 1);
+    DoIncDec(-1);
 }
 
 void ReadAsciiz(char* dest, int sr, int off)
@@ -795,6 +801,9 @@ int main(int argc, char** argv)
                     }
                 }
                 break;
+            case 0xFE:
+                dsize = 0;
+                // fallthrough
             case 0xFF:
                 {
                     ModRM();
@@ -806,7 +815,7 @@ int main(int argc, char** argv)
                         DEC();
                         break;
                     default:
-                        Fatal("TODO: FF/%X", modrm>>3&7);
+                        Fatal("TODO: %02X/%X", inst ,modrm>>3&7);
                     }
                 }
                 break;

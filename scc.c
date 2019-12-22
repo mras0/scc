@@ -155,7 +155,7 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6300, // Always try to reduce this if something fails unexpectedly...
+    OUTPUT_MAX = 0x62E0, // Always try to reduce this if something fails unexpectedly...
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -188,6 +188,8 @@ enum {
     VT_LOCOFF  = 2<<8,    // CurrentVal holds BP offset
     VT_LOCGLOB = 3<<8,    // CurrentVal holds the VarDecl index of a global
     VT_LOCMASK = 3<<8,
+
+    VT_STATIC  = 1<<10,
 };
 
 enum {
@@ -236,6 +238,7 @@ enum {
     TOK_INT,
     TOK_RETURN,
     TOK_SIZEOF,
+    TOK_STATIC,
     TOK_STRUCT,
     TOK_SWITCH,
     TOK_UNION,
@@ -297,10 +300,10 @@ struct VarDecl {
     int Type;
     int TypeExtra;
     int Offset;
-    int Ref; // Actually only needed for globals
+    int Ref; // Fixup address for globals, negative index for static variables (Won't work with output sizes >= 32K)
+
 };
 
-char Output[OUTPUT_MAX];
 int CodeAddress = CODESTART;
 int BssSize;
 
@@ -367,6 +370,8 @@ int IsDeadCode;
 int NextSwitchCase = -1; // Where to go if we haven't matched
 int NextSwitchStmt;      // Where to go if we've matched (-1 if already emitted)
 int SwitchDefault;       // Optional switch default label
+
+char Output[OUTPUT_MAX]; // Place this last to allow partial stack overflows!
 
 ///////////////////////////////////////////////////////////////////////
 // Helper functions
@@ -1042,7 +1047,7 @@ void EmitGlobalLabel(struct VarDecl* vd)
     char* Buf = &IdBuffer[IdBufferIndex];
     char* P = CvtHex(Buf, CodeAddress);
     *P++ = ' ';
-    P = CopyStr(P, IdText(vd->Id));
+    P = CopyStr(P, vd->Id == -2 ? "@static" : IdText(vd->Id));
     *P++ = '\r';
     *P++ = '\n';
     write(MapFile, Buf, (int)(P - Buf));
@@ -1053,6 +1058,8 @@ void EmitGlobalRef(struct VarDecl* vd)
     int Addr = vd->Offset;
     if (Addr)
         OutputWord(Addr);
+    else if (vd->Ref < 0)
+        AddFixup(&VarDecls[-vd->Ref].Ref);
     else
         AddFixup(&vd->Ref);
 }
@@ -1352,6 +1359,7 @@ int IsTypeStart(void)
     case TOK_CHAR:
     case TOK_INT:
     case TOK_ENUM:
+    case TOK_STATIC:
     case TOK_STRUCT:
     case TOK_UNION:
     case TOK_VA_LIST:
@@ -1489,6 +1497,14 @@ struct VarDecl* AddVarDecl(int Id)
     return AddVarDeclScope(ScopesCount-1, Id);
 }
 
+void AddLateGlobalVar(int Id)
+{
+    CurrentVal = Scopes[0];
+    Check(CurrentVal < Scopes[1]);
+    CurrentType |= VT_LOCGLOB;
+    AddVarDeclScope(0, Id);
+}
+
 void HandlePrimaryId(int id)
 {
     const int vd = Lookup(id);
@@ -1498,11 +1514,9 @@ void HandlePrimaryId(int id)
         CurrentTypeExtra = 0;
         if (IsDeadCode) {
             CurrentVal = 0;
-            return;
+        } else {
+            AddLateGlobalVar(id);
         }
-        CurrentVal = Scopes[0];
-        Check(CurrentVal < Scopes[1]);
-        AddVarDeclScope(0, id);
         return;
     }
     CurrentType      = VarDecls[vd].Type;
@@ -2339,6 +2353,7 @@ void ParseDeclarator(int* Id);
 
 void ParseDeclSpecs(void)
 {
+    int Storage = 0;
     // Could check if legal type, but we want to keep the code small...
     CurrentType = VT_INT;
     for (;;) {
@@ -2352,6 +2367,8 @@ void ParseDeclSpecs(void)
             CurrentType = VT_CHAR | VT_PTR1;
         else if (Accept(TOK_CONST))   // Ignore but accept const for now
             ;
+        else if (Accept(TOK_STATIC))
+            Storage |= VT_STATIC;
         else if (Accept(TOK_ENUM)) {
             if (TokenType >= TOK_ID) {
                 // TODO: Store and use the enum identifier
@@ -2428,6 +2445,7 @@ void ParseDeclSpecs(void)
             break;
         }
     }
+    CurrentType |= Storage;
 }
 
 void ParseDeclarator(int* Id)
@@ -2557,21 +2575,31 @@ Redo:
         const int BaseType   = CurrentType & ~VT_PTRMASK;
         const int BaseStruct = CurrentTypeExtra;
         while (vd) {
-            vd->Type |= VT_LOCOFF;
-            int size = (SizeofCurrentType()+1)&-2;
-            if (Accept('=')) {
-                ParseAssignmentExpression();
-                LvalToRval();
-                GetVal();
-                if (CurrentType == VT_CHAR) {
-                    OutputBytes(I_CBW, -1);
+            int size = SizeofCurrentType();
+
+            if (CurrentType & VT_STATIC) {
+                CurrentType &= ~VT_STATIC;
+                AddLateGlobalVar(-2);
+                vd->Type = CurrentType;
+                vd->Ref = -CurrentVal;
+                BssSize += size;
+            } else { 
+                vd->Type |= VT_LOCOFF;
+                size = (size+1)&-2;
+                if (Accept('=')) {
+                    ParseAssignmentExpression();
+                    LvalToRval();
+                    GetVal();
+                    if (CurrentType == VT_CHAR) {
+                        OutputBytes(I_CBW, -1);
+                    }
+                    EmitPush(R_AX);
+                } else {
+                    EmitAdjSp(-size);
                 }
-                EmitPush(R_AX);
-            } else {
-                EmitAdjSp(-size);
+                LocalOffset -= size;
+                vd->Offset = LocalOffset;
             }
-            LocalOffset -= size;
-            vd->Offset = LocalOffset;
             CurrentType      = BaseType;
             CurrentTypeExtra = BaseStruct;
             vd = NextDecl();
@@ -2775,6 +2803,8 @@ void ParseExternalDefition(void)
     if (!vd)
         goto End;
 
+    CurrentType = vd->Type &= ~VT_STATIC;
+
     // Check for definition of previous forward declaration
     int i;
     for (i = 0; i < *Scopes - 1; ++i) {
@@ -2926,7 +2956,7 @@ int main(int argc, char** argv)
     memset(IdHashTab, -1, sizeof(IdHashTab));
 
     AddBuiltins("break case char const continue default do else enum for goto if"
-        " int return sizeof struct switch union void while"
+        " int return sizeof static struct switch union void while"
         " va_list va_start va_end va_arg _emit _start _SBSS _EBSS");
     Check(IdCount+TOK_BREAK-1 == TOK__EBSS);
 
