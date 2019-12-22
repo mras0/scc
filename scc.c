@@ -347,7 +347,7 @@ struct VarDecl {
 };
 
 int CodeAddress = CODESTART;
-char* OutPtr;
+char* OutPtr; // = Output - CODESTART
 int BssSize;
 
 int MapFile;
@@ -944,11 +944,18 @@ enum {
 };
 
 void FlushSpAdj(void);
+void FlushPushAx(void);
 int EmitChecks(void);
 
 void OutputBytes(int first, ...)
 {
-    if (EmitChecks()) return;
+    // Inlined EmitChecks()
+    if (IsDeadCode)
+        return;
+    if (PendingPushAx|PendingSpAdj) {
+        FlushSpAdj();
+        FlushPushAx();
+    }
     va_list vl;
     va_start(vl, first);
     do {
