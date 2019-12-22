@@ -1506,16 +1506,55 @@ void HandlePrimaryId(int id)
 void ParseExpr(void);
 void ParseAbstractDecl(void);
 
+void HandleVarArg(void)
+{
+    // Handle var arg builtins
+    const int func = TokenType;
+    GetToken();
+    Expect('(');
+    int id = ExpectId();
+    int vd = VarLookup[id];
+    if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
+        Fatal("Invalid va_list");
+    }
+    const int offset = VarDecls[vd].Offset;
+    if (func == TOK_VA_START) {
+        Expect(',');
+        id = ExpectId();
+        vd = VarLookup[id];
+        if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) {
+            Fatal("Invalid argument to va_start");
+        }
+        EmitLeaStackVar(R_AX, VarDecls[vd].Offset);
+        EmitStoreAx(2, VT_LOCOFF, offset);
+        CurrentType = VT_VOID;
+    } else if (func == TOK_VA_END) {
+        CurrentType = VT_VOID;
+    } else if (func == TOK_VA_ARG) {
+        Expect(',');
+        EmitLoadAx(2, VT_LOCOFF, offset);
+        EmitAddRegConst(R_AX, 2);
+        EmitStoreAx(2, VT_LOCOFF, offset);
+        ParseAbstractDecl();
+        CurrentType |= VT_LVAL;
+    }
+    Expect(')');
+}
+
 void ParsePrimaryExpression(void)
 {
-    if (Accept('(')) {
+    switch (TokenType) {
+    case '(':
+        GetToken();
         ParseExpr();
         Expect(')');
-    } else if (TokenType == TOK_NUM) {
+        return;
+    case TOK_NUM:
         CurrentType = VT_LOCLIT | VT_INT;
         CurrentVal  = TokenNumVal;
         GetToken();
-    } else if (TokenType == TOK_STRLIT) {
+        return;
+    case TOK_STRLIT:
         Check(ArrayCount < ARRAY_MAX);
         struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
         AD->Bound = TokenNumVal;
@@ -1535,41 +1574,14 @@ void ParsePrimaryExpression(void)
             OutputWord(Addr);
         }
         GetToken();
-    } else if (TokenType == TOK_VA_START || TokenType == TOK_VA_END || TokenType == TOK_VA_ARG) {
-        // Handle var arg builtins
-        const int func = TokenType;
-        GetToken();
-        Expect('(');
-        int id = ExpectId();
-        int vd = VarLookup[id];
-        if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) {
-            Fatal("Invalid va_list");
-        }
-        const int offset = VarDecls[vd].Offset;
-        if (func == TOK_VA_START) {
-            Expect(',');
-            id = ExpectId();
-            vd = VarLookup[id];
-            if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) {
-                Fatal("Invalid argument to va_start");
-            }
-            EmitLeaStackVar(R_AX, VarDecls[vd].Offset);
-            EmitStoreAx(2, VT_LOCOFF, offset);
-            CurrentType = VT_VOID;
-        } else if (func == TOK_VA_END) {
-            CurrentType = VT_VOID;
-        } else if (func == TOK_VA_ARG) {
-            Expect(',');
-            EmitLoadAx(2, VT_LOCOFF, offset);
-            EmitAddRegConst(R_AX, 2);
-            EmitStoreAx(2, VT_LOCOFF, offset);
-            ParseAbstractDecl();
-            CurrentType |= VT_LVAL;
-        }
-        Expect(')');
-    } else {
-        HandlePrimaryId(ExpectId());
+        return;
+    case TOK_VA_ARG:
+    case TOK_VA_START:
+    case TOK_VA_END:
+        HandleVarArg();
+        return;
     }
+    HandlePrimaryId(ExpectId());
 }
 
 // Get current value to AX
