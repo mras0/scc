@@ -985,13 +985,34 @@ int main(int argc, char** argv)
                 break;
             case 0xAA:
                 {
-                    assert(rep == 0xF3);
-                    if (verbose) printf("REP STOSB");
+                    int iter = 1;
+                    if (rep == 0xF3) {
+                        if (verbose) printf("REP STOSB");
+                        iter = reg[R_CX];
+                        reg[R_CX] -= iter;
+                    } else {
+                        if (verbose) printf("STOSB");
+                    }
                     const int v = reg[R_AX];
-                    while (reg[R_CX]) {
-                        Write8(SR_ES, reg[R_DI], v);
-                        reg[R_CX] -= 1;
-                        reg[R_DI] += 1;
+                    while (iter--) {
+                        Write8(SR_ES, reg[R_DI]++, v);
+                    }
+                }
+                break;
+            case 0xAB:
+                {
+                    int iter = 1;
+                    if (rep == 0xF3) {
+                        if (verbose) printf("REP STOSW");
+                        iter = reg[R_CX];
+                        reg[R_CX] -= iter;
+                    } else {
+                        if (verbose) printf("STOSW");
+                    }
+                    const int v = reg[R_AX];
+                    while (iter--) {
+                        Write16(SR_ES, reg[R_DI], v);
+                        reg[R_DI] += 2;
                     }
                 }
                 break;

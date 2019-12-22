@@ -1131,10 +1131,15 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
 
 void EmitLoadAx(int Size, int Loc, int Val)
 {
-    if (Loc == VT_LOCGLOB) {
+    switch (Loc) {
+    case 0:
+        OutputBytes(I_LODSB-1+Size, -1);
+        break;
+    case VT_LOCGLOB:
         OutputBytes(0xA0-1+Size, -1);
         EmitGlobalRef(&VarDecls[Val]);
-    } else {
+        break;
+    default:
         EmitModrm(I_MOV_RM_R-1+Size, R_AX, Loc, Val);
     }
     if (Size == 1)
@@ -1143,11 +1148,16 @@ void EmitLoadAx(int Size, int Loc, int Val)
 
 void EmitStoreAx(int Size, int Loc, int Val)
 {
-    if (Loc == VT_LOCGLOB) {
+    switch (Loc) {
+    case 0:
+        OutputBytes(I_STOSB-1+Size, -1);
+        return;
+    case VT_LOCGLOB:
         OutputBytes(0xA2-1+Size, -1);
         EmitGlobalRef(&VarDecls[Val]);
-    } else
-        EmitModrm(I_MOV_R_RM-1+Size, R_AX, Loc, Val);
+        return;
+    }
+    EmitModrm(I_MOV_R_RM-1+Size, R_AX, Loc, Val);
 }
 
 void EmitStoreConst(int Size, int Loc, int Val)
@@ -1439,10 +1449,8 @@ void LvalToRval(void)
             sz = 1;
             CurrentType = VT_INT;
         }
-        if (!loc) {
-            OutputBytes(I_XCHG_AX|R_SI, I_LODSB-1+sz, -1);
-            if (sz == 1) OutputBytes(I_CBW, -1);
-            return;
+        if (!loc) { ///XXX
+            OutputBytes(I_XCHG_AX|R_SI, -1);
         }
         EmitLoadAx(sz, loc, CurrentVal);
     }
@@ -1453,26 +1461,29 @@ void DoIncDecOp(int Op, int Post)
     if (!(CurrentType & VT_LVAL)) Fail();
     const int WordOp = ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR);
     const int Loc = CurrentType & VT_LOCMASK;
+    char Size = 1;
+    if (CurrentType & VT_PTRMASK) {
+        Size = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
+    }
     if (!Loc) {
         OutputBytes(I_XCHG_AX|R_SI, -1);
     }
     if (Post) {
         EmitLoadAx(1+WordOp, Loc, CurrentVal);
+        if (!Loc)
+            EmitAddRegConst(R_SI, -1-WordOp); // Undo increment done by LODS (for increment/decrement below)
         if (WordOp)
             CurrentType &= ~(VT_LVAL|VT_LOCMASK);
         else
             CurrentType = VT_INT;
     }
     Op = Op == TOK_MINUSMINUS;
-    if (CurrentType & VT_PTRMASK) {
-        const int Size = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
-        if (Size != 1) {
-            EmitModrm(I_ALU_RM16_IMM8, Op*(I_SUB>>3), Loc, CurrentVal);
-            OutputBytes(Size, -1);
-            return;
-        }
-    }
 
+    if (Size != 1) {
+        EmitModrm(I_ALU_RM16_IMM8, Op*(I_SUB>>3), Loc, CurrentVal);
+        OutputBytes(Size, -1);
+        return;
+    }
     EmitModrm(I_INCDEC_RM|WordOp, Op, Loc, CurrentVal);
 }
 
@@ -2171,9 +2182,9 @@ void HandleLhsLvalLoc(int LhsLoc)
     if (!LhsLoc) {
         if (PendingPushAx) {
             PendingPushAx = 0;
-            OutputBytes(I_XCHG_AX|R_SI, -1);
+            OutputBytes(I_XCHG_AX|R_DI, -1);
         } else {
-            EmitPop(R_SI);
+            EmitPop(R_DI);
             LocalOffset += 2;
         }
     } else {
@@ -2258,8 +2269,6 @@ void ParseExpr1(int OuterPrecedence)
             HandleLhsLvalLoc(LhsLoc);
             if (LhsLoc)
                 EmitLoadAddr(R_DI, LhsLoc, LhsVal);
-            else
-                EmitMovRR(R_DI, R_SI);
             if (Temp)
                 EmitLoadAddr(R_SI, Temp, CurrentVal);
             else
@@ -2291,6 +2300,8 @@ void ParseExpr1(int OuterPrecedence)
             }
             HandleLhsLvalLoc(LhsLoc);
             if (Op != '=') {
+                if (!LhsLoc)
+                    EmitMovRR(R_SI, R_DI); // TODO: Can sometimes be avoided
                 Temp = CurrentType == (VT_INT|VT_LOCLIT);
                 if (Size == 2) {
                     int Inst = GetSimpleALU(Op);
@@ -2303,7 +2314,7 @@ void ParseExpr1(int OuterPrecedence)
                             EmitModrm(Inst, R_AX, LhsLoc, LhsVal);
                         }
                         if (!LhsLoc)
-                            OutputBytes(I_XCHG_AX|R_SI, -1);
+                            OutputBytes(I_XCHG_AX|R_DI, -1);
                         CurrentType = LhsType | LhsLoc | VT_LVAL;
                         CurrentVal = LhsVal;
                         continue;
@@ -2322,7 +2333,12 @@ void ParseExpr1(int OuterPrecedence)
                 }
             } else if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 // Constant assignment
-                EmitStoreConst(Size, LhsLoc, LhsVal);
+                if (!LhsLoc) {
+                    GetVal();
+                    OutputBytes(I_STOSB-1+Size, -1);
+                } else {
+                    EmitStoreConst(Size, LhsLoc, LhsVal);
+                }
                 continue;
             } else {
                 GetVal();
