@@ -1024,10 +1024,25 @@ void DoFixups(int r, int relative)
         }
         c = &Output[r - CODESTART];
         r = (c[0]&0xff)|c[1]<<8;
-        // Is this a uselss jump we can avoid? (Too cumbersome if we already resolved fixups at this address)
-        if (CodeAddress == o && LastFixup != CodeAddress) {
-            CodeAddress -= 3;
-            continue;
+        if (!c[-1]) {
+            // Fused Jcc/JMP
+            if (f <= 0x7f-3) {
+                // Invert condition and NOP out jump
+                if ((c[-3]&0xf0) != 0x70 || c[-2] != 3) Fail();
+                c[-3] ^= 1;
+                c[-2] = f+3;
+                c[-1] = I_XCHG_AX-256;
+                c[0]  = I_XCHG_AX-256;
+                c[1]  = I_XCHG_AX-256;
+                continue;
+            }
+            c[-1] = I_JMP_REL16-256;
+        } else {
+            // Is this a uselss jump we can avoid? (Too cumbersome if we already resolved fixups at this address)
+            if (CodeAddress == o && LastFixup != CodeAddress) {
+                CodeAddress -= 3;
+                continue;
+            }
         }
         if (c[-1] == I_JMP_REL16-256) {
             ++f;
@@ -1219,7 +1234,7 @@ void EmitDivAxConst(int Amm)
     }
 }
 
-void EmitLocalJump(int l)
+int EmitLocalJump(int l)
 {
     if (l < 0 || l >= LocalLabelCounter) Fail();
     int Addr = Labels[l].Addr;
@@ -1231,9 +1246,11 @@ void EmitLocalJump(int l)
             OutputBytes(I_JMP_REL16, -1);
             OutputWord(Addr-1);
         }
+        return 1;
     } else {
         OutputBytes(I_JMP_REL16, -1);
         AddFixup(&Labels[l].Ref);
+        return 0;
     }
 }
 
@@ -1262,8 +1279,8 @@ void EmitJcc(int cc, int l)
     }
 
     OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
-    EmitLocalJump(l);
-    LastFixup = CodeAddress; // Make sure last jump isn't removed
+    if (!EmitLocalJump(l))
+        Output[CodeAddress-(CODESTART+3)] = 0; // Mark as fused Jcc/JMP
 }
 
 void EmitLoadAddr(int Reg, int Loc, int Val)
