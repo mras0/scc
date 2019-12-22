@@ -1,16 +1,5 @@
 #include "lib.h"
 
-#ifndef __SCC__
-//#define PROFILING
-#endif
-
-#ifdef PROFILING
-unsigned long long counts[65536];
-unsigned long long total_cycles;
-unsigned long long cycles;
-const char* filename;
-#endif
-
 enum {
     R_AX,
     R_CX,
@@ -68,6 +57,19 @@ int dsize;
 char rmtext[16];
 
 int verbose;
+
+#ifndef __SCC__
+#define PROFILING
+#endif
+
+#ifdef PROFILING
+unsigned long long counts[65536];
+unsigned long long total_cycles;
+unsigned long long cycles;
+const char* filename;
+int stack_low = 0xffff;
+int do_profile;
+#endif
 
 #ifdef __SCC__
 #define TRIM(x) x
@@ -522,43 +524,46 @@ void DoExit(int ec)
             printf("\nNormal exit\n");
     }
 #ifdef PROFILING
-    struct E {
-        int Addr;
-        char Id[64];
-        unsigned long long Total;
-    } entries[4096] = {
-        { 0, "@@start", 0 },
-    };
-    int num_entries = 1;
-    char fname[256];
-    strcpy(fname, filename);
-    char* d = strrchr(fname, '.');
-    if (d) {
-        strcpy(d, ".map");
-        FILE* fp = fopen(fname, "rt");
-        if (fp) {
-            while (fscanf(fp, "%4X %63s\n", &entries[num_entries].Addr, &entries[num_entries].Id) == 2) {
-                ++num_entries;
+    if (do_profile) {
+        struct E {
+            int Addr;
+            char Id[64];
+            unsigned long long Total;
+        } entries[4096] = {
+            { 0, "@@start", 0 },
+        };
+        int num_entries = 1;
+        char fname[256];
+        strcpy(fname, filename);
+        char* d = strrchr(fname, '.');
+        if (d) {
+            strcpy(d, ".map");
+            FILE* fp = fopen(fname, "rt");
+            if (fp) {
+                while (fscanf(fp, "%4X %63s\n", &entries[num_entries].Addr, &entries[num_entries].Id) == 2) {
+                    ++num_entries;
+                }
+                fclose(fp);
             }
-            fclose(fp);
         }
-    }
 
-    printf("\n%llu cylces\n", total_cycles);
-    int entry = 0;
-    printf("Count;Address;Name\n");
-    for (int i = 0; i < 65536; ++i) {
-        if (entry+1 < num_entries && i >= entries[entry+1].Addr) {
-            ++entry;
+        printf("\nTotal cylces;%llu\nStack low;0x%04X\n\n", total_cycles, stack_low&0xffff);
+        int entry = 0;
+        printf("Count;Address;Name\n");
+        for (int i = 0; i < 65536; ++i) {
+            if (entry+1 < num_entries && i >= entries[entry+1].Addr) {
+                ++entry;
+            }
+            if (counts[i])
+                printf("%llu;0x%04X;%s+0x%X\n", counts[i], i, entries[entry].Id, i - entries[entry].Addr);
+            if (entry >= 0)
+                entries[entry].Total += counts[i];
         }
-        if (counts[i])
-            printf("%llu;0x%04X;%s+0x%X\n", counts[i], i, entries[entry].Id, i - entries[entry].Addr);
-        if (entry >= 0)
-            entries[entry].Total += counts[i];
-    }
-    printf("\nCount;Function\n");
-    for (int i = 0; i < num_entries; ++i) {
-        printf("%llu;%s\n", entries[i].Total, entries[i].Id);
+        printf("\nCount;Function\n");
+        for (int i = 0; i < num_entries; ++i) {
+            if (entries[i].Total)
+                printf("%llu;%s\n", entries[i].Total, entries[i].Id);
+        }
     }
 #endif
     exit(ec);
@@ -618,7 +623,11 @@ int main(int argc, char** argv)
 {
     if (argc < 2) {
     Usage:
-        printf("Usage: sim86 [-v] com-file [...]\n");
+        printf("Usage: sim86 [-v] "
+#ifdef PROFILING
+                "[-p] "
+#endif
+                "com-file [...]\n");
         return 1;
     }
 #ifdef __SCC__
@@ -626,11 +635,19 @@ int main(int argc, char** argv)
 #endif
 
     int argi = 1;
-    if (!strcmp(argv[1], "-v")) {
-        ++argi;
-        verbose = 1;
-        if (!argv[2]) goto Usage;
+    for (; argv[argi]; ++argi) {
+        if (!strcmp(argv[argi], "-v")) {
+            verbose = 1;
+#ifdef PROFILING
+        } else if (!strcmp(argv[argi], "-p")) {
+            do_profile = 1;
+#endif
+        } else {
+            break;
+        }
     }
+    if (!argv[argi])
+        goto Usage;
 
     sreg[0] = sreg[1] = sreg[2] = sreg[3] = DEFAULT_SEGMENT;
 #ifdef PROFILING
@@ -656,6 +673,9 @@ int main(int argc, char** argv)
 #ifdef PROFILING
         const int orig_ip = TRIM(ip);
         cycles = 0;
+        reg[R_SP]=TRIM(reg[R_SP]);
+        if (reg[R_SP] && reg[R_SP] < stack_low)
+            stack_low = reg[R_SP];
 #endif
         if (verbose) printf("%04X ", TRIM(ip));
 
@@ -911,11 +931,7 @@ int main(int argc, char** argv)
             }
         }
         if (verbose)
-#if 1
-        PrintState();
-#else
-        puts("");
-#endif
+            PrintState();
 #ifdef PROFILING
         total_cycles += cycles;
         counts[orig_ip] += cycles;

@@ -125,22 +125,17 @@ int write(int fd, const char* buf, int count)
     return ax;
 }
 
-void _start(void)
+enum { ARGS = 0x5C }; // Overwrite unopened FCBs
+
+int ParseArgs()
 {
-    // Clear BSS
-    memset(&_SBSS, 0, &_EBSS-&_SBSS);
-
+    char** Args = ARGS;
     char* CmdLine = (char*)0x80;
-    int Len = *CmdLine++ & 0xff;
+    int Len = *CmdLine++ & 0x7f;
     CmdLine[Len] = 0;
-
-    char *Args[10]; // Arbitrary limit
-    int NumArgs;
-
     Args[0] = "scc";
-    NumArgs = 1;
-
-    while (*CmdLine) {
+    int NumArgs = 1;
+    for (;;) {
         while (*CmdLine && *CmdLine <= ' ')
             ++CmdLine;
         if (!*CmdLine)
@@ -153,7 +148,14 @@ void _start(void)
         *CmdLine++ = 0;
     }
     Args[NumArgs] = 0;
-    exit(main(NumArgs, Args));
+    return NumArgs;
+}
+
+void _start(void)
+{
+    // Clear BSS
+    memset(&_SBSS, 0, &_EBSS-&_SBSS);
+    exit(main(ParseArgs(), ARGS));
 }
 #endif
 
@@ -166,7 +168,7 @@ enum {
     IDBUFFER_MAX = 4800,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
-    OUTPUT_MAX = 0x6000, // Always try to reduce this if something fails unexpectedly...
+    OUTPUT_MAX = 0x6000, // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
@@ -2893,10 +2895,8 @@ void AddBuiltins(const char* s)
 
 int main(int argc, char** argv)
 {
-    int i;
-
     if (argc < 2) {
-        Printf("Usage: %s input-file [output-file]\n", argv[0]);
+        Printf("Usage: scc input-file [output-file]\n");
         return 1;
     }
 
@@ -2935,22 +2935,19 @@ int main(int argc, char** argv)
     Check(ScopesCount == 1);
 
     EmitGlobalLabel(SBSS);
-    for (i = 0; i < *Scopes; ++i) {
-        struct VarDecl* vd = &VarDecls[i];
+    struct VarDecl* vd = VarDecls;
+    struct VarDecl* end = &VarDecls[*Scopes];
+    for (; vd != end; ++vd) {
         CurrentType      = vd->Type;
         CurrentTypeExtra = vd->TypeExtra;
-        if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB)
+        if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB || vd->Offset || vd == EBSS)
             continue;
-        if (!vd->Offset) {
-            if (vd == EBSS)
-                continue;
-            if (CurrentType & VT_FUN) {
-                Printf("%s is undefined\n", IdText(vd->Id));
-                Fatal("Undefined function");
-            }
-            EmitGlobalLabel(vd);
-            CodeAddress += SizeofCurrentType();
+        if (CurrentType & VT_FUN) {
+            Printf("%s is undefined\n", IdText(vd->Id));
+            Fatal("Undefined function");
         }
+        EmitGlobalLabel(vd);
+        CodeAddress += SizeofCurrentType();
     }
     Check(CodeAddress - SBSS->Offset == BssSize);
     EmitGlobalLabel(EBSS);
