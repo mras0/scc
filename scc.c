@@ -681,7 +681,9 @@ Redo:
     SkipWhitespace();
     TokenType = GetChar();
     OperatorPrecedence = PRED_STOP;
-    if (isdigit(TokenType)) {
+
+    if (TokenType < '0') {
+    } else if (TokenType <= '9') {
         TokenNumVal = TokenType - '0';
         int base = 10;
         if (!TokenNumVal) {
@@ -701,7 +703,9 @@ Redo:
         }
         TokenType = TOK_NUM;
         return;
-    } else if (isalpha(TokenType) || TokenType == '_') {
+    } else if (TokenType < 'A') {
+    } else if (TokenType <= 'Z') {
+    Identifier: ;
         char* pc;
         char* start;
         start = pc = &IdBuffer[IdBufferIndex];
@@ -733,7 +737,12 @@ Redo:
         }
         TokenType += TOK_BREAK;
         return;
+    } else if (TokenType < 'a') {
+        if (TokenType == '_') goto Identifier;
+    } else if (TokenType <= 'z') {
+        goto Identifier;
     }
+
     switch (TokenType) {
     case '#':
         SkipLine();
