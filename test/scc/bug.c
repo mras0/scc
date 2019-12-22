@@ -31,8 +31,16 @@ void bug02() {
     assert_eq(j==e, 1);
 }
 
+void bug03() {
+    int x = 1;
+    if (x) {
+    }
+    assert_eq(x, 1);
+}
+
 void main() {
     bug00();
     bug01();
     bug02();
+    bug03();
 }

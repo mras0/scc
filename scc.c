@@ -1231,6 +1231,7 @@ void EmitJcc(int cc, int l)
 
     OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
     EmitLocalJump(l);
+    LastFixup = CodeAddress; // Make sure last jump isn't removed
 }
 
 void EmitLoadAddr(int Reg, int Loc, int Val)
@@ -2177,8 +2178,6 @@ void ParseExpr1(int OuterPrecedence)
             continue;
         }
 
-        LvalToRval();
-
         if (LhsLoc == VT_LOCLIT && CurrentType == (VT_LOCLIT|VT_INT)) {
             Check(LhsType == VT_INT);
             CurrentVal = DoConstBinOp(Op, LhsVal, CurrentVal);
@@ -2189,6 +2188,7 @@ void ParseExpr1(int OuterPrecedence)
             GetVal();
             EmitLocalLabel(LEnd);
         } else if (IsAssign) {
+            LvalToRval();
             int Size = 2;
             if (LhsType == VT_CHAR) {
                 Size = 1;
@@ -2236,7 +2236,7 @@ void ParseExpr1(int OuterPrecedence)
             } else {
                 GetVal();
                 Check(CurrentType == VT_INT || (CurrentType & VT_PTRMASK));
-                if (Op == '+' && (LhsType & VT_PTRMASK)) {
+                if (Op == '+' && LhsPointeeSize) {
                     EmitScaleAx(LhsPointeeSize);
                     CurrentType = LhsType;
                 }
@@ -2251,7 +2251,7 @@ void ParseExpr1(int OuterPrecedence)
                         EmitMovRImm(R_CX, LhsVal);
                     }
                 } else {
-                    Check(LhsType == VT_INT || (LhsType & VT_PTRMASK));
+                    Check(LhsType == VT_INT || LhsPointeeSize);
                     EmitPop(R_CX);
                     Check(!PendingPushAx);
                     LocalOffset += 2;
@@ -2260,7 +2260,7 @@ void ParseExpr1(int OuterPrecedence)
                     OutputBytes(I_XCHG_AX | R_CX, -1);
                 DoBinOp(Op);
             }
-            if (Op == '-' && (LhsType & VT_PTRMASK)) {
+            if (Op == '-' && LhsPointeeSize) {
                 EmitDivAxConst(LhsPointeeSize);
                 CurrentType = VT_INT;
             }
