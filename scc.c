@@ -1580,11 +1580,8 @@ void ParsePrimaryExpression(void)
 void GetVal(void)
 {
     if (CurrentType == VT_BOOL) {
-        const int Lab = MakeLabel();
-        EmitMovRImm(R_AX, 1);
-        EmitJcc(CurrentVal, Lab);
-        OutputBytes(I_DEC, -1);
-        EmitLocalLabel(Lab);
+        EmitMovRImm(R_AX, 0);
+        OutputBytes(0x70 | (CurrentVal^1), 1, I_INC, -1);
         CurrentType = VT_INT;
         return;
     }
@@ -1592,7 +1589,10 @@ void GetVal(void)
     if (CurrentType & VT_LOCMASK) {
         Check(CurrentType == (VT_INT|VT_LOCLIT));
         CurrentType = VT_INT;
-        EmitMovRImm(R_AX, CurrentVal);
+        if (CurrentVal)
+            EmitMovRImm(R_AX, CurrentVal);
+        else
+            OutputBytes(I_XOR|1, 0xC0, -1);
     }
 }
 
@@ -2031,12 +2031,11 @@ void ForceToReg(void)
 
     const int Loc = CurrentType & VT_LOCMASK;
     if (!Loc) return;
-    CurrentType &= ~VT_LOCMASK;
     if (Loc == VT_LOCGLOB || Loc == VT_LOCOFF) {
         EmitLoadAddr(R_AX, Loc, CurrentVal);
+        CurrentType &= ~VT_LOCMASK;
     } else {
-        Check(Loc == VT_LOCLIT);
-        EmitMovRImm(R_AX, CurrentVal);
+        GetVal();
     }
 }
 

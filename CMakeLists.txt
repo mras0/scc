@@ -22,7 +22,7 @@ macro(SCC n)
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${n}.com"
         COMMAND $<TARGET_FILE:scc> "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c" ./${n}.com
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c" ${PROJECT_SOURCE_DIR}/scc.c
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${n}.c" scc
     )
 
     add_custom_target(${n}_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${n}.com")
@@ -42,7 +42,7 @@ add_custom_command(
         COMMAND $<TARGET_FILE:scpp> "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c" ./sim86.i
         COMMAND $<TARGET_FILE:scc>  sim86.i sim86.com
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c" "${CMAKE_CURRENT_SOURCE_DIR}/lib.h"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/sim86.c" "${CMAKE_CURRENT_SOURCE_DIR}/lib.h" scc scpp
     )
 add_custom_target(sim86_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sim86.com")
 
