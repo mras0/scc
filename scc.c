@@ -162,21 +162,19 @@ void _start(void)
 
 int isdigit(int c)
 {
-    _emit 0x31 _emit 0xC0               // XOR AX, AX
-    _emit 0x8A _emit 0x4E _emit 0x04    // MOV CL, [BP+4]
-    _emit 0x80 _emit 0xE9 _emit 0x30    // SUB CL, '0'
-    _emit 0x80 _emit 0xF9 _emit 0x0A    // CMP CL, 10
-    _emit 0x11 _emit 0xC0               // ADC AX, AX
+    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
+    _emit 0x2C _emit 0x30               // SUB AL, 0x30
+    _emit 0x3C _emit 0x0A               // CMP AL, 10
+    _emit 0x19 _emit 0xC0               // SBB AX, AX
 }
 
 int isalpha(int c)
 {
-    _emit 0x31 _emit 0xC0               // XOR AX, AX
-    _emit 0x8A _emit 0x4E _emit 0x04    // MOV CL, [BP+4]
-    _emit 0x80 _emit 0xE1 _emit 0xDF    // AND CL, 0xDF
-    _emit 0x80 _emit 0xE9 _emit 0x41    // SUB CL, 'A'
-    _emit 0x80 _emit 0xF9 _emit 0x1A    // CMP CL, 'Z'-'A'+1
-    _emit 0x11 _emit 0xC0               // ADC AX, AX
+    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
+    _emit 0x24 _emit 0xDF               // AND AL, 0xDF
+    _emit 0x2C _emit 0x41               // SUB AL, 'A'
+    _emit 0x3C _emit 0x1A               // CMP AL, 'Z'-'A'+1
+    _emit 0x19 _emit 0xC0               // SBB AX, AX
 }
 
 #endif
