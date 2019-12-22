@@ -597,6 +597,8 @@ void SkipWhitespace(void)
 {
     for (;;) {
         while (CurChar <= ' ') {
+            if (CurChar == '\n')
+                ++Line;
             while (InBufPtr != InBufEnd) {
                 if ((CurChar = *InBufPtr++) > ' ')
                     goto Found;
