@@ -61,6 +61,20 @@ L1:
         jmp short ERR
 L2:
 
+        mov ax, -42
+        xor ah, ah
+        jnz ERR
+        cmp ax, 214
+        jne ERR
+        mov ah, 2
+        cmp ax, 0x2D6
+
+        mov cx, 0x1234
+        sub ch, 0x14
+        jz ERR
+        cmp cx, 0xFE34
+        jne ERR
+
         mov ax, 0x4c00
         int 0x21
 ERR:

@@ -279,12 +279,33 @@ void ModRM(void)
     }
 }
 
+int ReadReg(int r)
+{
+    if (dsize)
+        return reg[r];
+    return reg[r&3] >> ((r&4)<<1);
+}
+
+void WriteReg(int r, int val)
+{
+    if (dsize) {
+        reg[r] = val;
+        return;
+    }
+    const int h = r & 4;
+    r &= 3;
+    if (h) {
+        reg[r] = (reg[r]&0xff)|val<<8;
+    } else {
+        reg[r] = (reg[r]&0xff00)|(val&0xff);
+    }
+}
+
 int ReadRM(void)
 {
     assert(modrm != -1);
     if (modrm>>6==3) {
-        assert(dsize || !(modrm&4));//TODO: AH-DH
-        return reg[modrm&7];
+        return ReadReg(modrm&7);
     }
     return dsize ? Read16(SR_DS, addr) : Read8(SR_DS, addr);
 }
@@ -292,14 +313,7 @@ int ReadRM(void)
 void WriteRM(int val)
 {
     if (modrm>>6==3) {
-        int r = modrm&7;
-        if (!dsize) {
-            if (r&4)
-                val = (val<<8)|(reg[r]&0xff);
-            else
-                val = (val&0xff)|(reg[r]&0xff00);
-        }
-        reg[r] = val;
+        WriteReg(modrm&7, val);
         return;
     }
     if (dsize)
@@ -377,8 +391,8 @@ void ALUOp(int op, int swap)
 {
     ModRM();
     int r = modrm>>3&7;
-    int rval = reg[r];
     int rmval = ReadRM();
+    int rval  = ReadReg(r);
 
     if (swap) {
         modrm = 0xc0|r; // Need to write to register
@@ -396,10 +410,10 @@ void MOV(int swap)
     int r = modrm>>3&7;
     if (swap) {
         if (verbose) printf("MOV %s, %s", RegName(r), rmtext);
-        reg[r] = ReadRM();
+        WriteReg(r, ReadRM());
     } else {
         if (verbose) printf("MOV %s, %s", rmtext, RegName(r));
-        WriteRM(reg[r]);
+        WriteRM(ReadReg(r));
     }
 }
 
@@ -558,7 +572,7 @@ void DoExit(int ec)
             strcpy(d, ".map");
             FILE* fp = fopen(fname, "rt");
             if (fp) {
-                while (fscanf(fp, "%4X %63s\n", &entries[num_entries].Addr, &entries[num_entries].Id) == 2) {
+                while (fscanf(fp, "%4X %63s\n", (unsigned*)&entries[num_entries].Addr, entries[num_entries].Id) == 2) {
                     ++num_entries;
                 }
                 fclose(fp);
@@ -749,6 +763,10 @@ int main(int argc, char** argv)
             int rv = reg[r];
             reg[r] = reg[R_AX];
             reg[R_AX] = rv;
+        } else if (inst >= 0xb0 && inst < 0xb8) {
+            dsize = 0;
+            WriteReg(inst-0xb0, ReadIByte());
+            if (verbose) printf("MOV %s, 0x%02X", RegName(inst-0xb0), ReadReg(inst-0xb0));
         } else if (inst >= 0xb8 && inst < 0xc0) {
             const int r = inst-0xb8;
             reg[r] = Imm16();
