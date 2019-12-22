@@ -407,7 +407,7 @@ int CurrentVal;
 int CurrentTypeExtra;
 
 int ReturnUsed;
-int PendingPushAx; // Remember to adjsust LocalOffset!
+char PendingPushAx; // Remember to adjsust LocalOffset!
 int PendingSpAdj;
 int LastFixup;
 int IsDeadCode;
@@ -592,37 +592,37 @@ void SkipLine(void)
 
 void SkipWhitespace(void)
 {
-Redo:
-    while (CurChar <= ' ') {
-        if (!CurChar) {
+    for (;;) {
+        while (CurChar <= ' ') {
+            if (!CurChar) {
+                return;
+            }
+            if (CurChar == '\n') {
+                ++Line;
+            }
+            NextChar();
+        }
+        if (CurChar != '/')
+            return;
+        NextChar();
+        if (CurChar == '/') {
+            SkipLine();
+        } else if (CurChar == '*') {
+            NextChar();
+            int star = 0;
+            while (!star || CurChar != '/') {
+                star = CurChar == '*';
+                if (CurChar == '\n') ++Line;
+                NextChar();
+                if (!CurChar)
+                    Fatal("Unterminated comment");
+            }
+            NextChar();
+        } else {
+            StoredSlash = 1;
             return;
         }
-        if (CurChar == '\n') {
-            ++Line;
-        }
-        NextChar();
     }
-    if (CurChar != '/')
-        return;
-    NextChar();
-    if (CurChar == '/') {
-        SkipLine();
-    } else if (CurChar == '*') {
-        NextChar();
-        int star = 0;
-        while (!star || CurChar != '/') {
-            star = CurChar == '*';
-            if (CurChar == '\n') ++Line;
-            NextChar();
-            if (!CurChar)
-                Fatal("Unterminated comment");
-        }
-        NextChar();
-    } else {
-        StoredSlash = 1;
-        return;
-    }
-    goto Redo;
 }
 
 int GetDigit(void)
