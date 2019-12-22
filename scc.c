@@ -1683,14 +1683,10 @@ void ParsePostfixExpression(void)
                         PendingSpAdj -= ArgsPerChunk*2;
                         if (NumArgs) {
                             // Move arguments to new stack top
-                            EmitPush(R_SI);
-                            EmitPush(R_DI);
                             EmitLeaStackVar(R_SI, LocalOffset + ArgsPerChunk*2);
                             EmitLeaStackVar(R_DI, LocalOffset);
                             EmitMovRImm(R_CX, NumArgs);
                             OutputBytes(I_REP, I_MOVSW, -1);
-                            EmitPop(R_DI);
-                            EmitPop(R_SI);
                         }
                     }
                     ParseAssignmentExpression();
@@ -2255,8 +2251,6 @@ void ParseExpr1(int OuterPrecedence)
             Temp = CurrentType & VT_LOCMASK;
 
             HandleLhsLvalLoc(LhsLoc);
-            EmitPush(R_SI);
-            EmitPush(R_DI);
             if (LhsLoc)
                 EmitLoadAddr(R_DI, LhsLoc, LhsVal);
             else
@@ -2267,8 +2261,6 @@ void ParseExpr1(int OuterPrecedence)
                 OutputBytes(I_XCHG_AX|R_SI, -1);
             EmitMovRImm(R_CX, SizeofCurrentType());
             OutputBytes(I_REP, I_MOVSB, -1);
-            EmitPop(R_DI);
-            EmitPop(R_SI);
             continue;
         }
 
