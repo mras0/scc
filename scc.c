@@ -568,7 +568,7 @@ char GetChar(void)
     return ch;
 }
 
-int TryGetChar(char ch, int t, int p)
+int TryGetChar(int ch, int t, int p)
 {
     if (CurChar == ch) {
         TokenType = t;
@@ -1358,10 +1358,9 @@ int SizeofType(int Type, int Extra)
                 Size = MSize;
         }
         return Size;
-    } else {
-        Check(Type == VT_INT || (Type & VT_PTRMASK));
-        return 2;
     }
+    Check(Type == VT_INT || (Type & VT_PTRMASK));
+    return 2;
 }
 
 int SizeofCurrentType(void)
@@ -2525,21 +2524,21 @@ Redo:
 
         if (Accept(TOK_CASE)) {
             EnsureSwitchStmt();
-        DoCase:
-            ParseExpr();
-            Expect(':');
-            Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
-            EmitLocalLabel(NextSwitchCase);
-            NextSwitchCase = MakeLabel();
-            OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
-            OutputWord(CurrentVal);
-            if (Accept(TOK_CASE)) {
+
+            for (;;) {
+                ParseExpr();
+                Expect(':');
+                Check(CurrentType == (VT_INT|VT_LOCLIT)); // Need constant expression
+                EmitLocalLabel(NextSwitchCase);
+                NextSwitchCase = MakeLabel();
+                OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|I_CMP|R_SI, -1);
+                OutputWord(CurrentVal);
+                if (!Accept(TOK_CASE))
+                    break;
                 EmitJcc(JZ, NextSwitchStmt);
-                goto DoCase;
-            } else {
-                EmitJcc(JNZ, NextSwitchCase);
-                goto Stmt;
             }
+            EmitJcc(JNZ, NextSwitchCase);
+            goto Stmt;
         } else if (Accept(TOK_DEFAULT)) {
             Expect(':');
             Check(SwitchDefault == -1);
@@ -2589,9 +2588,13 @@ Redo:
             ParseExpr();
             GetVal();
         }
-        if (LocalOffset)
+        if (LocalOffset) {
             ReturnUsed = 1;
-        EmitJmp(ReturnLabel);
+            EmitJmp(ReturnLabel);
+        } else {
+            OutputBytes(I_POP|R_BP, I_RET, -1);
+            IsDeadCode = 1;
+        }
         Expect(';');
     } else if (Accept(TOK_BREAK)) {
         PendingSpAdj += BStackLevel - LocalOffset;
@@ -2848,13 +2851,11 @@ void ParseExternalDefition(void)
             EmitPush(R_BP);
             EmitMovRR(R_BP, R_SP);
             ParseCompoundStatement();
-            EmitLocalLabel(ReturnLabel);
             if (ReturnUsed) {
-                PendingSpAdj = 0;
+                EmitLocalLabel(ReturnLabel);
                 EmitMovRR(R_SP, R_BP);
             }
-            EmitPop(R_BP);
-            OutputBytes(I_RET, -1); // RET
+            OutputBytes(I_POP|R_BP, I_RET, -1);
 
             // When debugging:
             //int l;for (l = 0; l < LocalLabelCounter; ++l)Check(Labels[l].Ref == 0);
