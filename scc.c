@@ -1302,11 +1302,10 @@ void Unexpected(void)
 
 int Accept(int type)
 {
-    if (TokenType == type) {
-        GetToken();
-        return 1;
-    }
-    return 0;
+    if (TokenType != type)
+        return 0;
+    GetToken();
+    return 1;
 }
 
 void Expect(int type)

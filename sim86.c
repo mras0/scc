@@ -69,6 +69,7 @@ unsigned long long total_cycles;
 unsigned long long cycles;
 const char* filename;
 int stack_low = 0xffff;
+int file_size;
 int do_profile;
 #endif
 
@@ -469,6 +470,9 @@ void ReadFile(const char* Filename)
     if (fd < 0) {
         Fatal("Error opening %s", Filename);
     }
+#ifdef PROFILING
+    file_size =
+#endif
     ReadToMem(fd, LOAD_OFFSET, 65536-LOAD_OFFSET);
     close(fd);
 }
@@ -597,7 +601,8 @@ void DoExit(int ec)
             }
         }
 
-        printf("\nTotal cylces;%llu\nStack low;0x%04X\n\n", total_cycles, stack_low&0xffff);
+        printf("\nFilesize;Total cylces;Stack low;_EBSS\n");
+        printf("%d;%llu;%d;%d\n\n", file_size, total_cycles, stack_low&0xffff, entries[num_entries-1].Addr);
         int entry = 0;
         printf("Count;Address;Name\n");
         for (int i = 0; i < 65536; ++i) {
