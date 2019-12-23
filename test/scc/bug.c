@@ -38,9 +38,18 @@ void bug03() {
     assert_eq(x, 1);
 }
 
+int b03_f(int a, int b, int c, int d, int e, int f) {
+    return a+b*2+c*3+d*4+e*5+f*6;
+}
+
+void bug04() {
+    assert_eq(b03_f(2,3,5,7,11,13), 184);
+}
+
 void main() {
     bug00();
     bug01();
     bug02();
     bug03();
+    bug04();
 }

@@ -1684,9 +1684,9 @@ void ParsePostfixExpression(void)
                         PendingSpAdj -= ArgChunkSize;
                         if (ArgSize) {
                             // Move arguments to new stack top
-                            EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize*2);
+                            EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize);
                             EmitModrm(I_LEA, R_DI, VT_LOCOFF, LocalOffset);
-                            EmitMovRImm(R_CX, ArgSize*2);
+                            EmitMovRImm(R_CX, ArgSize>>1);
                             OutputBytes(I_REP, I_MOVSW, -1);
                         }
                     }
