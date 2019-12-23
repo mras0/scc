@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <ctype.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -33,28 +34,34 @@ enum {
     O_BINARY = 0,
 };
 
-void memcpy(char* dst, const char* src, int size)
+void memcpy(void* dst, void* src, int size)
 {
-    while (size--)
-        *dst++ = *src++;
+    _emit 0x8B _emit 0x7E _emit 0x04 // MOV DI,[BP+0x4]
+    _emit 0x8B _emit 0x76 _emit 0x06 // MOV SI,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
+    _emit 0xF3 _emit 0xA4            // REP MOVSB
 }
 
-void memset(char* dst, int val, int size)
+void memset(void* ptr, int val, int size)
 {
-    while (size--)
-        *dst++ = val;
+    _emit 0x8B _emit 0x7E _emit 0x04 // MOV DI,[BP+0x4]
+    _emit 0x8B _emit 0x46 _emit 0x06 // MOV AX,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
+    _emit 0xF3 _emit 0xAA            // REP STOSB
 }
 
 int DosCall(int* ax, int bx, int cx, int dx)
 {
+    // Use segment override to allow DS to not point at data segment
+
     _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
-    _emit 0x8B _emit 0x07            // 8B07              MOV AX,[BX]
+    _emit 0x36 _emit 0x8B _emit 0x07 // 8B07              MOV AX,[SS:BX]
     _emit 0x8B _emit 0x5E _emit 0x06 // 8B5E06            MOV BX,[BP+0x6]
     _emit 0x8B _emit 0x4E _emit 0x08 // 8B4E08            MOV CX,[BP+0x8]
     _emit 0x8B _emit 0x56 _emit 0x0A // 8B560A            MOV DX,[BP+0xA]
     _emit 0xCD _emit 0x21            // CD21              INT 0x21
     _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
-    _emit 0x89 _emit 0x07            // 8907              MOV [BX],AX
+    _emit 0x36 _emit 0x89 _emit 0x07 // 8907              MOV [SS:BX],AX
     _emit 0xB8 _emit 0x00 _emit 0x00 // B80000            MOV AX,0x0
     _emit 0x19 _emit 0xC0            // 19C0              SBB AX,AX
 }
@@ -67,8 +74,7 @@ void exit(int retval)
 
 void raw_putchar(int ch)
 {
-    int ax;
-    ax = 0x200;
+    int ax = 0x200;
     DosCall(&ax, 0, 0, ch);
 }
 
@@ -93,15 +99,13 @@ int open(const char* filename, int flags, ...)
 
 void close(int fd)
 {
-    int ax;
-    ax = 0x3e00;
+    int ax = 0x3e00;
     DosCall(&ax, fd, 0, 0);
 }
 
 int read(int fd, char* buf, int count)
 {
-    int ax;
-    ax = 0x3f00;
+    int ax = 0x3f00;
     if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
@@ -109,30 +113,23 @@ int read(int fd, char* buf, int count)
 
 int write(int fd, const char* buf, int count)
 {
-    int ax;
-    ax = 0x4000;
+    int ax = 0x4000;
     if (DosCall(&ax, fd, count, buf))
         return 0;
     return ax;
 }
 
-int main(int argc, char** argv);
-void _start(void)
+enum { _ARGV = 0x5C }; // Overwrite unopened FCBs
+
+int ParseArgs()
 {
-    // Clear BSS
-    memset(&_SBSS, 0, &_EBSS-&_SBSS);
-
+    char** Args = _ARGV;
     char* CmdLine = (char*)0x80;
-    int Len = *CmdLine++ & 0xff;
+    int Len = *CmdLine++ & 0x7f;
     CmdLine[Len] = 0;
-
-    char *Args[10]; // Arbitrary limit
-    int NumArgs;
-
-    Args[0] = "scpp";
-    NumArgs = 1;
-
-    while (*CmdLine) {
+    Args[0] = "???";
+    int NumArgs = 1;
+    for (;;) {
         while (*CmdLine && *CmdLine <= ' ')
             ++CmdLine;
         if (!*CmdLine)
@@ -145,7 +142,33 @@ void _start(void)
         *CmdLine++ = 0;
     }
     Args[NumArgs] = 0;
-    exit(main(NumArgs, Args));
+    return NumArgs;
+}
+
+int main(int argc, char** argv);
+
+void _start(void)
+{
+    // Clear BSS
+    memset(&_SBSS, 0, &_EBSS-&_SBSS);
+    exit(main(ParseArgs(), _ARGV));
+}
+
+int isdigit(int c)
+{
+    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
+    _emit 0x2C _emit 0x30               // SUB AL, 0x30
+    _emit 0x3C _emit 0x0A               // CMP AL, 10
+    _emit 0x19 _emit 0xC0               // SBB AX, AX
+}
+
+int isalpha(int c)
+{
+    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
+    _emit 0x24 _emit 0xDF               // AND AL, 0xDF
+    _emit 0x2C _emit 0x41               // SUB AL, 'A'
+    _emit 0x3C _emit 0x1A               // CMP AL, 'Z'-'A'+1
+    _emit 0x19 _emit 0xC0               // SBB AX, AX
 }
 
 char* CopyStr(char* dst, const char* src)
@@ -236,19 +259,28 @@ void strcpy(char* dst, const char* src)
 
 int strcmp(const char* a, const char* b)
 {
-    while (*a && *b && *a == *b) {
-        ++a;
-        ++b;
-    }
-    return *a - *b;
+    _emit 0x8B _emit 0x76 _emit 0x04    // MOV SI, [BP+4]
+    _emit 0x8B _emit 0x7E _emit 0x06    // MOV DI, [BP+6]
+    _emit 0xAC                          // L: LODSB
+    _emit 0x8A _emit 0x25               // MOV AH, [DI]
+    _emit 0x47                          // INC DI
+    _emit 0x28 _emit 0xE0               // SUB AL, AH
+    _emit 0x75 _emit 0x04               // JNZ DONE
+    _emit 0x20 _emit 0xE4               // AND AH, AH
+    _emit 0x75 _emit 0xF4               // JNZ L
+    _emit 0x98                          // DONE: CBW
 }
 
 int strlen(const char* s)
 {
-    int l = 0;
-    while (*s++)
-        ++l;
-    return l;
+    _emit 0x8B _emit 0x4E _emit 0x04    // MOV  CX, [BP+4]
+    _emit 0x89 _emit 0xCE               // MOV  SI, CX
+    _emit 0xAC                          // L: LODSB
+    _emit 0x20 _emit 0xC0               // AND  AL, AL
+    _emit 0x75 _emit 0xFB               // JNZ  L
+    _emit 0x96                          // XCHG AX, SI
+    _emit 0x29 _emit 0xC8               // SUB  AX, CX
+    _emit 0x48                          // DEC  AX
 }
 
 int* GetBP(void)
@@ -442,19 +474,9 @@ void ReadChar(void)
     CurrentChar = CurFile->Buf[CurFile->BufPos++];
 }
 
-int IsAlpha(int ch)
-{
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
-}
-
-int IsDigit(int ch)
-{
-    return ch >= '0' && ch <= '9';
-}
-
 int IsIdStart(int ch)
 {
-    return ch == '_' || IsAlpha(ch);
+    return ch == '_' || isalpha(ch);
 }
 
 void ReadToTokenData(void)
@@ -575,19 +597,19 @@ Restart:
         while (CurrentChar <= ' ' && CurrentChar && CurrentChar != '\n')
             ReadChar();
         return;
-    } else if (IsDigit(CurrentChar)) {
+    } else if (isdigit(CurrentChar)) {
         CurTok.Type = TOK_NUM;
         ReadToTokenData();
         if (CurrentChar == 'x' || CurrentChar == 'X')
             ReadToTokenData();
-        while (IsIdStart(CurrentChar) || IsDigit(CurrentChar))
+        while (IsIdStart(CurrentChar) || isdigit(CurrentChar))
             ReadToTokenData();
         goto Out;
     } else if (IsIdStart(CurrentChar)) {
         CurTok.Type = TOK_RAW_ID;
         do {
             ReadToTokenData();
-        } while (IsIdStart(CurrentChar) || IsDigit(CurrentChar));
+        } while (IsIdStart(CurrentChar) || isdigit(CurrentChar));
         goto Out;
     } else if (CurrentChar == '"' || CurrentChar == '\'') {
         const int End = CurrentChar;
