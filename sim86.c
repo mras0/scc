@@ -55,9 +55,10 @@ int modrm;
 int addr;
 char dsize;
 char seg;
-char rmtext[16];
 
 int verbose;
+char rmtext[16];
+char insttext[64];
 const char* filename;
 
 #ifndef __SCC__
@@ -68,6 +69,7 @@ const char* filename;
 unsigned long long counts[65536];
 unsigned long long total_cycles;
 unsigned long long cycles;
+char* addrtext[65536];
 int stack_low = 0xffff;
 int file_size;
 int do_profile;
@@ -430,10 +432,10 @@ void ALUOp(int op, int swap)
     if (swap) {
         modrm = 0xc0|r; // Need to write to register
         DoOp(op, rval, rmval);
-        if (verbose) printf("%s %s, %s", OpName(op), RegName(r), rmtext);
+        if (verbose) sprintf(insttext, "%s %s, %s", OpName(op), RegName(r), rmtext);
     } else {
         DoOp(op, rmval, rval);
-        if (verbose) printf("%s %s, %s", OpName(op), rmtext, RegName(r));
+        if (verbose) sprintf(insttext, "%s %s, %s", OpName(op), rmtext, RegName(r));
     }
 }
 
@@ -442,10 +444,10 @@ void MOV(int swap)
     ModRM();
     int r = modrm>>3&7;
     if (swap) {
-        if (verbose) printf("MOV %s, %s", RegName(r), rmtext);
+        if (verbose) sprintf(insttext, "MOV %s, %s", RegName(r), rmtext);
         WriteReg(r, ReadRM());
     } else {
-        if (verbose) printf("MOV %s, %s", rmtext, RegName(r));
+        if (verbose) sprintf(insttext, "MOV %s, %s", rmtext, RegName(r));
         WriteRM(ReadReg(r));
     }
 }
@@ -493,19 +495,19 @@ void ReadFile(const char* Filename)
 
 void JMP(int rel)
 {
-    if (verbose) printf("JMP 0x%04X", TRIM(ip+rel));
+    if (verbose) sprintf(insttext, "JMP 0x%04X", TRIM(ip+rel));
     ip += rel;
 }
 
 void PUSH(int r)
 {
-    if (verbose) printf("PUSH %s", RegName(r));
+    if (verbose) sprintf(insttext, "PUSH %s", RegName(r));
     DoPush(reg[r]);
 }
 
 void POP(int r)
 {
-    if (verbose) printf("POP %s", RegName(r));
+    if (verbose) sprintf(insttext, "POP %s", RegName(r));
     reg[r] = DoPop();
 }
 
@@ -548,7 +550,7 @@ void JCC(int cc)
     default:
         Fatal("TODO: JCC cc=%d rel=%d [%X]", cc, rel, ip+rel);
     }
-    if (verbose) printf("%s 0x%04X", n, TRIM(ip+rel));
+    if (verbose) sprintf(insttext, "%s 0x%04X", n, TRIM(ip+rel));
     if (j == e)
         ip += rel;
 }
@@ -562,13 +564,13 @@ void DoIncDec(int v)
 
 void INC(void)
 {
-    if (verbose) printf("INC %s", rmtext);
+    if (verbose) sprintf(insttext, "INC %s", rmtext);
     DoIncDec(1);
 }
 
 void DEC(void)
 {
-    if (verbose) printf("DEC %s", rmtext);
+    if (verbose) sprintf(insttext, "DEC %s", rmtext);
     DoIncDec(-1);
 }
 
@@ -631,13 +633,13 @@ void DoExit(int ec)
         printf("\nFilesize;Total cylces;Stack low;_EBSS\n");
         printf("%d;%llu;%d;%d\n\n", file_size, total_cycles, stack_low&0xffff, entries[num_entries-1].Addr);
         int entry = 0;
-        printf("Count;Address;Name\n");
+        printf("Count;Address;Name;Instruction\n");
         for (int i = 0; i < 65536; ++i) {
             if (entry+1 < num_entries && i >= entries[entry+1].Addr) {
                 ++entry;
             }
             if (counts[i])
-                printf("%llu;0x%04X;%s+0x%X\n", counts[i], i, entries[entry].Id, i - entries[entry].Addr);
+                printf("%llu;0x%04X;%s+0x%X;%s\n", counts[i], i, entries[entry].Id, i - entries[entry].Addr, addrtext[i] ? addrtext[i] : "");
             if (entry >= 0)
                 entries[entry].Total += counts[i];
         }
@@ -668,7 +670,7 @@ void DoExit(int ec)
 void INT(void)
 {
     const int intr = ReadIByte();
-    if (verbose) printf("INT 0x%02X", intr);
+    if (verbose) sprintf(insttext, "INT 0x%02X", intr);
     if (intr == 0x20) {
         DoExit(0);
     }
@@ -786,9 +788,12 @@ int main(int argc, char** argv)
 
     DoPush(0);
     ip = LOAD_OFFSET;
+
+    int start_ip = ip;
     for (;;) {
 #ifdef PROFILING
         const int orig_ip = TRIM(ip);
+        int remove_verbose = 0;
         if (do_profile) {
             cycles = 0;
             reg[R_SP]=TRIM(reg[R_SP]);
@@ -796,9 +801,17 @@ int main(int argc, char** argv)
                 stack_low = reg[R_SP];
                 max_stack = RecordStack();
             }
+
+            if (!addrtext[orig_ip]) {
+                remove_verbose = !verbose;
+                verbose = 1;
+            }
         }
 #endif
-        if (verbose) printf("%04X ", TRIM(ip));
+        if (verbose) {
+            start_ip = TRIM(ip);
+            *insttext = 0;
+        }
 
         modrm = -1;
         addr = 0;
@@ -824,11 +837,11 @@ int main(int argc, char** argv)
                     Imm = (char)ReadIByte();
                 modrm = 0xc0;
                 DoOp(op, reg[R_AX], Imm);
-                if (verbose) printf("%s A%c, 0x%04X", OpName(op), dsize?'X':'L', Imm);
+                if (verbose) sprintf(insttext, "%s A%c, 0x%04X", OpName(op), dsize?'X':'L', Imm);
             } else if (type == 6) {
                 if (inst < 0x26) {
                     const int sr = inst>>3;
-                    if (verbose) printf("%s %s", inst&1?"POP":"PUSH", SRegName(sr));
+                    if (verbose) sprintf(insttext, "%s %s", inst&1?"POP":"PUSH", SRegName(sr));
                     if (inst&1)
                         sreg[sr] = DoPop();
                     else
@@ -836,7 +849,6 @@ int main(int argc, char** argv)
                 } else {
                     assert(!(inst&1));
                     seg = (inst-0x26)>>3;
-                    if (verbose) printf("%s: ", SRegName(seg));
                     goto Restart;
                 }
             } else {
@@ -858,18 +870,18 @@ int main(int argc, char** argv)
             JCC(inst-0x70);
         } else if (inst >= 0x90 && inst < 0x98) {
             const int r = inst - 0x90;
-            if (verbose) printf("XCHG AX, %s", RegName(r));
+            if (verbose) sprintf(insttext, "XCHG AX, %s", RegName(r));
             int rv = reg[r];
             reg[r] = reg[R_AX];
             reg[R_AX] = rv;
         } else if (inst >= 0xb0 && inst < 0xb8) {
             dsize = 0;
             WriteReg(inst-0xb0, ReadIByte());
-            if (verbose) printf("MOV %s, 0x%02X", RegName(inst-0xb0), ReadReg(inst-0xb0));
+            if (verbose) sprintf(insttext, "MOV %s, 0x%02X", RegName(inst-0xb0), ReadReg(inst-0xb0));
         } else if (inst >= 0xb8 && inst < 0xc0) {
             const int r = inst-0xb8;
             reg[r] = Imm16();
-            if (verbose) printf("MOV %s, 0x%04X", RegName(inst-0xb8), reg[r]);
+            if (verbose) sprintf(insttext, "MOV %s, 0x%04X", RegName(inst-0xb8), reg[r]);
         } else {
             switch (inst) {
             case 0x80:
@@ -881,7 +893,7 @@ int main(int argc, char** argv)
                     ModRM();
                     const int imm = inst == 0x81 ? Imm16() : (char)ReadIByte();
                     DoOp(modrm>>3&7, ReadRM(), imm);
-                    if (verbose) printf("%s %s, %04X", OpName(modrm>>3&7), rmtext, imm);
+                    if (verbose) sprintf(insttext, "%s %s, %04X", OpName(modrm>>3&7), rmtext, imm);
                 }
                 break;
             case 0x88:
@@ -894,29 +906,29 @@ int main(int argc, char** argv)
             case 0x8C:
                 ModRM();
                 assert((modrm>>3&7) < 4);
-                if (verbose) printf("MOV %s, %s\n", rmtext, SRegName(modrm>>3&7));
+                if (verbose) sprintf(insttext, "MOV %s, %s", rmtext, SRegName(modrm>>3&7));
                 WriteRM(sreg[modrm>>3&7]);
                 break;
             case 0x8D:
                 {
                     ModRM();
-                    if (verbose) printf("LEA %s, %s", RegName(modrm>>3&7), rmtext);
+                    if (verbose) sprintf(insttext, "LEA %s, %s", RegName(modrm>>3&7), rmtext);
                     reg[modrm>>3&7] = addr;
                 }
                 break;
             case 0x8E:
                 ModRM();
                 assert((modrm>>3&7) < 4);
-                if (verbose) printf("MOV %s, %s\n", SRegName(modrm>>3&7), rmtext);
+                if (verbose) sprintf(insttext, "MOV %s, %s", SRegName(modrm>>3&7), rmtext);
                 sreg[modrm>>3&7] = ReadRM();
                 break;
             case 0x98:
                 reg[R_AX] = (char)reg[R_AX];
-                if (verbose) printf("CBW");
+                if (verbose) sprintf(insttext, "CBW");
                 break;
             case 0x99:
                 reg[R_DX] = reg[R_AX]&0x8000 ? -1 : 0;
-                if (verbose) printf("CWD");
+                if (verbose) sprintf(insttext, "CWD");
                 break;
             case 0xA0:
             case 0xA1:
@@ -926,8 +938,8 @@ int main(int argc, char** argv)
                     int Off = ReadIByte();
                     Off |= ReadIByte()<<8;
                     if (verbose) {
-                        if (inst & 2) printf("MOV [0x%04X], A%c", Off, inst&1?'X':'L');
-                        else          printf("MOV A%c, [0x%04X]", inst&1?'X':'L', Off);
+                        if (inst & 2) sprintf(insttext, "MOV [0x%04X], A%c", Off, inst&1?'X':'L');
+                        else          sprintf(insttext, "MOV A%c, [0x%04X]", inst&1?'X':'L', Off);
                     }
                     if (inst & 2) {
                         // Store
@@ -948,7 +960,7 @@ int main(int argc, char** argv)
             case 0xA4:
                 {
                     assert(rep == 0xF3);
-                    if (verbose) printf("REP MOVSB");
+                    if (verbose) sprintf(insttext, "REP MOVSB");
                     while (reg[R_CX]) {
                         Write8(SR_ES, reg[R_DI], Read8(SR_DS, reg[R_SI]));
                         reg[R_CX] -= 1;
@@ -960,7 +972,7 @@ int main(int argc, char** argv)
             case 0xA5:
                 {
                     assert(rep == 0xF3);
-                    if (verbose) printf("REP MOVSW");
+                    if (verbose) sprintf(insttext, "REP MOVSW");
                     while (reg[R_CX]) {
                         Write16(SR_ES, reg[R_DI], Read16(SR_DS, reg[R_SI]));
                         reg[R_CX] -= 1;
@@ -972,7 +984,7 @@ int main(int argc, char** argv)
             case 0xA6:
                 {
                     assert(rep == 0xF3);
-                    if (verbose) printf("REPE CMPSB");
+                    if (verbose) sprintf(insttext, "REPE CMPSB");
                     flags = FZ;
                     while ((flags & FZ) && reg[R_CX]) {
                         DoOp(OP_CMP, Read8(SR_DS, reg[R_SI]), Read8(SR_ES, reg[R_DI]));
@@ -986,11 +998,11 @@ int main(int argc, char** argv)
                 {
                     int iter = 1;
                     if (rep == 0xF3) {
-                        if (verbose) printf("REP STOSB");
+                        if (verbose) sprintf(insttext, "REP STOSB");
                         iter = reg[R_CX];
                         reg[R_CX] -= iter;
                     } else {
-                        if (verbose) printf("STOSB");
+                        if (verbose) sprintf(insttext, "STOSB");
                     }
                     const int v = reg[R_AX];
                     while (iter--) {
@@ -1002,11 +1014,11 @@ int main(int argc, char** argv)
                 {
                     int iter = 1;
                     if (rep == 0xF3) {
-                        if (verbose) printf("REP STOSW");
+                        if (verbose) sprintf(insttext, "REP STOSW");
                         iter = reg[R_CX];
                         reg[R_CX] -= iter;
                     } else {
-                        if (verbose) printf("STOSW");
+                        if (verbose) sprintf(insttext, "STOSW");
                     }
                     const int v = reg[R_AX];
                     while (iter--) {
@@ -1018,7 +1030,7 @@ int main(int argc, char** argv)
             case 0xAC:
                 {
                     assert(rep == 0x00);
-                    if (verbose) printf("LODSB");
+                    if (verbose) sprintf(insttext, "LODSB");
                     dsize = 0;
                     WriteReg(R_AX, Read8(SR_DS, reg[R_SI]));
                     reg[R_SI] += 1;
@@ -1027,13 +1039,13 @@ int main(int argc, char** argv)
             case 0xAD:
                 {
                     assert(rep == 0x00);
-                    if (verbose) printf("LODSW");
+                    if (verbose) sprintf(insttext, "LODSW");
                     WriteReg(R_AX, Read16(SR_DS, reg[R_SI]));
                     reg[R_SI] += 2;
                 }
                 break;
             case 0xC3:
-                if (verbose) printf("RET");
+                if (verbose) sprintf(insttext, "RET");
                 ip = DoPop();
                 break;
             case 0xC6:
@@ -1041,7 +1053,7 @@ int main(int argc, char** argv)
                     dsize = 0;
                     ModRM();
                     int val = ReadIByte();
-                    if (verbose) printf("MOV %s, 0x%04X", rmtext, val);
+                    if (verbose) sprintf(insttext, "MOV %s, 0x%04X", rmtext, val);
                     WriteRM(val);
                 }
                 break;
@@ -1049,7 +1061,7 @@ int main(int argc, char** argv)
                 {
                     ModRM();
                     int val = Imm16();
-                    if (verbose) printf("MOV %s, 0x%04X", rmtext, val);
+                    if (verbose) sprintf(insttext, "MOV %s, 0x%04X", rmtext, val);
                     WriteRM(val);
                 }
                 break;
@@ -1063,12 +1075,12 @@ int main(int argc, char** argv)
                     // TODO: Handle flags
                     switch (modrm>>3&7) {
                     case 5: // SHR R/M16, 1
-                        if (verbose) printf("SHR %s, 1", rmtext);
+                        if (verbose) sprintf(insttext, "SHR %s, 1", rmtext);
                         WriteRM((v >> 1)&0x7fff);
                         flags = (flags&~FC) | (v&1);
                         break;
                     case 7: // SAR R/M16, 1
-                        if (verbose) printf("SAR %s, 1", rmtext);
+                        if (verbose) sprintf(insttext, "SAR %s, 1", rmtext);
                         WriteRM(v >> 1);
                         break;
                     default:
@@ -1084,11 +1096,11 @@ int main(int argc, char** argv)
                     // TODO: Handle flags
                     switch (modrm>>3&7) {
                     case 4: // SHL R/M16, CL
-                        if (verbose) printf("SHL %s, CL", rmtext);
+                        if (verbose) sprintf(insttext, "SHL %s, CL", rmtext);
                         WriteRM(v << a);
                         break;
                     case 7: // SAR R/M16, CL
-                        if (verbose) printf("SAR %s, CL", rmtext);
+                        if (verbose) sprintf(insttext, "SAR %s, CL", rmtext);
                         WriteRM(v >> a);
                         break;
                     default:
@@ -1099,7 +1111,7 @@ int main(int argc, char** argv)
             case 0xE8:
                 {
                     const int rel = Imm16();
-                    if (verbose) printf("CALL 0x%04X", TRIM(ip+rel));
+                    if (verbose) sprintf(insttext, "CALL 0x%04X", TRIM(ip+rel));
                     DoPush(ip);
                     ip += rel;
                 }
@@ -1119,14 +1131,16 @@ int main(int argc, char** argv)
                     // TODO: Flags
                     switch (modrm>>3&7) {
                     case 2: // NOT r/m16
+                        if (verbose) sprintf(insttext, "NOT %s", rmtext);
                         WriteRM(~ReadRM());
                         break;
                     case 3: // NEG r/m16
+                        if (verbose) sprintf(insttext, "NEG %s", rmtext);
                         WriteRM(-ReadRM());
                         break;
                     case 5: // IMUL (TODO: Full 32-bit result)
                         {
-                            if (verbose) printf("IMUL %s", rmtext);
+                            if (verbose) sprintf(insttext, "IMUL %s", rmtext);
                             const int m = ReadRM();
                             reg[R_AX] *= m;
                             reg[R_DX] = 0;
@@ -1134,7 +1148,7 @@ int main(int argc, char** argv)
                         break;
                     case 7: // IDIV (TODO: Full 32-bit divide)
                         {
-                            if (verbose) printf("IDIV %s", rmtext);
+                            if (verbose) sprintf(insttext, "IDIV %s", rmtext);
                             const int d = ReadRM();
                             assert(reg[R_DX] == (reg[R_AX] & 0x8000 ? -1 : 0));
                             reg[R_DX] = reg[R_AX] % d;
@@ -1169,13 +1183,28 @@ int main(int argc, char** argv)
                 Fatal("Unimplemented/invalid instruction %02X", inst);
             }
         }
-        if (verbose)
-            PrintState();
 #ifdef PROFILING
         if (do_profile) {
+            if (!addrtext[orig_ip]) {
+                assert(*insttext);
+                const int l = (int)strlen(insttext)+1;
+                if ((addrtext[orig_ip] = malloc(l)) == NULL)
+                    Fatal("Out of memory");
+                memcpy(addrtext[orig_ip], insttext, l);
+                if (remove_verbose) {
+                    verbose = 0;
+                }
+            }
+
             total_cycles += cycles;
             counts[orig_ip] += cycles;
         }
 #endif
+        if (verbose) {
+            assert(*insttext);
+
+            printf("%04X %s", TRIM(start_ip), insttext);
+            PrintState();
+        }
     }
 }
