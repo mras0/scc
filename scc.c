@@ -193,7 +193,7 @@ enum {
     VARDECL_MAX = 400,
     ID_MAX = 550,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
-    IDBUFFER_MAX = 4800,
+    IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 10,
     OUTPUT_MAX = 0x6000,    // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
@@ -264,9 +264,9 @@ enum {
     TOK_ELLIPSIS,
     TOK_ARROW,
 
+    TOK_KEYWORD,
     // NOTE: Must match order of registration in main
-    //       TOK_BREAK must be first
-    TOK_BREAK,
+    TOK_BREAK = TOK_KEYWORD,
     TOK_CASE,
     TOK_CHAR,
     TOK_CONST,
@@ -280,12 +280,15 @@ enum {
     TOK_IF,
     TOK_INT,
     TOK_RETURN,
+    TOK_SHORT,
+    TOK_SIGNED,
     TOK_SIZEOF,
     TOK_STATIC,
     TOK_STRUCT,
     TOK_SWITCH,
     TOK_UNION,
     TOK_VOID,
+    TOK_VOLATILE,
     TOK_WHILE,
 
     TOK_VA_LIST,
@@ -756,7 +759,7 @@ Redo:
             }
             break;
         }
-        TokenType += TOK_BREAK;
+        TokenType += TOK_KEYWORD;
         return;
     }
 
@@ -878,7 +881,7 @@ Redo:
 
 void PrintTokenType(int T)
 {
-    if (T >= TOK_BREAK) Printf("%s ", IdText[T-TOK_BREAK]);
+    if (T >= TOK_KEYWORD) Printf("%s ", IdText[T-TOK_KEYWORD]);
     else if (T > ' ' && T < 128) Printf("%c ", T);
     else Printf("%d ", T);
 }
@@ -1366,7 +1369,7 @@ int ExpectId(void)
     id = TokenType;
     if (id >= TOK_ID) {
         GetToken();
-        return id - TOK_BREAK;
+        return id - TOK_KEYWORD;
     }
     Printf("Expected identifier got ");
     Unexpected();
@@ -1380,9 +1383,12 @@ int IsTypeStart(void)
     case TOK_CHAR:
     case TOK_INT:
     case TOK_ENUM:
+    case TOK_SHORT:
+    case TOK_SIGNED:
     case TOK_STATIC:
     case TOK_STRUCT:
     case TOK_UNION:
+    case TOK_VOLATILE:
     case TOK_VA_LIST:
         return 1;
     }
@@ -2452,13 +2458,17 @@ void ParseDeclSpecs(void)
         case TOK_CHAR:
             CurrentType = VT_CHAR;
             break;
+        case TOK_SHORT:
         case TOK_INT:
             CurrentType = VT_INT;
             break;
         case TOK_VA_LIST:
             CurrentType = VT_CHAR | VT_PTR1;
             break;
-        case TOK_CONST: // Ignore but accept const for now
+        case TOK_CONST:
+        case TOK_SIGNED:
+        case TOK_VOLATILE:
+            // Ignore but accept for now
             break;
         case TOK_STATIC:
             Storage |= VT_STATIC;
@@ -2562,11 +2572,19 @@ void ParseDeclSpecs(void)
 
 void ParseDeclarator(int* Id)
 {
-    // TODO: Could allow type qualifiers (const/volatile) here
-    while (TokenType == '*') {
+Redo:
+    switch (TokenType) {
+    case '*':
         GetToken();
         CurrentType += VT_PTR1;
+        goto Redo;
+    case TOK_CONST:
+    case TOK_VOLATILE:
+        // Ignore for now
+        GetToken();
+        goto Redo;
     }
+
     if (Id) {
         *Id = ExpectId();
     }
@@ -2891,7 +2909,7 @@ Redo:
 
     if (TokenType >= TOK_ID) {
         // Expression statement / Labelled statement
-        const int id = TokenType - TOK_BREAK;
+        const int id = TokenType - TOK_KEYWORD;
         GetToken();
         if (TokenType == ':') {
             GetToken();
@@ -3162,20 +3180,21 @@ int main(int argc, char** argv)
     memset(IdHashTab, -1, sizeof(IdHashTab));
     memset(VarLookup, -1, sizeof(VarLookup));
 
-    AddBuiltins("break case char const continue default do else enum for goto if"
-        " int return sizeof static struct switch union void while"
-        " va_list va_start va_end va_arg _emit _start _SBSS _EBSS");
-    if (IdCount+TOK_BREAK-1 != TOK__EBSS) Fail();
+    AddBuiltins("break case char const continue default do else enum for"
+        " goto if int return short signed sizeof static struct switch"
+        " union void volatile while va_list va_start va_end va_arg _emit"
+        " _start _SBSS _EBSS");
+    if (IdCount+TOK_KEYWORD-1 != TOK__EBSS) Fail();
 
     // Prelude
     OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
     OutputBytes(I_JMP_REL16, -1);
-    EmitGlobalRefRel(AddVarDecl(TOK__START-TOK_BREAK));
+    EmitGlobalRefRel(AddVarDecl(TOK__START-TOK_KEYWORD));
 
     CurrentType = VT_CHAR|VT_LOCGLOB;
-    struct VarDecl* SBSS = AddVarDecl(TOK__SBSS-TOK_BREAK);
-    struct VarDecl* EBSS = AddVarDecl(TOK__EBSS-TOK_BREAK);
+    struct VarDecl* SBSS = AddVarDecl(TOK__SBSS-TOK_KEYWORD);
+    struct VarDecl* EBSS = AddVarDecl(TOK__EBSS-TOK_KEYWORD);
 
     InBufPtr = InBuf;
     NextChar();

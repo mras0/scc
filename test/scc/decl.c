@@ -110,7 +110,27 @@ void test2() {
     assert_eq(t2_1.y, 2);
 }
 
+void undeclstruct_test() {
+    struct Undeclared* x = 0;
+    assert_eq(x, 0);
+}
+
+void ignoreddecls_test() {
+    signed char y;
+    y = -17;
+    assert_eq(y, -17);
+    signed short z = 0x8123;
+    assert_eq(z, -32477);
+    char x;
+    char *px = &x;
+    volatile const char * volatile const * volatile const extreme = &px;
+    x = 37;
+    assert_eq(**extreme, 37);
+}
+
 void main() {
     test1();
     test2();
+    undeclstruct_test();
+    ignoreddecls_test();
 }

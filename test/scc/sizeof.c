@@ -48,4 +48,6 @@ void main()
     int a[4];
     x += sizeof(a[x]);
     assert_eq(x, 3);
+
+    assert_eq(sizeof(struct Undefined*), sizeof(void*));
 }
