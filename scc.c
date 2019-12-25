@@ -213,13 +213,13 @@ enum {
     VT_BOOL,                // CurrentValue holds condition code for "true"
     VT_CHAR,
     VT_INT,
-    VT_STRUCT,
+    VT_STRUCT,              // CurrentTypeExtra holds index into StructDecls
+    VT_ARRAY,               // CurrentTypeExtra holds index into ArrayDecls
 
     VT_BASEMASK = 7,
 
     VT_LVAL    = 1<<3,
     VT_FUN     = 1<<4,
-    VT_ARRAY   = 1<<5,
 
     VT_PTR1    = 1<<6,
     VT_PTRMASK = 3<<6,      // 3 levels of indirection should be enough..
@@ -338,7 +338,8 @@ struct StructDecl {
 
 struct ArrayDecl {
     int Bound;
-    int Extra;
+    int Type;
+    int TypeExtra;
 };
 
 struct VarDecl {
@@ -409,6 +410,9 @@ int ContinueLabel;
 int CurrentType;
 int CurrentVal;
 int CurrentTypeExtra;
+
+int BaseType;
+int BaseTypeExtra;
 
 int ReturnUsed;
 char PendingPushAx; // Remember to adjsust LocalOffset!
@@ -1387,28 +1391,33 @@ int IsTypeStart(void)
 
 int SizeofType(int Type, int Extra)
 {
-    Type &= VT_BASEMASK|VT_PTRMASK|VT_ARRAY;
-    if (Type & VT_ARRAY) {
-        struct ArrayDecl* AD = &ArrayDecls[Extra];
-        if (!AD->Bound) Fail();
-        return AD->Bound * SizeofType(Type & ~VT_ARRAY, AD->Extra);
-    } else if (Type == VT_CHAR) {
-        return 1;
-    } else if (Type == VT_STRUCT) {
-        const int IsUnion = StructDecls[Extra].Id & IS_UNION_FLAG;
-        int Size = 0;
-        struct StructMember* SM = StructDecls[Extra].Members;
-        for (; SM; SM = SM->Next) {
-            const int MSize = SizeofType(SM->Type, SM->TypeExtra);
-            if (!IsUnion)
-                Size += MSize;
-            else if (MSize > Size)
-                Size = MSize;
+    if (Type & VT_PTRMASK)
+        return 2;
+    switch (Type & VT_BASEMASK) {
+    case VT_INT:  return 2;
+    case VT_CHAR: return 1;
+    case VT_ARRAY:
+        {
+            struct ArrayDecl* AD = &ArrayDecls[Extra];
+            if (!AD->Bound) Fail();
+            return AD->Bound * SizeofType(AD->Type, AD->TypeExtra);
         }
-        return Size;
+    case VT_STRUCT:
+        {
+            const int IsUnion = StructDecls[Extra].Id & IS_UNION_FLAG;
+            int Size = 0;
+            struct StructMember* SM = StructDecls[Extra].Members;
+            for (; SM; SM = SM->Next) {
+                const int MSize = SizeofType(SM->Type, SM->TypeExtra);
+                if (!IsUnion)
+                    Size += MSize;
+                else if (MSize > Size)
+                    Size = MSize;
+            }
+            return Size;
+        }
     }
-    if (Type != VT_INT && !(Type & VT_PTRMASK)) Fail();
-    return 2;
+    Fail();
 }
 
 int SizeofCurrentType(void)
@@ -1422,10 +1431,11 @@ void LvalToRval(void)
         const int loc = CurrentType & VT_LOCMASK;
         CurrentType &= ~(VT_LVAL | VT_LOCMASK);
 
-        if (CurrentType & VT_ARRAY) {
+        if (CurrentType == VT_ARRAY) {
             // Decay array
-            CurrentType = (CurrentType & ~VT_ARRAY) + VT_PTR1;
-            CurrentTypeExtra = ArrayDecls[CurrentTypeExtra].Extra;
+            struct ArrayDecl* AD = &ArrayDecls[CurrentTypeExtra];
+            CurrentType = AD->Type + VT_PTR1;
+            CurrentTypeExtra = AD->TypeExtra;
             if (loc)
                 EmitLoadAddr(R_AX, loc, CurrentVal);
             return;
@@ -1585,9 +1595,10 @@ void ParsePrimaryExpression(void)
     case TOK_STRLIT:
         if (ArrayCount == ARRAY_MAX) Fail();
         struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
-        AD->Bound = TokenNumVal;
-        AD->Extra = 0;
-        CurrentType = VT_CHAR | VT_ARRAY | VT_LVAL;
+        AD->Bound     = TokenNumVal;
+        AD->Type      = VT_CHAR;
+        AD->TypeExtra = 0;
+        CurrentType = VT_ARRAY | VT_LVAL;
         CurrentTypeExtra = ArrayCount++;
         if (!IsDeadCode) {
             int EndLab = -1;
@@ -1721,10 +1732,11 @@ void ParsePostfixExpression(void)
             {
                 GetToken();
                 struct VarDecl* GlobalArr = 0;
-                if ((CurrentType & (VT_ARRAY|VT_LOCMASK)) == (VT_ARRAY|VT_LOCGLOB)) {
+                if ((CurrentType & (VT_BASEMASK|VT_LOCMASK)) == (VT_ARRAY|VT_LOCGLOB)) {
+                    struct ArrayDecl* AD = &ArrayDecls[CurrentTypeExtra];
                     GlobalArr = &VarDecls[CurrentVal];
-                    CurrentType &= ~(VT_ARRAY|VT_LOCMASK);
-                    CurrentTypeExtra = ArrayDecls[CurrentTypeExtra].Extra;
+                    CurrentType = AD->Type;
+                    CurrentTypeExtra = AD->TypeExtra;
                 } else {
                     LvalToRval();
                     if (!(CurrentType & VT_PTRMASK)) {
@@ -2102,7 +2114,7 @@ void DoCond(int Label, int Forward) // forward => jump if label is false
 void ForceToReg(void)
 {
     // Always decay arrays
-    if (CurrentType & VT_ARRAY)
+    if ((CurrentType & VT_BASEMASK) == VT_ARRAY)
         LvalToRval();
 
     const int Loc = CurrentType & VT_LOCMASK;
@@ -2213,9 +2225,9 @@ void ParseExpr1(int OuterPrecedence)
             if (!(CurrentType & VT_LVAL)) {
                 Fatal("L-value required");
             }
+            CurrentType &= ~VT_LVAL;
             if (Op != '=')
                 Op = RemoveAssign(Op);
-            CurrentType &= ~VT_LVAL;
         } else {
             LvalToRval();
         }
@@ -2373,7 +2385,7 @@ RhsConst:
                     GetVal();
                     EmitScaleAx(LhsPointeeSize);
                     CurrentType = LhsType;
-                } else if (PendingPushAx && !(CurrentType & VT_ARRAY)) {
+                } else if (PendingPushAx && (CurrentType & VT_BASEMASK) != VT_ARRAY) {
                     if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
                         if (!(CurrentType&VT_LVAL)) Fail();
                         PendingPushAx = 0;
@@ -2412,6 +2424,17 @@ void ParseAssignmentExpression(void)
     ParseCastExpression();
     if (OperatorPrecedence <= PREC_ASSIGN)
         ParseExpr1(PREC_ASSIGN);
+}
+
+void SaveBaseType(void)
+{
+    BaseType      = CurrentType & ~VT_PTRMASK;
+    BaseTypeExtra = CurrentTypeExtra;
+    if ((CurrentType & VT_BASEMASK) == VT_ARRAY) {
+        struct ArrayDecl* AD = &ArrayDecls[CurrentTypeExtra];
+        BaseType      = AD->Type;
+        BaseTypeExtra = AD->TypeExtra;
+    }
 }
 
 void ParseDeclarator(int* Id);
@@ -2501,9 +2524,9 @@ void ParseDeclSpecs(void)
                     SD->Id = id;
                     struct StructMember** Last = &SD->Members;
                     while (TokenType != '}') {
+                        /// XXX Issue here - Save Base type before this?
                         ParseAbstractDecl();
-                        int BaseType  = CurrentType;
-                        int BaseExtra = CurrentTypeExtra;
+                        SaveBaseType();
                         while (TokenType != ';') {
                             if (StructMemCount == STRUCT_MEMBER_MAX) Fail();
                             struct StructMember* SM = &StructMembers[StructMemCount++];
@@ -2515,7 +2538,7 @@ void ParseDeclSpecs(void)
                             if (TokenType == ',') {
                                 GetToken();
                                 CurrentType      = BaseType;
-                                CurrentTypeExtra = BaseExtra;
+                                CurrentTypeExtra = BaseTypeExtra;
                                 continue;
                             }
                             break;
@@ -2547,13 +2570,13 @@ void ParseDeclarator(int* Id)
     if (Id) {
         *Id = ExpectId();
     }
-    if (TokenType == '[') {
+    while (TokenType == '[') {
         GetToken();
         if (ArrayCount == ARRAY_MAX) Fail();
         struct ArrayDecl* AD = &ArrayDecls[ArrayCount];
-        AD->Extra = CurrentTypeExtra;
-        int T  = CurrentType | VT_ARRAY;
-        int TE = ArrayCount++;
+        const int F = CurrentType & VT_STATIC;
+        AD->Type      = CurrentType & ~VT_STATIC;
+        AD->TypeExtra = CurrentTypeExtra;
         if (TokenType != ']') {
             ParseExpr();
             if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Need constant expression
@@ -2563,8 +2586,22 @@ void ParseDeclarator(int* Id)
             AD->Bound = 0;
         }
         Expect(']');
-        CurrentType      = T;
-        CurrentTypeExtra = TE;
+        CurrentType      = VT_ARRAY | F;
+        CurrentTypeExtra = ArrayCount++;
+
+        // Move bounds "inwards"
+        // char a[2][3][4] goes
+        //    (char,[])
+        // -> (array{0},[[char,2]])
+        // -> (array{1},[[char,3],[array{0},2]])
+        // -> (array{2},[[char,4],[array{0},3],[array{1},2]])
+        while (AD->Type == VT_ARRAY) {
+            struct ArrayDecl* AD2 = &ArrayDecls[AD->TypeExtra];
+            const int Temp = AD->Bound;
+            AD->Bound = AD2->Bound;
+            AD2->Bound = Temp;
+            AD = AD2;
+        }
     }
 }
 
@@ -2586,7 +2623,9 @@ struct VarDecl* ParseFirstDecl(void)
     ParseDeclSpecs();
     if (TokenType == ';')
         return 0;
-    return DoDecl();
+    struct VarDecl* VD = DoDecl();
+    SaveBaseType();
+    return VD;
 }
 
 // Remember to reset CurrentType/CurrentTypeExtra before calling
@@ -2595,6 +2634,8 @@ struct VarDecl* NextDecl(void)
     if (TokenType != ',')
         return 0;
     GetToken();
+    CurrentType      = BaseType;
+    CurrentTypeExtra = BaseTypeExtra;
     return DoDecl();
 }
 
@@ -2865,8 +2906,6 @@ Redo:
         }
     } else if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
-        const int BaseType   = CurrentType & ~VT_PTRMASK;
-        const int BaseStruct = CurrentTypeExtra;
         while (vd) {
             int size = SizeofCurrentType();
 
@@ -2887,8 +2926,6 @@ Redo:
                 LocalOffset -= size;
                 vd->Offset = LocalOffset;
             }
-            CurrentType      = BaseType;
-            CurrentTypeExtra = BaseStruct;
             vd = NextDecl();
         }
     } else {
@@ -3023,8 +3060,6 @@ void ParseExternalDefition(void)
         return;
     }
 
-    const int BaseType   = CurrentType;
-    const int BaseStruct = CurrentTypeExtra;
     while (vd) {
         vd->Type |= VT_LOCGLOB;
 
@@ -3037,10 +3072,10 @@ void ParseExternalDefition(void)
                 // TODO: Could save one byte per global char...
                 OutputWord(CurrentVal);
                 break;
-            case VT_LVAL|VT_ARRAY|VT_CHAR:
+            case VT_LVAL|VT_ARRAY:
                 {
-                    if (vd->Type != (VT_LOCGLOB|VT_ARRAY|VT_CHAR)) Fail();
                     struct ArrayDecl* AD = &ArrayDecls[vd->TypeExtra];
+                    if (AD->Type != VT_CHAR) Fail();
                     if (AD->Bound) Fail(); // TODO
                     AD->Bound = ArrayDecls[CurrentTypeExtra].Bound;
                     if (CurrentTypeExtra != ArrayCount-1) Fail();
@@ -3053,8 +3088,6 @@ void ParseExternalDefition(void)
         } else {
             BssSize += SizeofCurrentType();
         }
-        CurrentType      = BaseType;
-        CurrentTypeExtra = BaseStruct;
         vd = NextDecl();
     }
 
