@@ -1731,7 +1731,7 @@ void ParsePostfixExpression(void)
                         Fatal("Expected pointer");
                     }
                     CurrentType -= VT_PTR1;
-                    PendingPushAx = 1;
+                    if (!IsDeadCode) PendingPushAx = 1;
                 }
                 const int Scale    = SizeofCurrentType();
                 const int ResType  = CurrentType | VT_LVAL;
@@ -1739,26 +1739,28 @@ void ParsePostfixExpression(void)
                 ParseExpr();
                 Expect(']');
 
-                if (CurrentType == (VT_INT|VT_LOCLIT)) {
-                    if (GlobalArr) {
-                        OutputBytes(I_MOV_R_IMM16|R_AX, -1);
-                        EmitGlobalRef(GlobalArr);
+                if (!IsDeadCode) {
+                    if (CurrentType == (VT_INT|VT_LOCLIT)) {
+                        if (GlobalArr) {
+                            OutputBytes(I_MOV_R_IMM16|R_AX, -1);
+                            EmitGlobalRef(GlobalArr);
+                        } else {
+                            if (!PendingPushAx) Fail();
+                            PendingPushAx = 0;
+                        }
+                        EmitAddRegConst(R_AX, CurrentVal * Scale);
                     } else {
-                        if (!PendingPushAx) Fail();
-                        PendingPushAx = 0;
-                    }
-                    EmitAddRegConst(R_AX, CurrentVal * Scale);
-                } else {
-                    LvalToRval();
-                    if (CurrentType != VT_INT || PendingPushAx) Fail();
-                    EmitScaleAx(Scale);
-                    if (GlobalArr) {
-                        OutputBytes(I_ADD|5, -1);
-                        EmitGlobalRef(GlobalArr);
-                    } else {
-                        EmitPop(R_CX);
-                        LocalOffset += 2;
-                        OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
+                        LvalToRval();
+                        if (CurrentType != VT_INT || PendingPushAx) Fail();
+                        EmitScaleAx(Scale);
+                        if (GlobalArr) {
+                            OutputBytes(I_ADD|5, -1);
+                            EmitGlobalRef(GlobalArr);
+                        } else {
+                            EmitPop(R_CX);
+                            LocalOffset += 2;
+                            OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
+                        }
                     }
                 }
                 CurrentType      = ResType;

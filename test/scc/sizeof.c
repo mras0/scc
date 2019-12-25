@@ -43,4 +43,9 @@ void main()
 
     assert_eq(sizeof("test"), 5);
     assert_eq(1, 1);
+
+    int x=1;
+    int a[4];
+    x += sizeof(a[x]);
+    assert_eq(x, 3);
 }
