@@ -58,7 +58,12 @@ if (MAKE_DISKS)
         )
     ExternalProject_Get_property(SASM SOURCE_DIR)
     ExternalProject_Get_property(SASM BINARY_DIR)
-    set(DISKTOOL "${BINARY_DIR}/disktool")
+    # HACK
+    set(EXE_DIR "${BINARY_DIR}")
+    if (MSVC)
+        set(EXE_DIR "${EXE_DIR}/$<CONFIG>")
+    endif()
+    set(DISKTOOL "${EXE_DIR}/disktool")
     set(BOOTSECT "${BINARY_DIR}/boot.bin")
     macro(MAKEDISK NAME SIZE)
         set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.img")
@@ -81,7 +86,7 @@ if (MAKE_DISKS)
             ${TEMPLATE} put "${BINARY_DIR}/sasm.com"
             ${TEMPLATE} put "${PROJECT_SOURCE_DIR}/LICENSE.md"
             ${CMDS}
-            DEPENDS ${DEPS}
+            DEPENDS ${DEPS} SASM
         )
         add_custom_target(${NAME} ALL DEPENDS "${DISK_IMG}")
     endmacro()
@@ -95,6 +100,7 @@ if (MAKE_DISKS)
         "echo scc  scpp${NL}scc scpp.c${NL}"
         "echo scpp sim86${NL}scpp sim86.c${NL}"
         "echo scc  sim86${NL}scc sim86.i${NL}"
+        "del sim86.i${NL}" # Remove this when debugging
         "echo Run \"sim86 scc.com scc.c scc2.com\" to test${NL}"
         )
     set(SMALL_CONTENTS
