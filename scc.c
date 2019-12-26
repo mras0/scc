@@ -416,6 +416,8 @@ int CurrentType;
 int CurrentVal;
 int CurrentTypeExtra;
 
+int IsUnsignedOp;
+
 int BaseType;
 int BaseTypeExtra;
 
@@ -962,6 +964,7 @@ enum {
 
 enum {
     SHROT_SHL = 4,
+    SHROT_SHR = 5,
     SHROT_SAR = 7,
 };
 
@@ -1236,14 +1239,25 @@ void EmitScaleAx(int Scale)
     }
 }
 
+void EmitDivCX(void)
+{
+    if (IsUnsignedOp) {
+        OutputBytes(I_XOR|1, 0xC0|R_DX<<3|R_DX, -1); // XOR DX, DX
+        OutputBytes(0xF7, MODRM_REG | (6<<3) | R_CX, -1); // DIV CX
+    } else {
+        OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1); // IDIV CX
+    }
+}
+
 void EmitDivAxConst(int Amm)
 {
     if (Amm & (Amm-1)) {
         EmitMovRImm(R_CX, Amm);
-        OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1); // IDIV CX
+        EmitDivCX();
     } else {
+        const int ModRM = IsUnsignedOp ? MODRM_REG|SHROT_SHR<<3 : MODRM_REG|SHROT_SAR<<3;
         while (Amm >>= 1) {
-            OutputBytes(0xD1, MODRM_REG | SHROT_SAR<<3, -1); // SAR AX, 1
+            OutputBytes(0xD1, ModRM, -1); // SAR AX, 1
         }
     }
 }
@@ -1724,7 +1738,7 @@ void ParsePostfixExpression(void)
                         EmitStoreConst(2, VT_LOCOFF, LocalOffset + ArgSize);
                     } else {
                         GetVal();
-                        if (CurrentType != VT_INT && !(CurrentType & VT_PTRMASK)) Fail();
+                        if ((CurrentType&~VT_UNSIGNED) != VT_INT && !(CurrentType & VT_PTRMASK)) Fail();
                         EmitStoreAx(2, VT_LOCOFF, LocalOffset + ArgSize);
                     }
                     ArgSize += 2;
@@ -1992,10 +2006,10 @@ int GetSimpleALU(int Op)
     case '&':       return I_AND|1;
     case '^':       return I_XOR|1;
     case '|':       return I_OR|1;
-    case '<':       return I_CMP|1|JL<<8;
-    case TOK_LTEQ:  return I_CMP|1|JNG<<8;
-    case '>':       return I_CMP|1|JG<<8;
-    case TOK_GTEQ:  return I_CMP|1|JNL<<8;
+    case '<':       return IsUnsignedOp ? I_CMP|1|JC<<8  : I_CMP|1|JL<<8;
+    case TOK_LTEQ:  return IsUnsignedOp ? I_CMP|1|JNA<<8 : I_CMP|1|JNG<<8;
+    case '>':       return IsUnsignedOp ? I_CMP|1|JA<<8  : I_CMP|1|JG<<8;
+    case TOK_GTEQ:  return IsUnsignedOp ? I_CMP|1|JNC<<8 : I_CMP|1|JNL<<8;
     case TOK_EQEQ:  return I_CMP|1|JZ<<8;
     case TOK_NOTEQ: return I_CMP|1|JNZ<<8;
     }
@@ -2022,7 +2036,7 @@ void DoBinOp(int Op)
         Inst = 0xF7;
         RM = MODRM_REG | (5<<3) | R_CX;
     } else if (Op == '/' || Op == '%') {
-        OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1);
+        EmitDivCX();
         if (Op == '%') {
             OutputBytes(I_XCHG_AX|R_DX, -1);
         }
@@ -2032,7 +2046,10 @@ void DoBinOp(int Op)
         RM = MODRM_REG|SHROT_SHL<<3;
     } else if (Op == TOK_RSH) {
         Inst = 0xd3;
-        RM = MODRM_REG|SHROT_SAR<<3;
+        if (IsUnsignedOp)
+            RM = MODRM_REG|SHROT_SHR<<3;
+        else
+            RM = MODRM_REG|SHROT_SAR<<3;
     } else {
         Fail();
     }
@@ -2298,6 +2315,8 @@ void ParseExpr1(int OuterPrecedence)
             continue;
         }
 
+        IsUnsignedOp = LhsType == (VT_UNSIGNED|VT_INT) || (CurrentType&(VT_UNSIGNED|VT_PTRMASK|VT_BASEMASK)) == (VT_UNSIGNED|VT_INT);
+
         if (Prec == PREC_ASSIGN) {
             HandleLhsLvalLoc(LhsLoc);
             if (LhsType == VT_STRUCT) {
@@ -2322,7 +2341,7 @@ void ParseExpr1(int OuterPrecedence)
             if ((LhsType&~VT_UNSIGNED) == VT_CHAR) {
                 Size = 1;
             } else {
-                if (LhsType != VT_INT && !(LhsType & VT_PTRMASK)) Fail();
+                if ((LhsType&~VT_UNSIGNED) != VT_INT && !(LhsType & VT_PTRMASK)) Fail();
             }
             if (Op != '=') {
                 if (!LhsLoc)
@@ -2346,7 +2365,7 @@ void ParseExpr1(int OuterPrecedence)
                     }
                 }
                 if (!Temp) {
-                    if (CurrentType != VT_INT) Fail();
+                    if ((CurrentType&~VT_UNSIGNED) != VT_INT) Fail();
                     OutputBytes(I_XCHG_AX|R_CX, -1);
                 }
                 EmitLoadAx(Size, LhsLoc, LhsVal);
@@ -2378,6 +2397,7 @@ void ParseExpr1(int OuterPrecedence)
         if (LhsType & VT_PTRMASK) {
             LhsPointeeSize = SizeofType(LhsType-VT_PTR1, LhsTypeExtra);
             CurrentTypeExtra = LhsTypeExtra;
+            IsUnsignedOp = 1;
         }
         if (CurrentType == (VT_LOCLIT|VT_INT)) {
             if (!(PendingPushAx|IsDeadCode)) Fail();
@@ -2401,7 +2421,7 @@ RhsConst:
                     EmitMovRImm(R_CX, LhsVal);
                 }
             } else {
-                if (LhsType != VT_INT && !LhsPointeeSize) Fail();
+                if ((LhsType&~VT_UNSIGNED) != VT_INT && !LhsPointeeSize) Fail();
                 if (Op == '+' && LhsPointeeSize) {
                     GetVal();
                     EmitScaleAx(LhsPointeeSize);

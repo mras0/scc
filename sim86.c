@@ -1099,6 +1099,10 @@ int main(int argc, char** argv)
                         if (verbose) sprintf(insttext, "SHL %s, CL", rmtext);
                         WriteRM(v << a);
                         break;
+                    case 5: // SHR R/M16, CL
+                        if (verbose) sprintf(insttext, "SHR %s, CL", rmtext);
+                        WriteRM((unsigned int)v >> a);
+                        break;
                     case 7: // SAR R/M16, CL
                         if (verbose) sprintf(insttext, "SAR %s, CL", rmtext);
                         WriteRM(v >> a);
@@ -1141,9 +1145,18 @@ int main(int argc, char** argv)
                     case 5: // IMUL (TODO: Full 32-bit result)
                         {
                             if (verbose) sprintf(insttext, "IMUL %s", rmtext);
-                            const int m = ReadRM();
+                            const unsigned int m = ReadRM();
                             reg[R_AX] *= m;
                             reg[R_DX] = 0;
+                        }
+                        break;
+                    case 6: // DIV (TODO: Full 32-bit divide)
+                        {
+                            if (verbose) sprintf(insttext, "DIV %s", rmtext);
+                            const unsigned int d = ReadRM();
+                            assert(reg[R_DX] == 0);
+                            reg[R_DX] = reg[R_AX] % d;
+                            reg[R_AX] /= d;
                         }
                         break;
                     case 7: // IDIV (TODO: Full 32-bit divide)

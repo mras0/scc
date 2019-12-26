@@ -19,11 +19,55 @@ void test_uchar() {
     assert_eq(b, 0x01);
 }
 
+void test_uint() {
+    unsigned int a = -1;
+    assert_eq(a, 0xffff);
+    ++a;
+    assert_eq(a, 0);
+    a--;
+    assert_eq(a, 0xffff);
+    a = a + 10;
+    assert_eq(a, 9);
+    a = a / 3;
+    assert_eq(a, 3);
+    a = a * 2;
+    assert_eq(a, 6);
+    a = a / 2;
+    assert_eq(a, 3);
+
+    unsigned int l = 0x1234;
+    unsigned int r = 0xFEDC;
+
+    assert_eq(l+r, 0x1110);
+    assert_eq(l-r, 0x1358);
+    assert_eq(l*r, 0x3CB0);
+    assert_eq(l/r, 0);
+    assert_eq(l%r, 0x1234);
+    assert_eq(r>>1, 0x7F6E);
+    assert_eq(r<<1, 0xFDB8);
+    assert_eq(l<r, 1);
+    assert_eq(l<=r, 1);
+    assert_eq(l>r, 0);
+    assert_eq(l>=r, 0);
+    assert_eq(l==r, 0);
+    assert_eq(l!=r, 1);
+    assert_eq(r<l, 0);
+    assert_eq(r<=l, 0);
+    assert_eq(r>l, 1);
+    assert_eq(r>=l, 1);
+    assert_eq(r==l, 0);
+    assert_eq(r!=l, 1);
+}
+
+void test_ptrcmp() {
+    assert_eq((int*)0x7FFF <  (int*)0x8000, 1);
+    assert_eq((int*)0x7FFF <= (int*)0x8000, 1);
+    assert_eq((int*)0x7FFF >  (int*)0x8000, 0);
+    assert_eq((int*)0x7FFF >= (int*)0x8000, 0);
+}
+
 void main() {
     test_uchar();
-
-    // TODO:
-    // - BinOP: Compare/MUL(?)/DIV/MOD/shift
-    // - AssignOp
-    // - Pointer compare
+    test_uint();
+    test_ptrcmp();
 }
