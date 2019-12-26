@@ -191,7 +191,7 @@ enum {
     INBUF_MAX = 512,
     SCOPE_MAX = 16,
     VARDECL_MAX = 400,
-    ID_MAX = 560,
+    ID_MAX = 570,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
@@ -968,31 +968,41 @@ enum {
     SHROT_SAR = 7,
 };
 
-void FlushSpAdj(void);
-void FlushPushAx(void);
 int EmitChecks(void);
 
-void OutputBytes(int first, ...)
+void Output1Byte(int b0)
 {
-    // Inlined EmitChecks()
-    if (IsDeadCode)
+    if (EmitChecks())
         return;
-    if (PendingPushAx|PendingSpAdj) {
-        FlushSpAdj();
-        FlushPushAx();
-    }
-    va_list vl;
-    va_start(vl, first);
-    do {
-        Output[CodeAddress++ - CODESTART] = first;
-    } while ((first = va_arg(vl, int)) != -1);
-    va_end(vl);
-    if (CodeAddress > OUTPUT_MAX+CODESTART) Fail();
+    Output[CodeAddress++ - CODESTART] = b0;
+}
+
+void Output2Bytes(int b0, int b1)
+{
+    if (EmitChecks())
+        return;
+    unsigned char* o = &Output[(CodeAddress += 2) - (CODESTART+2)];
+    o[0] = b0;
+    o[1] = b1;
 }
 
 void OutputWord(int w)
 {
-    OutputBytes((unsigned char)w, (unsigned char)(w>>8), -1);
+    if (EmitChecks())
+        return;
+    unsigned char* o = &Output[(CodeAddress += 2) - (CODESTART+2)];
+    o[0] = w;
+    o[1] = w>>8;
+}
+
+void Output3Bytes(int b0, int b1, int b2)
+{
+    if (EmitChecks())
+        return;
+    unsigned char* o = &Output[(CodeAddress += 3) - (CODESTART+3)];
+    o[0] = b0;
+    o[1] = b1;
+    o[2] = b2;
 }
 
 int MakeLabel(void)
@@ -1089,6 +1099,8 @@ void AddFixup(int* f)
     *f = CodeAddress - 2;
 }
 
+void FlushSpAdj(void);
+
 void EmitLocalLabel(int l)
 {
     if (l >= LocalLabelCounter || Labels[l].Addr) Fail();
@@ -1139,29 +1151,29 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
     R <<= 3;
     switch (Loc) {
     case VT_LOCOFF:
-        OutputBytes(Inst, MODRM_BP_DISP8|R, Val & 0xff, -1);
+        Output3Bytes(Inst, MODRM_BP_DISP8|R, Val);
         if (Val != (char)Val && !IsDeadCode) {
             Output[CodeAddress-(CODESTART+2)] += MODRM_BP_DISP16-MODRM_BP_DISP8;
-            OutputBytes((Val >> 8) & 0xff, -1);
+            Output1Byte(Val >> 8);
         }
         return;
     case VT_LOCGLOB:
-        OutputBytes(Inst, MODRM_DISP16|R, -1);
+        Output2Bytes(Inst, MODRM_DISP16|R);
         EmitGlobalRef(&VarDecls[Val]);
         return;
     }
     if (Loc) Fail();
-    OutputBytes(Inst, MODRM_SI|R, -1);
+    Output2Bytes(Inst, MODRM_SI|R);
 }
 
 void EmitLoadAx(int Size, int Loc, int Val)
 {
     switch (Loc) {
     case 0:
-        OutputBytes(I_LODSB-1+Size, -1);
+        Output1Byte(I_LODSB-1+Size);
         break;
     case VT_LOCGLOB:
-        OutputBytes(0xA0-1+Size, -1);
+        Output1Byte(0xA0-1+Size);
         EmitGlobalRef(&VarDecls[Val]);
         break;
     default:
@@ -1173,10 +1185,10 @@ void EmitStoreAx(int Size, int Loc, int Val)
 {
     switch (Loc) {
     case 0:
-        OutputBytes(I_STOSB-1+Size, -1);
+        Output1Byte(I_STOSB-1+Size);
         return;
     case VT_LOCGLOB:
-        OutputBytes(0xA2-1+Size, -1);
+        Output1Byte(0xA2-1+Size);
         EmitGlobalRef(&VarDecls[Val]);
         return;
     }
@@ -1186,9 +1198,9 @@ void EmitStoreAx(int Size, int Loc, int Val)
 void EmitStoreConst(int Size, int Loc, int Val)
 {
     EmitModrm(0xc6-1+Size, 0, Loc, Val);
-    OutputBytes(CurrentVal & 0xff, - 1);
+    Output1Byte(CurrentVal);
     if (Size == 2)
-        OutputBytes((CurrentVal >> 8) & 0xff, - 1);
+        Output1Byte(CurrentVal >> 8);
 }
 
 void EmitAddRegConst(int r, int Amm)
@@ -1205,49 +1217,38 @@ void EmitAddRegConst(int r, int Amm)
         else
             Op = I_DEC;
         Op |= r;
-        OutputBytes(Op, -1);
+        Output1Byte(Op);
         if (Amm > 1)
-            OutputBytes(Op, -1);
+            Output1Byte(Op);
     } else if (Amm < 128) {
-        OutputBytes(I_ALU_RM16_IMM8, MODRM_REG|Op|r, Amm & 0xff, -1);
+        Output3Bytes(I_ALU_RM16_IMM8, MODRM_REG|Op|r, Amm);
     } else {
         if (r == R_AX)
-            OutputBytes(Op|5, -1);
+            Output1Byte(Op|5);
         else
-            OutputBytes(I_ALU_RM16_IMM16, MODRM_REG|Op|r, -1);
+            Output2Bytes(I_ALU_RM16_IMM16, MODRM_REG|Op|r);
         OutputWord(Amm);
     }
 }
 
-void EmitPush(int r)
-{
-    OutputBytes(I_PUSH | r, -1);
-}
-
-void EmitPop(int r)
-{
-    OutputBytes(I_POP | r, -1);
-}
-
 void EmitMovRR(int d, int s)
 {
-    OutputBytes(I_MOV_R_RM | 1, MODRM_REG | s<<3 | d, -1);
+    Output2Bytes(I_MOV_R_RM|1, MODRM_REG|s<<3|d);
 }
 
 void EmitMovRImm(int r, int val)
 {
-    OutputBytes(I_MOV_R_IMM16 | r, -1);
-    OutputWord(val);
+    Output3Bytes(I_MOV_R_IMM16|r, val, val>>8);
 }
 
 void EmitScaleAx(int Scale)
 {
     if (Scale & (Scale-1)) {
         EmitMovRImm(R_CX, Scale);
-        OutputBytes(0xF7, MODRM_REG | (5<<3) | R_CX, -1); // IMUL CX
+        Output2Bytes(0xF7, MODRM_REG|(5<<3)|R_CX); // IMUL CX
     } else {
         while (Scale >>= 1) {
-            OutputBytes(I_ADD|1, MODRM_REG, -1);
+            Output2Bytes(I_ADD|1, MODRM_REG);
         }
     }
 }
@@ -1255,10 +1256,10 @@ void EmitScaleAx(int Scale)
 void EmitDivCX(void)
 {
     if (IsUnsignedOp) {
-        OutputBytes(I_XOR|1, 0xC0|R_DX<<3|R_DX, -1); // XOR DX, DX
-        OutputBytes(0xF7, MODRM_REG | (6<<3) | R_CX, -1); // DIV CX
+        Output2Bytes(I_XOR|1, 0xC0|R_DX<<3|R_DX);  // XOR DX, DX
+        Output2Bytes(0xF7, MODRM_REG|(6<<3)|R_CX); // DIV CX
     } else {
-        OutputBytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX, -1); // IDIV CX
+        Output3Bytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX); // CWD \ IDIV CX
     }
 }
 
@@ -1270,7 +1271,7 @@ void EmitDivAxConst(int Amm)
     } else {
         const int ModRM = IsUnsignedOp ? MODRM_REG|SHROT_SHR<<3 : MODRM_REG|SHROT_SAR<<3;
         while (Amm >>= 1) {
-            OutputBytes(0xD1, ModRM, -1); // SAR AX, 1
+            Output2Bytes(0xD1, ModRM);
         }
     }
 }
@@ -1282,14 +1283,14 @@ int EmitLocalJump(int l)
     if (Addr) {
         Addr -= CodeAddress+2;
         if (Addr == (char)Addr) {
-            OutputBytes(I_JMP_REL8, Addr & 0xff, -1);
+            Output2Bytes(I_JMP_REL8, Addr);
         } else {
-            OutputBytes(I_JMP_REL16, -1);
+            Output1Byte(I_JMP_REL16);
             OutputWord(Addr-1);
         }
         return 1;
     } else {
-        OutputBytes(I_JMP_REL16, -1);
+        Output1Byte(I_JMP_REL16);
         AddFixup(&Labels[l].Ref);
         return 0;
     }
@@ -1314,12 +1315,12 @@ void EmitJcc(int cc, int l)
     if (a) {
         a -= CodeAddress+2;
         if (a == (char)a) {
-            OutputBytes(0x70 | cc, a & 0xff, -1);
+            Output2Bytes(0x70 | cc, a);
             return;
         }
     }
 
-    OutputBytes(0x70 | (cc^1), 3, -1); // Skip jump
+    Output2Bytes(0x70 | (cc^1), 3); // Skip jump
     if (!EmitLocalJump(l))
         Output[CodeAddress-(CODESTART+3)] = 0; // Mark as fused Jcc/JMP
 }
@@ -1329,7 +1330,7 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
     if (Loc == VT_LOCOFF) {
         EmitModrm(I_LEA, Reg, VT_LOCOFF, Val);
     } else if (Loc == VT_LOCGLOB) {
-        OutputBytes(I_MOV_R_IMM16 | Reg, -1);
+        Output1Byte(I_MOV_R_IMM16 | Reg);
         EmitGlobalRef(&VarDecls[Val]);
     } else {
         Fail();
@@ -1339,9 +1340,9 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
 void EmitExtend(int Unsigned)
 {
     if (Unsigned)
-        OutputBytes(I_XOR, MODRM_REG|4<<3|4, -1); // XOR AH, AH
+        Output2Bytes(I_XOR, MODRM_REG|4<<3|4); // XOR AH, AH
     else
-        OutputBytes(I_CBW, -1);
+        Output1Byte(I_CBW);
 }
 
 void FlushSpAdj(void)
@@ -1362,7 +1363,7 @@ void FlushPushAx(void)
 {
     if (PendingPushAx) {
         PendingPushAx = 0;
-        EmitPush(R_AX);
+        Output1Byte(I_PUSH|R_AX);
         LocalOffset -= 2;
     }
 }
@@ -1372,8 +1373,11 @@ int EmitChecks(void)
     if (IsDeadCode) {
         return 1;
     }
-    FlushSpAdj();
-    FlushPushAx();
+    if (PendingPushAx|PendingSpAdj) {
+        FlushSpAdj();
+        FlushPushAx();
+    }
+    if (CodeAddress > OUTPUT_MAX+CODESTART) Fail();
     return 0;
 }
 
@@ -1485,7 +1489,7 @@ void LvalToRval(void)
 
         const int sz = ((CurrentType&~VT_UNSIGNED) != VT_CHAR) + 1;
         if (!loc) {
-            OutputBytes(I_XCHG_AX|R_SI, -1);
+            Output1Byte(I_XCHG_AX|R_SI);
         }
         EmitLoadAx(sz, loc, CurrentVal);
         if (sz == 1) {
@@ -1505,7 +1509,7 @@ void DoIncDecOp(int Op, int Post)
         Size = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
     }
     if (!Loc) {
-        OutputBytes(I_XCHG_AX|R_SI, -1);
+        Output1Byte(I_XCHG_AX|R_SI);
     }
     if (Post) {
         EmitLoadAx(1+WordOp, Loc, CurrentVal);
@@ -1523,7 +1527,7 @@ void DoIncDecOp(int Op, int Post)
 
     if (Size != 1) {
         EmitModrm(I_ALU_RM16_IMM8, Op*(I_SUB>>3), Loc, CurrentVal);
-        OutputBytes(Size, -1);
+        Output1Byte(Size);
         return;
     }
     EmitModrm(I_INCDEC_RM|WordOp, Op, Loc, CurrentVal);
@@ -1648,13 +1652,13 @@ void ParsePrimaryExpression(void)
         if (!IsDeadCode) {
             int EndLab = -1;
             if (ScopesCount != 1) {
-                OutputBytes(I_MOV_R_IMM16, -1);
+                Output1Byte(I_MOV_R_IMM16);
                 OutputWord(CodeAddress+5);
                 EmitJmp(EndLab = MakeLabel());
                 IsDeadCode = 0;
             }
             while (TokenNumVal--)
-                OutputBytes(*TokenStrLit++, -1);
+                Output1Byte(*TokenStrLit++);
             if (EndLab != -1)
                 EmitLocalLabel(EndLab);
         }
@@ -1674,7 +1678,7 @@ void GetVal(void)
 {
     if (CurrentType == VT_BOOL) {
         EmitMovRImm(R_AX, 0);
-        OutputBytes(0x70 | (CurrentVal^1), 1, I_INC, -1);
+        Output3Bytes(0x70 | (CurrentVal^1), 1, I_INC);
         CurrentType = VT_INT;
         return;
     }
@@ -1686,7 +1690,7 @@ void GetVal(void)
         if (CurrentVal)
             EmitMovRImm(R_AX, CurrentVal);
         else
-            OutputBytes(I_XOR|1, 0xC0, -1);
+            Output2Bytes(I_XOR|1, 0xC0);
     }
 }
 
@@ -1743,7 +1747,7 @@ void ParsePostfixExpression(void)
                             EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize);
                             EmitModrm(I_LEA, R_DI, VT_LOCOFF, LocalOffset);
                             EmitMovRImm(R_CX, ArgSize>>1);
-                            OutputBytes(I_REP, I_MOVSW, -1);
+                            Output2Bytes(I_REP, I_MOVSW);
                         }
                     }
                     ParseAssignmentExpression();
@@ -1762,7 +1766,7 @@ void ParsePostfixExpression(void)
                     break;
                 }
                 Expect(')');
-                OutputBytes(I_CALL, -1);
+                Output1Byte(I_CALL);
                 EmitGlobalRefRel(Func);
                 PendingSpAdj += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
                 LocalOffset  += ArgSize;
@@ -1799,7 +1803,7 @@ void ParsePostfixExpression(void)
                 if (!IsDeadCode) {
                     if (CurrentType == (VT_INT|VT_LOCLIT)) {
                         if (GlobalArr) {
-                            OutputBytes(I_MOV_R_IMM16|R_AX, -1);
+                            Output1Byte(I_MOV_R_IMM16|R_AX);
                             EmitGlobalRef(GlobalArr);
                         } else {
                             if (!PendingPushAx) Fail();
@@ -1811,12 +1815,12 @@ void ParsePostfixExpression(void)
                         if ((CurrentType&~VT_UNSIGNED) != VT_INT || PendingPushAx) Fail();
                         EmitScaleAx(Scale);
                         if (GlobalArr) {
-                            OutputBytes(I_ADD|5, -1);
+                            Output1Byte(I_ADD|5);
                             EmitGlobalRef(GlobalArr);
                         } else {
-                            EmitPop(R_CX);
+                            Output1Byte(I_POP|R_CX);
                             LocalOffset += 2;
-                            OutputBytes(I_ADD|1, MODRM_REG|R_CX<<3, -1);
+                            Output2Bytes(I_ADD|1, MODRM_REG|R_CX<<3);
                         }
                     }
                 }
@@ -1855,7 +1859,7 @@ void ParseCastExpression(void);
 void ToBool(void)
 {
     LvalToRval();
-    OutputBytes(I_AND|1, MODRM_REG, -1); // AND AX, AX
+    Output2Bytes(I_AND|1, MODRM_REG); // AND AX, AX
     CurrentType = VT_BOOL;
     CurrentVal  = JNZ;
 }
@@ -1900,7 +1904,7 @@ void ParseUnaryExpression(void)
                     CurrentVal = -CurrentVal;
                 } else {
                     if ((CurrentType&~VT_UNSIGNED) != VT_INT) Fail();
-                    OutputBytes(0xF7, 0xD8, -1); // NEG AX
+                    Output2Bytes(0xF7, 0xD8); // NEG AX
                 }
             } else if (Op == '!') {
                 if (IsConst) {
@@ -1920,7 +1924,7 @@ void ParseUnaryExpression(void)
                     CurrentVal = ~CurrentVal;
                 } else {
                     if ((CurrentType&~VT_UNSIGNED) != VT_INT) Fail();
-                    OutputBytes(0xF7, 0xD0, -1); // NOT AX
+                    Output2Bytes(0xF7, 0xD0); // NOT AX
                 }
             } else if (Op != '+') {
                 Fail();
@@ -2049,7 +2053,7 @@ void DoBinOp(int Op)
     } else if (Op == '/' || Op == '%') {
         EmitDivCX();
         if (Op == '%') {
-            OutputBytes(I_XCHG_AX|R_DX, -1);
+            Output1Byte(I_XCHG_AX|R_DX);
         }
         return;
     } else if (Op == TOK_LSH) {
@@ -2065,7 +2069,7 @@ void DoBinOp(int Op)
         Fail();
     }
 HasInst:
-    OutputBytes(Inst, RM, -1);
+    Output2Bytes(Inst, RM);
     FinishOp(Inst);
 }
 
@@ -2075,7 +2079,7 @@ int DoRhsLvalBinOp(int Op)
     CurrentType &= ~(VT_LOCMASK|VT_LVAL);
     int Inst = GetSimpleALU(Op);
     if (!Inst) {
-        OutputBytes(I_XCHG_AX|R_CX, -1);
+        Output1Byte(I_XCHG_AX|R_CX);
         EmitLoadAx(2, Loc, CurrentVal);
         return 0;
     }
@@ -2095,8 +2099,7 @@ void DoRhsConstBinOp(int Op)
 
     int Inst = GetSimpleALU(Op);
     if (Inst) {
-        OutputBytes(Inst|5, -1);
-        OutputWord(CurrentVal);
+        Output3Bytes(Inst|5, CurrentVal, CurrentVal>>8);
         FinishOp(Inst);
     } else {
         EmitMovRImm(R_CX, CurrentVal);
@@ -2237,9 +2240,9 @@ void HandleLhsLvalLoc(int LhsLoc)
     if (!LhsLoc) {
         if (PendingPushAx) {
             PendingPushAx = 0;
-            OutputBytes(I_XCHG_AX|R_DI, -1);
+            Output1Byte(I_XCHG_AX|R_DI);
         } else {
-            EmitPop(R_DI);
+            Output1Byte(I_POP|R_DI);
             LocalOffset += 2;
         }
     } else {
@@ -2341,9 +2344,9 @@ void ParseExpr1(int OuterPrecedence)
                 if (Temp)
                     EmitLoadAddr(R_SI, Temp, CurrentVal);
                 else
-                    OutputBytes(I_XCHG_AX|R_SI, -1);
+                    Output1Byte(I_XCHG_AX|R_SI);
                 EmitMovRImm(R_CX, SizeofCurrentType());
-                OutputBytes(I_REP, I_MOVSB, -1);
+                Output2Bytes(I_REP, I_MOVSB);
                 continue;
             }
 
@@ -2369,7 +2372,7 @@ void ParseExpr1(int OuterPrecedence)
                             EmitModrm(Inst, R_AX, LhsLoc, LhsVal);
                         }
                         if (!LhsLoc)
-                            OutputBytes(I_XCHG_AX|R_DI, -1);
+                            Output1Byte(I_XCHG_AX|R_DI);
                         CurrentType = LhsType | LhsLoc | VT_LVAL;
                         CurrentVal = LhsVal;
                         continue;
@@ -2377,7 +2380,7 @@ void ParseExpr1(int OuterPrecedence)
                 }
                 if (!Temp) {
                     if ((CurrentType&~VT_UNSIGNED) != VT_INT) Fail();
-                    OutputBytes(I_XCHG_AX|R_CX, -1);
+                    Output1Byte(I_XCHG_AX|R_CX);
                 }
                 EmitLoadAx(Size, LhsLoc, LhsVal);
                 if (Size == 1) { 
@@ -2393,7 +2396,7 @@ void ParseExpr1(int OuterPrecedence)
                 // Constant assignment
                 if (!LhsLoc) {
                     GetVal();
-                    OutputBytes(I_STOSB-1+Size, -1);
+                    Output1Byte(I_STOSB-1+Size);
                 } else {
                     EmitStoreConst(Size, LhsLoc, LhsVal);
                 }
@@ -2448,12 +2451,12 @@ RhsConst:
                 }
                 GetVal();
                 if (PendingPushAx) Fail();
-                EmitPop(R_CX);
+                Output1Byte(I_POP|R_CX);
                 LocalOffset += 2;
             }
 DoNormal:
             if (!Temp)
-                OutputBytes(I_XCHG_AX | R_CX, -1);
+                Output1Byte(I_XCHG_AX|R_CX);
             DoBinOp(Op);
         }
 CheckSub:
@@ -2758,8 +2761,7 @@ Redo:
                 if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Need constant expression
                 EmitLocalLabel(NextSwitchCase);
                 NextSwitchCase = MakeLabel();
-                OutputBytes(I_CMP|5, -1);
-                OutputWord(CurrentVal);
+                Output3Bytes(I_CMP|5, CurrentVal, CurrentVal>>8);
                 if (TokenType != TOK_CASE)
                     break;
                 GetToken();
@@ -2798,7 +2800,7 @@ Redo:
             ReturnUsed = 1;
             EmitJmp(ReturnLabel);
         } else {
-            OutputBytes(I_POP|R_BP, I_RET, -1);
+            Output2Bytes(I_POP|R_BP, I_RET);
             IsDeadCode = 1;
         }
     GetSemicolon:
@@ -2822,7 +2824,7 @@ Redo:
         GetToken();
         ParseExpr();
         if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Constant expression expected
-        OutputBytes(CurrentVal & 0xff, -1);
+        Output1Byte(CurrentVal & 0xff);
         return;
     case TOK_IF:
         {
@@ -2986,7 +2988,7 @@ Redo:
                     GetToken();
                     ParseAssignmentExpression();
                     GetVal();
-                    EmitPush(R_AX);
+                    Output1Byte(I_PUSH|R_AX);
                 } else {
                     PendingSpAdj -= size;
                 }
@@ -3107,14 +3109,14 @@ void ParseExternalDefition(void)
             BreakLabel = ContinueLabel = -1;
 
             EmitGlobalLabel(vd);
-            EmitPush(R_BP);
+            Output1Byte(I_PUSH|R_BP);
             EmitMovRR(R_BP, R_SP);
             ParseCompoundStatement();
             if (ReturnUsed) {
                 EmitLocalLabel(ReturnLabel);
                 EmitMovRR(R_SP, R_BP);
             }
-            OutputBytes(I_POP|R_BP, I_RET, -1);
+            Output2Bytes(I_POP|R_BP, I_RET);
 
             // When debugging:
             //int l;for (l = 0; l < LocalLabelCounter; ++l)if (!(Labels[l].Ref == 0)) Fail();
@@ -3236,9 +3238,9 @@ int main(int argc, char** argv)
     if (IdCount+TOK_KEYWORD-1 != TOK__EBSS) Fail();
 
     // Prelude
-    OutputBytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP, -1);
+    Output2Bytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP);
     CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
-    OutputBytes(I_JMP_REL16, -1);
+    Output1Byte(I_JMP_REL16);
     EmitGlobalRefRel(AddVarDecl(TOK__START-TOK_KEYWORD));
 
     CurrentType = VT_CHAR|VT_LOCGLOB;

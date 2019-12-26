@@ -480,7 +480,7 @@ void OutputWord(int w)
 
 int HashStr(const char* Str)
 {
-    int Hash = 17;
+    unsigned Hash = 17;
     while (*Str)
         Hash = Hash*89 + (*Str++ & 0xDF);
     return Hash;
