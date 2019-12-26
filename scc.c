@@ -191,7 +191,7 @@ enum {
     INBUF_MAX = 512,
     SCOPE_MAX = 16,
     VARDECL_MAX = 400,
-    ID_MAX = 550,
+    ID_MAX = 560,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
@@ -210,26 +210,27 @@ enum {
 // Type flags and values
 enum {
     VT_VOID,
-    VT_BOOL,                // CurrentValue holds condition code for "true"
+    VT_BOOL,            // CurrentValue holds condition code for "true"
     VT_CHAR,
     VT_INT,
-    VT_STRUCT,              // CurrentTypeExtra holds index into StructDecls
-    VT_ARRAY,               // CurrentTypeExtra holds index into ArrayDecls
+    VT_STRUCT,          // CurrentTypeExtra holds index into StructDecls
+    VT_ARRAY,           // CurrentTypeExtra holds index into ArrayDecls
 
     VT_BASEMASK = 7,
 
-    VT_LVAL    = 1<<3,
-    VT_FUN     = 1<<4,
+    VT_UNSIGNED = 1<<3,
+    VT_FUN      = 1<<4,
+    VT_LVAL     = 1<<5,
 
-    VT_PTR1    = 1<<6,
-    VT_PTRMASK = 3<<6,      // 3 levels of indirection should be enough..
+    VT_PTR1     = 1<<6,
+    VT_PTRMASK  = 3<<6, // 3 levels of indirection should be enough..
 
-    VT_LOCLIT  = 1<<8,      // CurrentVal holds a literal value (or label)
-    VT_LOCOFF  = 2<<8,      // CurrentVal holds BP offset
-    VT_LOCGLOB = 3<<8,      // CurrentVal holds the VarDecl index of a global
-    VT_LOCMASK = 3<<8,
+    VT_LOCLIT   = 1<<8, // CurrentVal holds a literal value (or label)
+    VT_LOCOFF   = 2<<8, // CurrentVal holds BP offset
+    VT_LOCGLOB  = 3<<8, // CurrentVal holds the VarDecl index of a global
+    VT_LOCMASK  = 3<<8,
 
-    VT_STATIC  = 1<<10,
+    VT_STATIC   = 1<<10,
 };
 
 // Token types
@@ -287,6 +288,7 @@ enum {
     TOK_STRUCT,
     TOK_SWITCH,
     TOK_UNION,
+    TOK_UNSIGNED,
     TOK_VOID,
     TOK_VOLATILE,
     TOK_WHILE,
@@ -1149,8 +1151,6 @@ void EmitLoadAx(int Size, int Loc, int Val)
     default:
         EmitModrm(I_MOV_RM_R-1+Size, R_AX, Loc, Val);
     }
-    if (Size == 1)
-        OutputBytes(I_CBW, -1);
 }
 
 void EmitStoreAx(int Size, int Loc, int Val)
@@ -1309,6 +1309,14 @@ void EmitLoadAddr(int Reg, int Loc, int Val)
     }
 }
 
+void EmitExtend(int Unsigned)
+{
+    if (Unsigned)
+        OutputBytes(I_XOR, MODRM_REG|4<<3|4, -1); // XOR AH, AH
+    else
+        OutputBytes(I_CBW, -1);
+}
+
 void FlushSpAdj(void)
 {
     int Amm = PendingSpAdj;
@@ -1388,6 +1396,7 @@ int IsTypeStart(void)
     case TOK_STATIC:
     case TOK_STRUCT:
     case TOK_UNION:
+    case TOK_UNSIGNED:
     case TOK_VOLATILE:
     case TOK_VA_LIST:
         return 1;
@@ -1447,15 +1456,15 @@ void LvalToRval(void)
             return;
         }
 
-        int sz = 2;
-        if (CurrentType == VT_CHAR) {
-            sz = 1;
-            CurrentType = VT_INT;
-        }
+        const int sz = 2 - ((CurrentType&~VT_UNSIGNED) == VT_CHAR);
         if (!loc) {
             OutputBytes(I_XCHG_AX|R_SI, -1);
         }
         EmitLoadAx(sz, loc, CurrentVal);
+        if (sz == 1) {
+            EmitExtend(CurrentType&VT_UNSIGNED);
+            CurrentType = VT_INT;
+        }
     }
 }
 
@@ -1473,6 +1482,9 @@ void DoIncDecOp(int Op, int Post)
     }
     if (Post) {
         EmitLoadAx(1+WordOp, Loc, CurrentVal);
+        if (!WordOp) {
+            EmitExtend(CurrentType&VT_UNSIGNED);
+        }
         if (!Loc)
             EmitAddRegConst(R_SI, -1-WordOp); // Undo increment done by LODS (for increment/decrement below)
         if (WordOp)
@@ -1728,7 +1740,7 @@ void ParsePostfixExpression(void)
                 PendingSpAdj += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
                 LocalOffset  += ArgSize;
                 CurrentType = RetType;
-                if (CurrentType == VT_CHAR) {
+                if ((CurrentType&~VT_UNSIGNED) == VT_CHAR) {
                     CurrentType = VT_INT;
                 }
                 CurrentTypeExtra = Func->TypeExtra;
@@ -1941,8 +1953,8 @@ void ParseCastExpression(void)
             GetVal(); // TODO: could optimize some constant expressions here
             CurrentType      = T;
             CurrentTypeExtra = E;
-            if (CurrentType == VT_CHAR) {
-                OutputBytes(I_CBW, -1);
+            if ((CurrentType&~VT_UNSIGNED) == VT_CHAR) {
+                EmitExtend(CurrentType&VT_UNSIGNED);
                 CurrentType = VT_INT;
             }
         } else {
@@ -2307,7 +2319,7 @@ void ParseExpr1(int OuterPrecedence)
 
             LvalToRval();
             int Size = 2;
-            if (LhsType == VT_CHAR) {
+            if ((LhsType&~VT_UNSIGNED) == VT_CHAR) {
                 Size = 1;
             } else {
                 if (LhsType != VT_INT && !(LhsType & VT_PTRMASK)) Fail();
@@ -2338,6 +2350,9 @@ void ParseExpr1(int OuterPrecedence)
                     OutputBytes(I_XCHG_AX|R_CX, -1);
                 }
                 EmitLoadAx(Size, LhsLoc, LhsVal);
+                if (Size == 1) { 
+                    EmitExtend(LhsType&VT_UNSIGNED);
+                }
                 if (Temp) {
                     DoRhsConstBinOp(Op);
                     CurrentType &= ~VT_LOCMASK;
@@ -2447,7 +2462,7 @@ void ParseDeclarator(int* Id);
 
 void ParseDeclSpecs(void)
 {
-    int Storage = 0;
+    int Flags = 0;
     // Could check if legal type, but we want to keep the code small...
     CurrentType = VT_INT;
     for (;;) {
@@ -2471,7 +2486,10 @@ void ParseDeclSpecs(void)
             // Ignore but accept for now
             break;
         case TOK_STATIC:
-            Storage |= VT_STATIC;
+            Flags |= VT_STATIC;
+            break;
+        case TOK_UNSIGNED:
+            Flags |= VT_UNSIGNED;
             break;
         case TOK_ENUM:
             GetToken();
@@ -2563,7 +2581,7 @@ void ParseDeclSpecs(void)
             }
             continue;
         default:
-            CurrentType |= Storage;
+            CurrentType |= Flags;
             return;
         }
         GetToken();
@@ -3182,8 +3200,8 @@ int main(int argc, char** argv)
 
     AddBuiltins("break case char const continue default do else enum for"
         " goto if int return short signed sizeof static struct switch"
-        " union void volatile while va_list va_start va_end va_arg _emit"
-        " _start _SBSS _EBSS");
+        " union unsigned void volatile while va_list va_start va_end va_arg"
+        " _emit _start _SBSS _EBSS");
     if (IdCount+TOK_KEYWORD-1 != TOK__EBSS) Fail();
 
     // Prelude

@@ -13,6 +13,7 @@ set(TESTS
     union
     bug
     strlit
+    unsigned
     )
 
 set(TEST_CMDS "echo off\nscc.com scc.c\nscc.com scc.c\n")
