@@ -736,7 +736,7 @@ Redo:
     Identifier: ;
         char* start = &IdBuffer[IdBufferIndex];
         char* pc = start;
-        int Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
+        unsigned Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
         while ((IsIdChar[(unsigned char)CurChar>>3]>>(CurChar&7)) & 1) {
             Hash = Hash*HASHMUL+(*pc++ = CurChar);
             if ((CurChar = *InBufPtr++))
@@ -1794,7 +1794,7 @@ void ParsePostfixExpression(void)
                         EmitAddRegConst(R_AX, CurrentVal * Scale);
                     } else {
                         LvalToRval();
-                        if (CurrentType != VT_INT || PendingPushAx) Fail();
+                        if ((CurrentType&~VT_UNSIGNED) != VT_INT || PendingPushAx) Fail();
                         EmitScaleAx(Scale);
                         if (GlobalArr) {
                             OutputBytes(I_ADD|5, -1);
@@ -1885,7 +1885,7 @@ void ParseUnaryExpression(void)
                 if (IsConst) {
                     CurrentVal = -CurrentVal;
                 } else {
-                    if (CurrentType != VT_INT) Fail();
+                    if ((CurrentType&~VT_UNSIGNED) != VT_INT) Fail();
                     OutputBytes(0xF7, 0xD8, -1); // NEG AX
                 }
             } else if (Op == '!') {
@@ -1905,12 +1905,10 @@ void ParseUnaryExpression(void)
                 if (IsConst) {
                     CurrentVal = ~CurrentVal;
                 } else {
-                    if (CurrentType != VT_INT) Fail();
+                    if ((CurrentType&~VT_UNSIGNED) != VT_INT) Fail();
                     OutputBytes(0xF7, 0xD0, -1); // NOT AX
                 }
-            } else if (Op == '+') {
-                if (!IsConst && CurrentType != VT_INT) Fail();
-            } else {
+            } else if (Op != '+') {
                 Fail();
             }
             return;
@@ -3178,7 +3176,7 @@ void AddBuiltins(const char* s)
     char ch;
     do {
         const int Id = IdCount++;
-        int Hash = HASHINIT;
+        unsigned Hash = HASHINIT;
         IdText[Id] = &IdBuffer[IdBufferIndex];
         while ((ch = *s++) > ' ') {
             IdBuffer[IdBufferIndex++] = ch;

@@ -319,7 +319,7 @@ int ReadReg(int r)
     return reg[r&3] >> ((r&4)<<1);
 }
 
-void WriteReg(int r, int val)
+void WriteReg(int r, unsigned val)
 {
     if (dsize) {
         reg[r] = val;
@@ -370,14 +370,14 @@ int DoPop(void)
     return v;
 }
 
-void DoOp(int op, int l, int r)
+void DoOp(int op, unsigned l, unsigned r)
 {
     if (!dsize) {
         l &= 0xff;
         r &= 0xff;
     }
-    int res;
-    int carry = 0;
+    unsigned res;
+    unsigned carry = 0;
     switch (op) {
     case OP_ADD:
         res = l + r;
