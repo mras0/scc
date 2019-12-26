@@ -372,7 +372,7 @@ int Line = 1;
 
 int TokenType;
 int TokenNumVal;
-char* TokenStrLit;
+unsigned char* TokenStrLit;
 char OperatorPrecedence;
 
 char IdBuffer[IDBUFFER_MAX];
@@ -431,7 +431,7 @@ int NextSwitchCase = -1; // Where to go if we haven't matched
 int NextSwitchStmt;      // Where to go if we've matched (-1 if already emitted)
 int SwitchDefault;       // Optional switch default label
 
-char Output[OUTPUT_MAX]; // Place this last to allow partial stack overflows!
+unsigned char Output[OUTPUT_MAX]; // Place this last to allow partial stack overflows!
 
 ///////////////////////////////////////////////////////////////////////
 // Helper functions
@@ -467,7 +467,7 @@ char* VSPrintf(char* dest, const char* format, va_list vl)
         if (ch == 's') {
             dest = CopyStr(dest, va_arg(vl, char*));
         } else if(ch == 'c') {
-            *dest++ = (char)va_arg(vl, int);
+            *dest++ = va_arg(vl, int);
         } else if ((ch == '+' && *format == 'd') || ch == 'd') {
             char* buf;
             int n;
@@ -695,7 +695,7 @@ void GetStringLiteral(void)
     if (TokenStrLit+TokenNumVal-Output > OUTPUT_MAX) Fail();
 }
 
-const char IsIdChar[] = "\x00\x00\x00\x00\x00\x00\xFF\x03\xFE\xFF\xFF\x87\xFE\xFF\xFF\x07";
+const char IsIdChar[] = "\x00\x00\x00\x00\x00\x00\xFF\x03\xFE\xFF\xFF\x87\xFE\xFF\xFF\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
 void GetToken(void)
 {
@@ -711,8 +711,7 @@ Redo:
     OperatorPrecedence = PREC_STOP;
 
     if (TokenType < 'A') {
-        if (TokenType < '0') {
-        } else if (TokenType <= '9') {
+        if ((unsigned)(TokenType - '0') < 10) {
             TokenNumVal = TokenType - '0';
             int base = 10;
             if (!TokenNumVal) {
@@ -738,7 +737,7 @@ Redo:
         char* start = &IdBuffer[IdBufferIndex];
         char* pc = start;
         int Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
-        while ((IsIdChar[CurChar>>3]>>(CurChar&7)) & 1) {
+        while ((IsIdChar[(unsigned char)CurChar>>3]>>(CurChar&7)) & 1) {
             Hash = Hash*HASHMUL+(*pc++ = CurChar);
             if ((CurChar = *InBufPtr++))
                 continue;
@@ -992,7 +991,7 @@ void OutputBytes(int first, ...)
 
 void OutputWord(int w)
 {
-    OutputBytes(w&0xff, (w>>8)&0xff, -1);
+    OutputBytes((unsigned char)w, (unsigned char)(w>>8), -1);
 }
 
 int MakeLabel(void)
@@ -1022,7 +1021,7 @@ struct NamedLabel* GetNamedLabel(int Id)
 void DoFixups(int r, int relative)
 {
     int f;
-    char* c;
+    unsigned char* c;
     while (r) {
         int o = 0;
         f = CodeAddress;
@@ -1031,7 +1030,7 @@ void DoFixups(int r, int relative)
             f -= o;
         }
         c = &Output[r - CODESTART];
-        r = (c[0]&0xff)|c[1]<<8;
+        r = c[0]|c[1]<<8;
         if (!c[-1]) {
             // Fused Jcc/JMP
             if (f <= 0x7f-3) {
@@ -1039,12 +1038,12 @@ void DoFixups(int r, int relative)
                 if ((c[-3]&0xf0) != 0x70 || c[-2] != 3) Fail();
                 c[-3] ^= 1;
                 c[-2] = f+3;
-                c[-1] = I_XCHG_AX-256;
-                c[0]  = I_XCHG_AX-256;
-                c[1]  = I_XCHG_AX-256;
+                c[-1] = I_XCHG_AX;
+                c[0]  = I_XCHG_AX;
+                c[1]  = I_XCHG_AX;
                 continue;
             }
-            c[-1] = I_JMP_REL16-256;
+            c[-1] = I_JMP_REL16;
         } else {
             // Is this a uselss jump we can avoid? (Too cumbersome if we already resolved fixups at this address)
             if (CodeAddress == o && LastFixup != CodeAddress) {
@@ -1052,18 +1051,18 @@ void DoFixups(int r, int relative)
                 continue;
             }
         }
-        if (c[-1] == I_JMP_REL16-256) {
+        if (c[-1] == I_JMP_REL16) {
             ++f;
             if (f == (char)f) {
                 // Convert to short jump + nop (the nop is just to not throw off disassemblers more than necessary)
-                c[-1] = I_JMP_REL8-256;
-                f = (f&0xff)|0x9000;
+                c[-1] = I_JMP_REL8;
+                f = (unsigned char)f|0x9000;
             } else {
                 --f;
             }
         }
-        c[0] = (char)(f);
-        c[1] = (char)(f>>8);
+        c[0] = f;
+        c[1] = f>>8;
     }
     LastFixup = CodeAddress;
 }
@@ -1264,7 +1263,7 @@ void EmitDivAxConst(int Amm)
 
 int EmitLocalJump(int l)
 {
-    if (l < 0 || l >= LocalLabelCounter) Fail();
+    if ((unsigned)l >= (unsigned)LocalLabelCounter) Fail();
     int Addr = Labels[l].Addr;
     if (Addr) {
         Addr -= CodeAddress+2;
@@ -1641,7 +1640,7 @@ void ParsePrimaryExpression(void)
                 IsDeadCode = 0;
             }
             while (TokenNumVal--)
-                OutputBytes(*TokenStrLit++ & 0xff, -1);
+                OutputBytes(*TokenStrLit++, -1);
             if (EndLab != -1)
                 EmitLocalLabel(EndLab);
         }
@@ -1680,7 +1679,7 @@ void GetVal(void)
 void HandleStructMember(void)
 {
     const int MemId = ExpectId();
-    if (CurrentTypeExtra < 0 || CurrentTypeExtra >= StructCount) Fail();
+    if ((unsigned)CurrentTypeExtra >= (unsigned)StructCount) Fail();
     struct StructMember* SM = StructDecls[CurrentTypeExtra].Members;
     int Off = 0;
     for (; SM && SM->Id != MemId; SM = SM->Next) {

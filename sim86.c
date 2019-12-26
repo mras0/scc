@@ -281,7 +281,7 @@ void ModRM(void)
         char sr[4];
         sr[0] = 0;
         if (seg != -1) {
-            sr[0] = "ECSD"[seg];
+            sr[0] = "ECSD"[(unsigned char)seg];
             sr[1] = 'S';
             sr[2] = ':';
             sr[3] = 0;
@@ -725,7 +725,7 @@ struct Stack RecordStack(void)
     struct Stack s;
     s.depth = 0;
     int sip = TRIM(ip);
-    for (int bp = TRIM(reg[R_BP]); bp && s.depth < sizeof(s.frames)/sizeof(*s.frames);) {
+    for (int bp = TRIM(reg[R_BP]); bp && s.depth < (int)(sizeof(s.frames)/sizeof(*s.frames));) {
         struct StackFrame* f = &s.frames[s.depth++];
         f->bp = bp;
         f->ip = sip;
