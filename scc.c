@@ -421,8 +421,8 @@ int BaseType;
 int BaseTypeExtra;
 
 int ReturnUsed;
-char PendingPushAx; // Remember to adjsust LocalOffset!
-int PendingSpAdj;
+enum { PENDING_PUSHAX = 1 };
+int Pending; // Bit0: PENDING_PUSHAX, Rest: remaing bits: SP adjustment
 int LastFixup;
 int IsDeadCode;
 
@@ -972,15 +972,17 @@ int EmitChecks(void);
 
 void Output1Byte(int b0)
 {
-    if (EmitChecks())
-        return;
+    if (IsDeadCode|Pending) {
+        if (EmitChecks()) return;
+    }
     Output[CodeAddress++ - CODESTART] = b0;
 }
 
 void Output2Bytes(int b0, int b1)
 {
-    if (EmitChecks())
-        return;
+    if (IsDeadCode|Pending) {
+        if (EmitChecks()) return;
+    }
     unsigned char* o = &Output[(CodeAddress += 2) - (CODESTART+2)];
     o[0] = b0;
     o[1] = b1;
@@ -988,8 +990,9 @@ void Output2Bytes(int b0, int b1)
 
 void OutputWord(int w)
 {
-    if (EmitChecks())
-        return;
+    if (IsDeadCode|Pending) {
+        if (EmitChecks()) return;
+    }
     unsigned char* o = &Output[(CodeAddress += 2) - (CODESTART+2)];
     o[0] = w;
     o[1] = w>>8;
@@ -997,8 +1000,9 @@ void OutputWord(int w)
 
 void Output3Bytes(int b0, int b1, int b2)
 {
-    if (EmitChecks())
-        return;
+    if (IsDeadCode|Pending) {
+        if (EmitChecks()) return;
+    }
     unsigned char* o = &Output[(CodeAddress += 3) - (CODESTART+3)];
     o[0] = b0;
     o[1] = b1;
@@ -1298,7 +1302,7 @@ int EmitLocalJump(int l)
 
 void EmitJmp(int l)
 {
-    PendingPushAx = 0;
+    Pending &= ~PENDING_PUSHAX;
     if (EmitChecks()) {
         return;
     }
@@ -1347,22 +1351,20 @@ void EmitExtend(int Unsigned)
 
 void FlushSpAdj(void)
 {
-    int Amm = PendingSpAdj;
-    if (Amm) {
+    if (Pending & ~PENDING_PUSHAX) {
         // Preserve state of PendingPushAx and avoid emitting
         // a push before adjusting the stack
-        const int ppa = PendingPushAx;
-        PendingPushAx = 0;
-        PendingSpAdj = 0;
-        EmitAddRegConst(R_SP, Amm);
-        PendingPushAx = ppa;
+        const int Orig = Pending;
+        Pending = 0;
+        EmitAddRegConst(R_SP, Orig & ~PENDING_PUSHAX);
+        Pending = Orig & PENDING_PUSHAX;
     }
 }
 
 void FlushPushAx(void)
 {
-    if (PendingPushAx) {
-        PendingPushAx = 0;
+    if (Pending & PENDING_PUSHAX) {
+        Pending &= ~PENDING_PUSHAX;
         Output1Byte(I_PUSH|R_AX);
         LocalOffset -= 2;
     }
@@ -1373,7 +1375,7 @@ int EmitChecks(void)
     if (IsDeadCode) {
         return 1;
     }
-    if (PendingPushAx|PendingSpAdj) {
+    if (Pending) {
         FlushSpAdj();
         FlushPushAx();
     }
@@ -1741,7 +1743,7 @@ void ParsePostfixExpression(void)
                     if (!(ArgSize & (ArgChunkSize-1))) {
                         FlushPushAx();
                         LocalOffset  -= ArgChunkSize;
-                        PendingSpAdj -= ArgChunkSize;
+                        Pending -= ArgChunkSize;
                         if (ArgSize) {
                             // Move arguments to new stack top
                             EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize);
@@ -1768,7 +1770,7 @@ void ParsePostfixExpression(void)
                 Expect(')');
                 Output1Byte(I_CALL);
                 EmitGlobalRefRel(Func);
-                PendingSpAdj += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
+                Pending += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
                 LocalOffset  += ArgSize;
                 CurrentType = RetType;
                 if ((CurrentType&~VT_UNSIGNED) == VT_CHAR) {
@@ -1792,7 +1794,7 @@ void ParsePostfixExpression(void)
                         Fatal("Expected pointer");
                     }
                     CurrentType -= VT_PTR1;
-                    if (!IsDeadCode) PendingPushAx = 1;
+                    if (!IsDeadCode) Pending |= PENDING_PUSHAX;
                 }
                 const int Scale    = SizeofCurrentType();
                 const int ResType  = CurrentType | VT_LVAL;
@@ -1806,13 +1808,13 @@ void ParsePostfixExpression(void)
                             Output1Byte(I_MOV_R_IMM16|R_AX);
                             EmitGlobalRef(GlobalArr);
                         } else {
-                            if (!PendingPushAx) Fail();
-                            PendingPushAx = 0;
+                            if (!(Pending & PENDING_PUSHAX)) Fail();
+                            Pending &= ~PENDING_PUSHAX;
                         }
                         EmitAddRegConst(R_AX, CurrentVal * Scale);
                     } else {
                         LvalToRval();
-                        if ((CurrentType&~VT_UNSIGNED) != VT_INT || PendingPushAx) Fail();
+                        if ((CurrentType&~VT_UNSIGNED) != VT_INT || (Pending & PENDING_PUSHAX)) Fail();
                         EmitScaleAx(Scale);
                         if (GlobalArr) {
                             Output1Byte(I_ADD|5);
@@ -2238,8 +2240,8 @@ void HandleCondOp(void)
 void HandleLhsLvalLoc(int LhsLoc)
 {
     if (!LhsLoc) {
-        if (PendingPushAx) {
-            PendingPushAx = 0;
+        if (Pending & PENDING_PUSHAX) {
+            Pending &= ~PENDING_PUSHAX;
             Output1Byte(I_XCHG_AX|R_DI);
         } else {
             Output1Byte(I_POP|R_DI);
@@ -2293,7 +2295,7 @@ void ParseExpr1(int OuterPrecedence)
             if (CurrentType == VT_BOOL)
                 GetVal();
             if (!(CurrentType & VT_LOCMASK) && Op != ',' && !IsDeadCode) {
-                PendingPushAx = 1;
+                Pending |= PENDING_PUSHAX;
             }
         }
         LhsType        = CurrentType;
@@ -2414,8 +2416,8 @@ void ParseExpr1(int OuterPrecedence)
             IsUnsignedOp = 1;
         }
         if (CurrentType == (VT_LOCLIT|VT_INT)) {
-            if (!(PendingPushAx|IsDeadCode)) Fail();
-            PendingPushAx = 0;
+            if (!((Pending&PENDING_PUSHAX)|IsDeadCode)) Fail();
+            Pending &= ~PENDING_PUSHAX;
             CurrentType = VT_INT;
             if (LhsType & VT_PTRMASK) {
                 CurrentVal *= LhsPointeeSize;
@@ -2440,17 +2442,17 @@ RhsConst:
                     GetVal();
                     EmitScaleAx(LhsPointeeSize);
                     CurrentType = LhsType;
-                } else if (PendingPushAx && (CurrentType & VT_BASEMASK) != VT_ARRAY) {
+                } else if ((Pending & PENDING_PUSHAX) && (CurrentType & VT_BASEMASK) != VT_ARRAY) {
                     if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
                         if (!(CurrentType&VT_LVAL)) Fail();
-                        PendingPushAx = 0;
+                        Pending &= ~PENDING_PUSHAX;
                         if (!DoRhsLvalBinOp(Op))
                             goto DoNormal;
                         goto CheckSub;
                     }
                 }
                 GetVal();
-                if (PendingPushAx) Fail();
+                if (Pending & PENDING_PUSHAX) Fail();
                 Output1Byte(I_POP|R_CX);
                 LocalOffset += 2;
             }
@@ -2808,12 +2810,12 @@ Redo:
         return;
     case TOK_BREAK:
         GetToken();
-        PendingSpAdj += BStackLevel - LocalOffset;
+        Pending += BStackLevel - LocalOffset;
         EmitJmp(BreakLabel);
         goto GetSemicolon;
     case TOK_CONTINUE:
         GetToken();
-        PendingSpAdj += CStackLevel - LocalOffset;
+        Pending += CStackLevel - LocalOffset;
         EmitJmp(ContinueLabel);
         goto GetSemicolon;
     case TOK_GOTO:
@@ -2990,7 +2992,7 @@ Redo:
                     GetVal();
                     Output1Byte(I_PUSH|R_AX);
                 } else {
-                    PendingSpAdj -= size;
+                    Pending -= size;
                 }
                 LocalOffset -= size;
                 vd->Offset = LocalOffset;
@@ -3046,7 +3048,7 @@ void ParseCompoundStatement(void)
     GetToken();
     PopScope();
     if (OldOffset != LocalOffset) {
-        PendingSpAdj += OldOffset - LocalOffset;
+        Pending += OldOffset - LocalOffset;
         LocalOffset = OldOffset;
     }
 
