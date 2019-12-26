@@ -25,4 +25,19 @@ void main() {
     assert_eq(s1[7], 'y');
     assert_eq(s1[8], 'z');
     assert_eq(s1[9], 0);
+
+    const char* s2 =
+        // Comment!
+        "0"
+        /* */ "1"
+        "2"
+#if 1
+        "3"
+#endif
+        ;
+    assert_eq(s2[0], '0');
+    assert_eq(s2[1], '1');
+    assert_eq(s2[2], '2');
+    assert_eq(s2[3], '3');
+    assert_eq(s2[4], 0);
 }

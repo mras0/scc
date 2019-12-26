@@ -366,7 +366,6 @@ char InBuf[INBUF_MAX+1];
 char* InBufPtr;
 char* InBufEnd;
 char CurChar;
-char StoredSlash;
 
 int Line = 1;
 
@@ -575,28 +574,14 @@ int TryGetChar(int ch, int t, int p)
     return 0;
 }
 
-void SkipLine(void)
-{
-    while ((CurChar = *InBufPtr++) != '\n') {
-        if (CurChar)
-            continue;
-        --InBufPtr;
-        NextChar();
-        if (CurChar == '\n')
-            break;
-        if (!CurChar)
-            return;
-    }
-    NextChar();
-    ++Line;
-}
-
-void SkipWhitespace(void)
+int SkipWhitespace(void)
 {
     for (;;) {
         if (CurChar <= ' ') {
             while ((CurChar = *InBufPtr++) <= ' ') {
                 switch (CurChar) {
+                case ' ':  continue;
+                case '\t': continue;
                 case '\n':
                     ++Line;
                     continue;
@@ -604,35 +589,52 @@ void SkipWhitespace(void)
                     --InBufPtr;
                     NextChar();
                     if (!CurChar)
-                        return;
+                        return 0;
                     --InBufPtr; // Re-read character instead of duplicating logic
                     continue;
                 }
             }
         }
-        if (CurChar != '/')
-            return;
-        NextChar();
+        if (CurChar > '/')
+            return 0;
         switch (CurChar) {
         case '/':
-            SkipLine();
-            continue;
-        case '*':
-            {
-                NextChar();
-                int star = 0;
-                while (!star || CurChar != '/') {
-                    star = CurChar == '*';
-                    if (CurChar == '\n') ++Line;
+            NextChar();
+            switch (CurChar) {
+            case '/':
+            SkipLine:
+                while ((CurChar = *InBufPtr++) != '\n') {
+                    if (CurChar)
+                        continue;
+                    --InBufPtr;
                     NextChar();
-                    if (!CurChar) Fail(); // Unterminated comment
+                    if (CurChar == '\n')
+                        break;
+                    if (!CurChar)
+                        return 0;
                 }
                 NextChar();
+                ++Line;
+                continue;
+            case '*':
+                {
+                    NextChar();
+                    int star = 0;
+                    while (!star || CurChar != '/') {
+                        star = CurChar == '*';
+                        if (CurChar == '\n') ++Line;
+                        NextChar();
+                        if (!CurChar) Fail(); // Unterminated comment
+                    }
+                    NextChar();
+                }
+                continue;
             }
-            continue;
+            return 1;
+        case '#':
+            goto SkipLine;
         }
-        StoredSlash = 1;
-        return;
+        return 0;
     }
 }
 
@@ -687,7 +689,7 @@ void GetStringLiteral(void)
         }
         NextChar();
         SkipWhitespace();
-        if (StoredSlash || CurChar != '"')
+        if (CurChar != '"')
             break;
         NextChar();
     }
@@ -699,15 +701,17 @@ const char IsIdChar[] = "\x00\x00\x00\x00\x00\x00\xFF\x03\xFE\xFF\xFF\x87\xFE\xF
 
 void GetToken(void)
 {
-Redo:
-    SkipWhitespace();
-    if (StoredSlash) {
-        TokenType = '/';
-        StoredSlash = 0;
-        goto Slash;
+    if (CurChar <= '/') {
+        if (SkipWhitespace()) {
+            TokenType = '/';
+            goto Slash;
+        }
     }
     TokenType = CurChar;
-    NextChar();
+    if (!(CurChar = *InBufPtr++)) {
+        --InBufPtr;
+        NextChar();
+    }
     OperatorPrecedence = PREC_STOP;
 
     if (TokenType < 'A') {
@@ -875,9 +879,6 @@ Redo:
         GetStringLiteral();
         TokenType = TOK_STRLIT;
         return;
-    case '#':
-        SkipLine();
-        goto Redo;
     }
     Fatal("Unknown token encountered");
 }
