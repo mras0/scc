@@ -1039,9 +1039,22 @@ void DoFixups(int r, int relative)
                 if ((c[-3]&0xf0) != 0x70 || c[-2] != 3) Fail();
                 c[-3] ^= 1;
                 c[-2] = f+3;
+                // If the next instruction is a known jump / return, copy it in
+                c[1]  = I_XCHG_AX;
+                switch (c[2]) {
+                case I_JMP_REL8:
+                    if (((char *)c)[3] > 0x7f-3)
+                        break;
+                    c[-1] = I_JMP_REL8;
+                    c[0] = c[3]+3;
+                    continue;
+                case I_POP|R_BP:
+                    c[-1] = I_POP|R_BP;
+                    c[0]  = I_RET;
+                    continue;
+                }
                 c[-1] = I_XCHG_AX;
                 c[0]  = I_XCHG_AX;
-                c[1]  = I_XCHG_AX;
                 continue;
             }
             c[-1] = I_JMP_REL16;
@@ -1470,7 +1483,7 @@ void LvalToRval(void)
             return;
         }
 
-        const int sz = 2 - ((CurrentType&~VT_UNSIGNED) == VT_CHAR);
+        const int sz = ((CurrentType&~VT_UNSIGNED) != VT_CHAR) + 1;
         if (!loc) {
             OutputBytes(I_XCHG_AX|R_SI, -1);
         }
@@ -1500,7 +1513,7 @@ void DoIncDecOp(int Op, int Post)
             EmitExtend(CurrentType&VT_UNSIGNED);
         }
         if (!Loc)
-            EmitAddRegConst(R_SI, -1-WordOp); // Undo increment done by LODS (for increment/decrement below)
+            EmitAddRegConst(R_SI, -WordOp-1); // Undo increment done by LODS (for increment/decrement below)
         if (WordOp)
             CurrentType &= ~(VT_LVAL|VT_LOCMASK);
         else
