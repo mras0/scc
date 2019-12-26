@@ -190,12 +190,12 @@ enum {
     CODESTART = 0x100,
     INBUF_MAX = 512,
     SCOPE_MAX = 16,
-    VARDECL_MAX = 400,
-    ID_MAX = 570,
+    VARDECL_MAX = 380,
+    ID_MAX = 550,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
-    NAMED_LABEL_MAX = 10,
+    NAMED_LABEL_MAX = 8,
     OUTPUT_MAX = 0x6000,    // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
     STRUCT_MAX = 8,
     STRUCT_MEMBER_MAX = 32,
@@ -929,8 +929,6 @@ enum {
 enum {
     I_ADD            = 0x00,
     I_OR             = 0x08,
-    I_ADC            = 0x10,
-    I_SBB            = 0x18,
     I_AND            = 0x20,
     I_SUB            = 0x28,
     I_XOR            = 0x30,
@@ -942,24 +940,13 @@ enum {
     I_ALU_RM16_IMM16 = 0x81,
     I_ALU_RM16_IMM8  = 0x83,
     I_MOV_R_RM       = 0x88,
-    I_MOV_RM_R       = 0x8a,
-    I_LEA            = 0x8d,
+    I_LEA            = 0x8D,
     I_XCHG_AX        = 0x90,
-    I_CBW            = 0x98,
-    I_CWD            = 0x99,
-    I_MOV_R_IMM16    = 0xb8,
-    I_MOVSB          = 0xa4,
-    I_MOVSW          = 0xa5,
-    I_STOSB          = 0xaa,
-    I_LODSB          = 0xac,
-    I_RET            = 0xc3,
-    I_INT            = 0xcd,
-    I_SHROT16_CL     = 0xd3,
-    I_CALL           = 0xe8,
-    I_JMP_REL16      = 0xe9,
-    I_JMP_REL8       = 0xeb,
-    I_REP            = 0xf3,
-    I_INCDEC_RM      = 0xfe,
+    I_MOV_R_IMM16    = 0xB8,
+    I_STOSB          = 0xAA,
+    I_RET            = 0xC3,
+    I_JMP_REL16      = 0xE9,
+    I_JMP_REL8       = 0xEB,
 };
 
 enum {
@@ -1174,14 +1161,14 @@ void EmitLoadAx(int Size, int Loc, int Val)
 {
     switch (Loc) {
     case 0:
-        Output1Byte(I_LODSB-1+Size);
+        Output1Byte(0xAC-1+Size); // LODS
         break;
     case VT_LOCGLOB:
         Output1Byte(0xA0-1+Size);
         EmitGlobalRef(&VarDecls[Val]);
         break;
     default:
-        EmitModrm(I_MOV_RM_R-1+Size, R_AX, Loc, Val);
+        EmitModrm(0x8A-1+Size, R_AX, Loc, Val);
     }
 }
 
@@ -1263,7 +1250,7 @@ void EmitDivCX(void)
         Output2Bytes(I_XOR|1, 0xC0|R_DX<<3|R_DX);  // XOR DX, DX
         Output2Bytes(0xF7, MODRM_REG|(6<<3)|R_CX); // DIV CX
     } else {
-        Output3Bytes(I_CWD, 0xF7, MODRM_REG | (7<<3) | R_CX); // CWD \ IDIV CX
+        Output3Bytes(0x99, 0xF7, MODRM_REG | (7<<3) | R_CX); // CWD \ IDIV CX
     }
 }
 
@@ -1346,7 +1333,7 @@ void EmitExtend(int Unsigned)
     if (Unsigned)
         Output2Bytes(I_XOR, MODRM_REG|4<<3|4); // XOR AH, AH
     else
-        Output1Byte(I_CBW);
+        Output1Byte(0x98); // CBW
 }
 
 void FlushSpAdj(void)
@@ -1532,7 +1519,7 @@ void DoIncDecOp(int Op, int Post)
         Output1Byte(Size);
         return;
     }
-    EmitModrm(I_INCDEC_RM|WordOp, Op, Loc, CurrentVal);
+    EmitModrm(0xFE|WordOp, Op, Loc, CurrentVal);
 }
 
 struct VarDecl* AddVarDeclScope(int Scope, int Id)
@@ -1749,7 +1736,7 @@ void ParsePostfixExpression(void)
                             EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize);
                             EmitModrm(I_LEA, R_DI, VT_LOCOFF, LocalOffset);
                             EmitMovRImm(R_CX, ArgSize>>1);
-                            Output2Bytes(I_REP, I_MOVSW);
+                            Output2Bytes(0xF3, 0xA5); // REP MOVSW
                         }
                     }
                     ParseAssignmentExpression();
@@ -1768,7 +1755,7 @@ void ParsePostfixExpression(void)
                     break;
                 }
                 Expect(')');
-                Output1Byte(I_CALL);
+                Output1Byte(0xE8); // CALL
                 EmitGlobalRefRel(Func);
                 Pending += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
                 LocalOffset  += ArgSize;
@@ -2348,7 +2335,7 @@ void ParseExpr1(int OuterPrecedence)
                 else
                     Output1Byte(I_XCHG_AX|R_SI);
                 EmitMovRImm(R_CX, SizeofCurrentType());
-                Output2Bytes(I_REP, I_MOVSB);
+                Output2Bytes(0xF3, 0xA4); // REP MOVSB
                 continue;
             }
 
