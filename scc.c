@@ -3076,10 +3076,10 @@ void ParseExternalDefition(void)
                 GetToken();
                 break;
             }
-            ParseAbstractDecl();
-            if (CurrentType == VT_VOID)
+            ParseDeclSpecs();
+            if (TokenType == ')')
                 break;
-            struct VarDecl* arg = AddVarDecl(ExpectId());
+            struct VarDecl* arg = DoDecl();
             arg->Type |= VT_LOCOFF;
             arg->Offset = ArgOffset;
             ArgOffset += 2;
