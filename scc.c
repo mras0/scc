@@ -191,7 +191,7 @@ enum {
     INBUF_MAX = 512,
     SCOPE_MAX = 16,
     VARDECL_MAX = 380,
-    ID_MAX = 550,
+    ID_MAX = 570,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 5000,
     LABEL_MAX = 300,
@@ -201,6 +201,7 @@ enum {
     STRUCT_MEMBER_MAX = 32,
     ARRAY_MAX = 32,
     GLOBAL_RESERVE = 4,     // How many globals symbols to allow to be defined in functions (where static variables count as globals)
+    ARGS_MAX = 8,
 
     // Brute forced best values (when change was made)
     HASHINIT = 17,
@@ -356,6 +357,12 @@ struct VarDecl {
     int Prev;
 };
 
+struct Argument {
+    int Id;
+    int Type;
+    int TypeExtra;
+};
+
 int CodeAddress = CODESTART;
 int BssSize;
 
@@ -402,6 +409,9 @@ int LocalLabelCounter;
 
 struct NamedLabel NamedLabels[NAMED_LABEL_MAX];
 int NamedLabelCount;
+
+struct Argument Args[ARGS_MAX];
+int ArgsCount;
 
 int LocalOffset;
 // Break/Continue stack level (== LocalOffset of block)
@@ -2629,6 +2639,38 @@ Redo:
     if (Id) {
         *Id = ExpectId();
     }
+
+    if (TokenType == '(') {
+        GetToken();
+        const int T = CurrentType | VT_FUN;
+        const int E = CurrentTypeExtra;
+
+        ArgsCount = 0;
+        while (TokenType != ')') {
+            if (TokenType == TOK_ELLIPSIS) {
+                GetToken();
+                break;
+            }
+            ParseDeclSpecs();
+            if (TokenType == ')')
+                break;
+            if (ArgsCount == ARGS_MAX) Fail();
+            struct Argument* A = &Args[ArgsCount++];
+            ParseDeclarator(&A->Id);
+            A->Type      = CurrentType;
+            A->TypeExtra = CurrentTypeExtra;
+            if (TokenType == ',') {
+                GetToken();
+                continue;
+            }
+            break;
+        }
+        Expect(')');
+        CurrentType      = T;
+        CurrentTypeExtra = E;
+        return;
+    }
+
     while (TokenType == '[') {
         GetToken();
         if (ArrayCount == ARRAY_MAX) Fail();
@@ -3059,61 +3101,47 @@ void ParseExternalDefition(void)
 
     CurrentType = vd->Type &= ~VT_STATIC;
 
-    if (TokenType == '(') {
-        GetToken();
-        vd->Type |= VT_FUN | VT_LOCGLOB;
-        // Make room for "late globals"
+    if (vd->Type & VT_FUN) {
+        vd->Type |= VT_LOCGLOB;
+        if (TokenType == ';') {
+            GetToken();
+            return;
+        }
         int i;
+        // Make room for "late globals"
         for (i = 0; i < GLOBAL_RESERVE; ++i) {
             VarDecls[Scopes[0]++].Id = -1;
         }
         PushScope();
         Scopes[0] -= GLOBAL_RESERVE;
-        int ArgOffset;
-        ArgOffset = 4;
-        while (TokenType != ')') {
-            if (TokenType == TOK_ELLIPSIS) {
-                GetToken();
-                break;
-            }
-            ParseDeclSpecs();
-            if (TokenType == ')')
-                break;
-            struct VarDecl* arg = DoDecl();
-            arg->Type |= VT_LOCOFF;
-            arg->Offset = ArgOffset;
-            ArgOffset += 2;
-            if (TokenType == ',') {
-                GetToken();
-                continue;
-            }
-            break;
+        for (i = 0; i < ArgsCount; ++i) {
+            struct Argument* A = &Args[i];
+            CurrentType = A->Type | VT_LOCOFF;
+            CurrentTypeExtra = A->TypeExtra;
+            struct VarDecl* arg = AddVarDecl(A->Id);
+            arg->Offset = 4 + i*2;
         }
-        Expect(')');
-        if (TokenType != ';') {
-            if (LocalLabelCounter) Fail();
-            LocalOffset = 0;
-            ReturnUsed = 0;
-            ReturnLabel = MakeLabel();
-            BreakLabel = ContinueLabel = -1;
 
-            EmitGlobalLabel(vd);
-            Output1Byte(I_PUSH|R_BP);
-            EmitMovRR(R_BP, R_SP);
-            ParseCompoundStatement();
-            if (ReturnUsed) {
-                EmitLocalLabel(ReturnLabel);
-                EmitMovRR(R_SP, R_BP);
-            }
-            Output2Bytes(I_POP|R_BP, I_RET);
+        if (LocalLabelCounter) Fail();
+        LocalOffset = 0;
+        ReturnUsed = 0;
+        ReturnLabel = MakeLabel();
+        BreakLabel = ContinueLabel = -1;
 
-            // When debugging:
-            //int l;for (l = 0; l < LocalLabelCounter; ++l)if (!(Labels[l].Ref == 0)) Fail();
-            LocalLabelCounter = 0;
-            NamedLabelCount = 0;
-        } else {
-            GetToken();
+        EmitGlobalLabel(vd);
+        Output1Byte(I_PUSH|R_BP);
+        EmitMovRR(R_BP, R_SP);
+        ParseCompoundStatement();
+        if (ReturnUsed) {
+            EmitLocalLabel(ReturnLabel);
+            EmitMovRR(R_SP, R_BP);
         }
+        Output2Bytes(I_POP|R_BP, I_RET);
+
+        // When debugging:
+        //int l;for (l = 0; l < LocalLabelCounter; ++l)if (!(Labels[l].Ref == 0)) Fail();
+        LocalLabelCounter = 0;
+        NamedLabelCount = 0;
         PopScope();
         return;
     }
