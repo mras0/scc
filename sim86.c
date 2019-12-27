@@ -870,7 +870,12 @@ int main(int argc, char** argv)
             JCC(inst-0x70);
         } else if (inst >= 0x90 && inst < 0x98) {
             const int r = inst - 0x90;
-            if (verbose) sprintf(insttext, "XCHG AX, %s", RegName(r));
+            if (verbose) {
+                if (!r)
+                    strcpy(insttext, "NOP");
+                else
+                    sprintf(insttext, "XCHG AX, %s", RegName(r));
+            }
             int rv = reg[r];
             reg[r] = reg[R_AX];
             reg[R_AX] = rv;
@@ -893,7 +898,7 @@ int main(int argc, char** argv)
                     ModRM();
                     const int imm = inst == 0x81 ? Imm16() : (char)ReadIByte();
                     DoOp(modrm>>3&7, ReadRM(), imm);
-                    if (verbose) sprintf(insttext, "%s %s, %04X", OpName(modrm>>3&7), rmtext, imm);
+                    if (verbose) sprintf(insttext, "%s %s, 0x%04X", OpName(modrm>>3&7), rmtext, imm);
                 }
                 break;
             case 0x88:

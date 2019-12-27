@@ -420,7 +420,7 @@ int IsUnsignedOp;
 int BaseType;
 int BaseTypeExtra;
 
-int ReturnUsed;
+char ReturnUsed;
 enum { PENDING_PUSHAX = 1 };
 int Pending; // Bit0: PENDING_PUSHAX, Rest: remaing bits: SP adjustment
 int LastFixup;
