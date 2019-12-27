@@ -1191,6 +1191,11 @@ int main(int argc, char** argv)
                     case 1:
                         DEC();
                         break;
+                    case 2:
+                        if (verbose) sprintf(insttext, "CALL %s", rmtext);
+                        DoPush(ip);
+                        ip = ReadRM();
+                        break;
                     default:
                         Fatal("TODO: %02X/%X", inst ,modrm>>3&7);
                     }

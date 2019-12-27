@@ -128,9 +128,68 @@ void ignoreddecls_test() {
     assert_eq(**extreme, 37);
 }
 
+struct FPS {
+    int (*Op)(int, int);
+    int x, y;
+};
+
+int fp_g0() { return -42; }
+int fp_g1() { return 123; }
+
+int fp_add(int x, int y) { return x + y; }
+int fp_sub(int x, int y) { return x - y; }
+
+struct FPS* fp_s() {
+    static struct FPS fps;
+    fps.x = 5;
+    fps.y = 7;
+    fps.Op = &fp_add;
+    return &fps;
+}
+
+void funptr_test() {
+    assert_eq(fp_g0(), -42);
+    assert_eq(fp_g1(), 123);
+
+    int (*f)(void) = fp_g0;
+    assert_eq(f(), -42);
+    f = fp_g1;
+    assert_eq(f(), 123);
+    f = fp_g0;
+    assert_eq(f(), -42);
+
+    int (*g)();
+    g = fp_g1;
+    assert_eq(g()+1, 124);
+
+    struct FPS fps;
+    fps.x = 42;
+    fps.y = 20;
+    fps.Op = fp_add;
+    assert_eq(fps.Op(fps.x, fps.y), 62);
+    fps.Op = fp_sub;
+    assert_eq(fps.Op(fps.x, fps.y), 22);
+
+    int x = (*fps.Op)(3, 4);
+    assert_eq(x, -1);
+
+    int (*h)(...) = &fp_g0;
+    int y = 2 + (*h)() + 1;
+    assert_eq(y, -39);
+    assert_eq(h(), -42);
+    assert_eq((***h)(), -42);
+
+    struct FPS* (*s)(void) = &fp_s;
+    struct FPS* f2 = (*s)();
+    assert_eq(f2->x, 5);
+    assert_eq(f2->y, 7);
+    assert_eq((*f2->Op)(7,1), 8);
+}
+
 void main() {
     test1();
     test2();
     undeclstruct_test();
     ignoreddecls_test();
+    funptr_test();
 }

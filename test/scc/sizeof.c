@@ -50,4 +50,6 @@ void main()
     assert_eq(x, 3);
 
     assert_eq(sizeof(struct Undefined*), sizeof(void*));
+
+    assert_eq(sizeof(int (*)(int,char)), sizeof(void*));
 }

@@ -220,18 +220,20 @@ enum {
     VT_BASEMASK = 7,
 
     VT_UNSIGNED = 1<<3,
-    VT_FUN      = 1<<4,
-    VT_LVAL     = 1<<5,
+    VT_LVAL     = 1<<4,
 
-    VT_PTR1     = 1<<6,
-    VT_PTRMASK  = 3<<6, // 3 levels of indirection should be enough..
+    VT_FUN      = 1<<5,
+    VT_FUNPTR   = 3<<5, // HACK
 
-    VT_LOCLIT   = 1<<8, // CurrentVal holds a literal value (or label)
-    VT_LOCOFF   = 2<<8, // CurrentVal holds BP offset
-    VT_LOCGLOB  = 3<<8, // CurrentVal holds the VarDecl index of a global
-    VT_LOCMASK  = 3<<8,
+    VT_PTR1     = 1<<7,
+    VT_PTRMASK  = 3<<7, // 3 levels of indirection should be enough..
 
-    VT_STATIC   = 1<<10,
+    VT_LOCLIT   = 1<<9, // CurrentVal holds a literal value (or label)
+    VT_LOCOFF   = 2<<9, // CurrentVal holds BP offset
+    VT_LOCGLOB  = 3<<9, // CurrentVal holds the VarDecl index of a global
+    VT_LOCMASK  = 3<<9,
+
+    VT_STATIC   = 1<<11,
 };
 
 // Token types
@@ -1436,7 +1438,7 @@ int IsTypeStart(void)
 
 int SizeofType(int Type, int Extra)
 {
-    if (Type & VT_PTRMASK)
+    if (Type & (VT_PTRMASK|VT_FUNPTR))
         return 2;
     switch (Type & VT_BASEMASK) {
     case VT_INT:  return 2;
@@ -1481,6 +1483,12 @@ void LvalToRval(void)
             struct ArrayDecl* AD = &ArrayDecls[CurrentTypeExtra];
             CurrentType = AD->Type + VT_PTR1;
             CurrentTypeExtra = AD->TypeExtra;
+            if (loc)
+                EmitLoadAddr(R_AX, loc, CurrentVal);
+            return;
+        }
+
+        if (CurrentType & VT_FUNPTR) {
             if (loc)
                 EmitLoadAddr(R_AX, loc, CurrentVal);
             return;
@@ -1729,11 +1737,25 @@ void ParsePostfixExpression(void)
         switch (TokenType) {
         case '(':
             {
-                GetToken();
                 // Function call
-                if ((CurrentType & (VT_FUN|VT_LOCMASK)) != (VT_FUN|VT_LOCGLOB)) Fail();
-                struct VarDecl* Func = &VarDecls[CurrentVal];
-                const int RetType = CurrentType & ~(VT_FUN|VT_LOCMASK|VT_LVAL);
+                GetToken();
+                if (!(CurrentType & VT_FUNPTR)) Fail();
+                const int RetType  = CurrentType & ~(VT_FUNPTR|VT_LOCMASK|VT_LVAL);
+                int RetExtra = CurrentTypeExtra;
+                struct VarDecl* Func = 0;
+                switch (CurrentType & VT_LOCMASK) {
+                case VT_LOCGLOB:
+                    Func = &VarDecls[CurrentVal];
+                    RetExtra = Func->TypeExtra;
+                    break;
+                case 0:
+                    Output1Byte(I_XCHG_AX|R_SI);
+                    // Fall through
+                default:
+                    EmitLoadAx(2, CurrentType & VT_LOCMASK, CurrentVal);
+                    Output1Byte(I_PUSH|R_AX); // TODO: Could possibly optimize as PENDING_PUSHAX
+                    LocalOffset -= 2;
+                }
                 int ArgSize = 0;
                 enum { ArgChunkSize = 8 }; // Must be power of 2
                 while (TokenType != ')') {
@@ -1765,15 +1787,22 @@ void ParsePostfixExpression(void)
                     break;
                 }
                 Expect(')');
-                Output1Byte(0xE8); // CALL
-                EmitGlobalRefRel(Func);
-                Pending += (ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize));
+                ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize);
+                if (Func) {
+                    Output1Byte(0xE8); // CALL re16
+                    EmitGlobalRefRel(Func);
+                } else {
+                    EmitLoadAx(2, VT_LOCOFF, LocalOffset + ArgSize); // Can't pop if arguments were used
+                    Output2Bytes(0xFF, MODRM_REG|2<<3); // CALL AX
+                    ArgSize += 2;
+                }
+                Pending += ArgSize;
                 LocalOffset  += ArgSize;
                 CurrentType = RetType;
                 if ((CurrentType&~VT_UNSIGNED) == VT_CHAR) {
                     CurrentType = VT_INT;
                 }
-                CurrentTypeExtra = Func->TypeExtra;
+                CurrentTypeExtra = RetExtra;
                 continue;
             }
         case '[':
@@ -1883,6 +1912,8 @@ void ParseUnaryExpression(void)
                 if (!(CurrentType & VT_LVAL)) {
                     Fatal("Lvalue required for address-of operator");
                 }
+                if (CurrentType & VT_FUNPTR)
+                    return;
                 const int loc = CurrentType & VT_LOCMASK;
                 if (loc) {
                     EmitLoadAddr(R_AX, loc, CurrentVal);
@@ -1914,6 +1945,8 @@ void ParseUnaryExpression(void)
                     CurrentVal ^= 1;
                 }
             } else if (Op == '*') {
+                if (CurrentType & VT_FUNPTR)
+                    return;
                 if (!(CurrentType & VT_PTRMASK)) {
                     Fatal("Pointer required for dereference");
                 }
@@ -2353,8 +2386,6 @@ void ParseExpr1(int OuterPrecedence)
             int Size = 2;
             if ((LhsType&~VT_UNSIGNED) == VT_CHAR) {
                 Size = 1;
-            } else {
-                if ((LhsType&~VT_UNSIGNED) != VT_INT && !(LhsType & VT_PTRMASK)) Fail();
             }
             if (Op != '=') {
                 if (!LhsLoc)
@@ -2586,18 +2617,19 @@ void ParseDeclSpecs(void)
                     struct StructMember** Last = &SD->Members;
                     while (TokenType != '}') {
                         /// XXX Issue here - Save Base type before this?
-                        ParseAbstractDecl();
+                        ParseDeclSpecs();
                         SaveBaseType();
                         while (TokenType != ';') {
                             if (StructMemCount == STRUCT_MEMBER_MAX) Fail();
                             struct StructMember* SM = &StructMembers[StructMemCount++];
                             ParseDeclarator(&SM->Id);
+                            if (SM->Id < 0) Fail();
                             SM->Type      = CurrentType;
                             SM->TypeExtra = CurrentTypeExtra;
                             *Last = SM;
                             Last = &SM->Next;
                             if (TokenType == ',') {
-                                GetToken();
+                                GetToken();                                
                                 CurrentType      = BaseType;
                                 CurrentTypeExtra = BaseTypeExtra;
                                 continue;
@@ -2636,8 +2668,25 @@ Redo:
         goto Redo;
     }
 
+    if (TokenType == '(') {
+        // Hacks
+        GetToken();
+        Expect('*');
+        CurrentType |= VT_FUNPTR;
+    }
+
     if (Id) {
-        *Id = ExpectId();
+        if (TokenType >= TOK_ID) {
+            *Id = TokenType - TOK_KEYWORD;
+            GetToken();
+        } else {
+            *Id = -1;
+        }
+    }
+
+    if (CurrentType & VT_FUNPTR) {
+        // More hacks
+        Expect(')');
     }
 
     if (TokenType == '(') {
@@ -2716,6 +2765,7 @@ struct VarDecl* DoDecl(void)
 {
     int Id;
     ParseDeclarator(&Id);
+    if (Id < 0) Fail();
     return AddVarDecl(Id);
 }
 
