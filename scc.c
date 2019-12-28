@@ -191,9 +191,9 @@ enum {
     INBUF_MAX = 512,
     SCOPE_MAX = 16,
     VARDECL_MAX = 380,
-    ID_MAX = 570,
+    ID_MAX = 580,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
-    IDBUFFER_MAX = 5000,
+    IDBUFFER_MAX = 5200,
     LABEL_MAX = 300,
     NAMED_LABEL_MAX = 8,
     OUTPUT_MAX = 0x6000,    // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
@@ -234,6 +234,7 @@ enum {
     VT_LOCMASK  = 3<<9,
 
     VT_STATIC   = 1<<11,
+    VT_TYPEDEF  = 1<<12,
 };
 
 // Token types
@@ -1422,6 +1423,20 @@ int ExpectId(void)
     Unexpected();
 }
 
+struct VarDecl* LookupTypedef(void)
+{
+    if (TokenType >= TOK_ID) {
+        int VI = VarLookup[TokenType - TOK_KEYWORD];
+        if (VI >= 0) {
+            struct VarDecl* VD = &VarDecls[VI];
+            if (VD->Type & VT_TYPEDEF) {
+                return VD;
+            }
+        }
+    }
+    return 0;
+}
+
 int IsTypeStart(void)
 {
     switch (TokenType) {
@@ -1437,13 +1452,14 @@ int IsTypeStart(void)
     case TOK_SIGNED:
     case TOK_STATIC:
     case TOK_STRUCT:
+    case TOK_TYPEDEF:
     case TOK_UNION:
     case TOK_UNSIGNED:
     case TOK_VOLATILE:
     case TOK_VA_LIST:
         return 1;
     }
-    return 0;
+    return LookupTypedef() != 0;
 }
 
 int SizeofType(int Type, int Extra)
@@ -2567,6 +2583,9 @@ void ParseDeclSpecs(void)
         case TOK_SIGNED:
             Flags &= ~VT_UNSIGNED;
             break;
+        case TOK_TYPEDEF:
+            Flags |= VT_TYPEDEF;
+            break;
         case TOK_UNSIGNED:
             Flags |= VT_UNSIGNED;
             break;
@@ -2661,8 +2680,16 @@ void ParseDeclSpecs(void)
             }
             continue;
         default:
-            CurrentType |= Flags;
-            return;
+            {
+                struct VarDecl* Typedef = LookupTypedef();
+                if (Typedef) {
+                    CurrentType      = Typedef->Type & ~VT_TYPEDEF;
+                    CurrentTypeExtra = Typedef->TypeExtra;
+                    break;
+                }
+                CurrentType |= Flags;
+                return;
+            }
         }
         GetToken();
     }
@@ -2683,11 +2710,13 @@ Redo:
         goto Redo;
     }
 
+    int IsFunPtr = 0;
     if (TokenType == '(') {
         // Hacks
         GetToken();
         Expect('*');
         CurrentType |= VT_FUNPTR;
+        IsFunPtr = 1;
     }
 
     if (Id) {
@@ -2699,7 +2728,7 @@ Redo:
         }
     }
 
-    if (CurrentType & VT_FUNPTR) {
+    if (IsFunPtr) {
         // More hacks
         Expect(')');
     }
@@ -3054,22 +3083,7 @@ Redo:
         return;
     }
 
-    if (TokenType >= TOK_ID) {
-        // Expression statement / Labelled statement
-        const int id = TokenType - TOK_KEYWORD;
-        GetToken();
-        if (TokenType == ':') {
-            GetToken();
-            EmitLocalLabel(GetNamedLabel(id)->LabelId);
-            EmitModrm(I_LEA, R_SP, VT_LOCOFF, LocalOffset);
-            goto Redo;
-        } else {
-            HandlePrimaryId(id);
-            ParsePostfixExpression();
-            if (OperatorPrecedence <= PREC_COMMA)
-                ParseExpr1(PREC_COMMA);
-        }
-    } else if (IsTypeStart()) {
+    if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
         while (vd) {
             int size = SizeofCurrentType();
@@ -3092,6 +3106,21 @@ Redo:
                 vd->Offset = LocalOffset;
             }
             vd = NextDecl();
+        }
+    } else if (TokenType >= TOK_ID) {
+        // Expression statement / Labelled statement
+        const int id = TokenType - TOK_KEYWORD;
+        GetToken();
+        if (TokenType == ':') {
+            GetToken();
+            EmitLocalLabel(GetNamedLabel(id)->LabelId);
+            EmitModrm(I_LEA, R_SP, VT_LOCOFF, LocalOffset);
+            goto Redo;
+        } else {
+            HandlePrimaryId(id);
+            ParsePostfixExpression();
+            if (OperatorPrecedence <= PREC_COMMA)
+                ParseExpr1(PREC_COMMA);
         }
     } else {
         ParseExpr();

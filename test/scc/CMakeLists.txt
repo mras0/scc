@@ -14,6 +14,7 @@ set(TESTS
     bug
     strlit
     unsigned
+    typedef
     )
 
 set(TEST_CMDS "echo off\nscc.com scc.c\nscc.com scc.c\n")
