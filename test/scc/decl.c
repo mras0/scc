@@ -115,6 +115,8 @@ void undeclstruct_test() {
     assert_eq(x, 0);
 }
 
+extern ign_ext = 1337;
+
 void ignoreddecls_test() {
     signed char y;
     y = -17;
@@ -126,6 +128,14 @@ void ignoreddecls_test() {
     volatile const char * volatile const * volatile const extreme = &px;
     x = 37;
     assert_eq(**extreme, 37);
+
+    signed auto a = 42;
+    assert_eq(a, 42);
+
+    register unsigned int b = 60;
+    assert_eq(b, 60);
+
+    assert_eq(ign_ext, 1337);
 }
 
 struct FPS {

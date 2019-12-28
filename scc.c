@@ -270,19 +270,25 @@ enum {
 
     TOK_KEYWORD,
     // NOTE: Must match order of registration in main
-    TOK_BREAK = TOK_KEYWORD,
+    TOK_AUTO = TOK_KEYWORD,
+    TOK_BREAK,
     TOK_CASE,
     TOK_CHAR,
     TOK_CONST,
     TOK_CONTINUE,
     TOK_DEFAULT,
     TOK_DO,
+    TOK_DOUBLE,
     TOK_ELSE,
     TOK_ENUM,
+    TOK_EXTERN,
+    TOK_FLOAT,
     TOK_FOR,
     TOK_GOTO,
     TOK_IF,
     TOK_INT,
+    TOK_LONG,
+    TOK_REGISTER,
     TOK_RETURN,
     TOK_SHORT,
     TOK_SIGNED,
@@ -290,6 +296,7 @@ enum {
     TOK_STATIC,
     TOK_STRUCT,
     TOK_SWITCH,
+    TOK_TYPEDEF,
     TOK_UNION,
     TOK_UNSIGNED,
     TOK_VOID,
@@ -1418,11 +1425,14 @@ int ExpectId(void)
 int IsTypeStart(void)
 {
     switch (TokenType) {
+    case TOK_AUTO:
     case TOK_CONST:
     case TOK_VOID:
     case TOK_CHAR:
     case TOK_INT:
     case TOK_ENUM:
+    case TOK_EXTERN:
+    case TOK_REGISTER:
     case TOK_SHORT:
     case TOK_SIGNED:
     case TOK_STATIC:
@@ -2544,13 +2554,18 @@ void ParseDeclSpecs(void)
         case TOK_VA_LIST:
             CurrentType = VT_CHAR | VT_PTR1;
             break;
+        case TOK_AUTO:
         case TOK_CONST:
-        case TOK_SIGNED:
+        case TOK_EXTERN: // Should only really be allowed in global scope
+        case TOK_REGISTER:
         case TOK_VOLATILE:
             // Ignore but accept for now
             break;
         case TOK_STATIC:
             Flags |= VT_STATIC;
+            break;
+        case TOK_SIGNED:
+            Flags &= ~VT_UNSIGNED;
             break;
         case TOK_UNSIGNED:
             Flags |= VT_UNSIGNED;
@@ -3298,10 +3313,11 @@ int main(int argc, char** argv)
     memset(IdHashTab, -1, sizeof(IdHashTab));
     memset(VarLookup, -1, sizeof(VarLookup));
 
-    AddBuiltins("break case char const continue default do else enum for"
-        " goto if int return short signed sizeof static struct switch"
-        " union unsigned void volatile while va_list va_start va_end va_arg"
-        " _emit _start _SBSS _EBSS");
+    AddBuiltins("auto break case char const continue default do double"
+        " else enum extern float for goto if int long register return"
+        " short signed sizeof static struct switch typedef union unsigned"
+        " void volatile while va_list va_start va_end va_arg _emit _start"
+        " _SBSS _EBSS");
     if (IdCount+TOK_KEYWORD-1 != TOK__EBSS) Fail();
 
     // Prelude
