@@ -583,17 +583,6 @@ void NextChar(void)
     CurChar = *InBufPtr++;
 }
 
-int TryGetChar(int ch, int t, int p)
-{
-    if (CurChar == ch) {
-        TokenType = t;
-        OperatorPrecedence = p;
-        NextChar();
-        return 1;
-    }
-    return 0;
-}
-
 int SkipWhitespace(void)
 {
     for (;;) {
@@ -802,8 +791,12 @@ void GetToken(void)
     case 0:
         return;
     case '=':
+        if (CurChar == '=') {
+            TokenType = TOK_EQEQ;
+            OperatorPrecedence = 7;
+            break;
+        }
         OperatorPrecedence = PREC_ASSIGN;
-        TryGetChar('=', TOK_EQEQ, 7);
         return;
     case ',':
         OperatorPrecedence = PREC_COMMA;
@@ -812,76 +805,138 @@ void GetToken(void)
         OperatorPrecedence = 13;
         return;
     case '!':
-        TryGetChar('=', TOK_NOTEQ, 7);
-        return;
+        if (CurChar != '=')
+            return;
+        TokenType = TOK_NOTEQ;
+        OperatorPrecedence = 7;
+        break;
     case '<':
         OperatorPrecedence = 6;
-        if (TryGetChar('<', TOK_LSH, 5)) {
-            TryGetChar('=', TOK_LSHEQ, PREC_ASSIGN);
-        } else{
-            TryGetChar('=', TOK_LTEQ, 6);
+        if (CurChar == '=') {
+            TokenType = TOK_LTEQ;
+            break;
         }
+        if (CurChar != '<')
+            return;
+        NextChar();
+        if (CurChar == '=') {
+            TokenType = TOK_LSHEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
+        }
+        TokenType = TOK_LSH;
+        OperatorPrecedence = 5;
         return;
     case '>':
         OperatorPrecedence = 6;
-        if (TryGetChar('>', TOK_RSH, 5)) {
-            TryGetChar('=', TOK_RSHEQ, PREC_ASSIGN);
-        } else {
-            TryGetChar('=', TOK_GTEQ, 6);
+        if (CurChar == '=') {
+            TokenType = TOK_GTEQ;
+            break;
         }
+        if (CurChar != '>')
+            return;
+        NextChar();
+        if (CurChar == '=') {
+            TokenType = TOK_RSHEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
+        }
+        TokenType = TOK_RSH;
+        OperatorPrecedence = 5;
         return;
     case '&':
-        OperatorPrecedence = 8;
-        if (!TryGetChar('&', TOK_ANDAND, 11)) {
-            TryGetChar('=', TOK_ANDEQ, PREC_ASSIGN);
+        if (CurChar == '&') {
+            TokenType = TOK_ANDAND;
+            OperatorPrecedence = 11;
+            break;
+        } else if (CurChar == '=') {
+            TokenType = TOK_ANDEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
         }
+        OperatorPrecedence = 8;
         return;
     case '|':
-        OperatorPrecedence = 10;
-        if (!TryGetChar('|', TOK_OROR, 12)) {
-            TryGetChar('=', TOK_OREQ, PREC_ASSIGN);
+        if (CurChar == '|') {
+            TokenType = TOK_OROR;
+            OperatorPrecedence = 12;
+            break;
+        } else if (CurChar == '=') {
+            TokenType = TOK_OREQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
         }
+        OperatorPrecedence = 10;
         return;
     case '^':
+        if (CurChar == '=') {
+            TokenType = TOK_XOREQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
+        }
         OperatorPrecedence = 9;
-        TryGetChar('=', TOK_XOREQ, PREC_ASSIGN);
         return;
     case '+':
-        OperatorPrecedence = 4;
-        if (!TryGetChar('+', TOK_PLUSPLUS, PREC_STOP)) {
-            TryGetChar('=', TOK_PLUSEQ, PREC_ASSIGN);
+        if (CurChar == '+') {
+            TokenType = TOK_PLUSPLUS;
+            break;
+        } else if (CurChar == '=') {
+            TokenType = TOK_PLUSEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
         }
+        OperatorPrecedence = 4;
         return;
     case '-':
-        OperatorPrecedence = 4;
-        if (!TryGetChar('-', TOK_MINUSMINUS, PREC_STOP)) {
-            if (!TryGetChar('=', TOK_MINUSEQ, PREC_ASSIGN))
-                TryGetChar('>', TOK_ARROW, PREC_STOP);
+        if (CurChar == '-') {
+            TokenType = TOK_MINUSMINUS;
+            break;
+        } else if (CurChar == '>') {
+            TokenType = TOK_ARROW;
+            break;
+        } else if (CurChar == '=') {
+            TokenType = TOK_MINUSEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
         }
+        OperatorPrecedence = 4;
         return;
     case '*':
+        if (CurChar == '=') {
+            TokenType = TOK_STAREQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
+        }
         OperatorPrecedence = 3;
-        TryGetChar('=', TOK_STAREQ, PREC_ASSIGN);
         return;
     case '/':
- Slash:
+Slash:
+        if (CurChar == '=') {
+            TokenType = TOK_SLASHEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
+        }
         OperatorPrecedence = 3;
-        TryGetChar('=', TOK_SLASHEQ, PREC_ASSIGN);
         return;
     case '%':
+        if (CurChar == '=') {
+            TokenType = TOK_MODEQ;
+            OperatorPrecedence = PREC_ASSIGN;
+            break;
+        }
         OperatorPrecedence = 3;
-        TryGetChar('=', TOK_MODEQ, PREC_ASSIGN);
         return;
     case '_':
         goto Identifier;
     case '.':
-        if (CurChar == '.') {
-            NextChar();
-            if (!TryGetChar('.', TOK_ELLIPSIS, PREC_STOP)) {
-                break;
-            }
+        if (CurChar != '.')
+            return;
+        NextChar();
+        if (CurChar != '.') {
+            goto Invalid;
         }
-        return;
+        TokenType = TOK_ELLIPSIS;
+        break;
     case '\'':
         TokenNumVal = CurChar;
         NextChar();
@@ -891,15 +946,21 @@ void GetToken(void)
         if (CurChar != '\'') {
             Fatal("Invalid character literal");
         }
-        NextChar();
         TokenType = TOK_NUM;
-        return;
+        break;
     case '"':
         GetStringLiteral();
         TokenType = TOK_STRLIT;
         return;
+    default:
+    Invalid:
+        Fatal("Unknown token encountered");
     }
-    Fatal("Unknown token encountered");
+
+    if (!(CurChar = *InBufPtr++)) {
+        --InBufPtr;
+        NextChar();
+    }
 }
 
 void PrintTokenType(int T)
