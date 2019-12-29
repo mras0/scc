@@ -202,10 +202,6 @@ enum {
     ARRAY_MAX = 32,
     GLOBAL_RESERVE = 4,     // How many globals symbols to allow to be defined in functions (where static variables count as globals)
     ARGS_MAX = 8,
-
-    // Brute forced best values (when change was made)
-    HASHINIT = 17,
-    HASHMUL  = 89,
 };
 
 // Type flags and values
@@ -748,9 +744,9 @@ void GetToken(void)
     Identifier: ;
         char* start = &IdBuffer[IdBufferIndex];
         char* pc = start;
-        unsigned Hash = HASHINIT*HASHMUL+(*pc++ = TokenType);
+        unsigned Hash = (*pc++ = TokenType);
         while ((IsIdChar[(unsigned char)CurChar>>3]>>(CurChar&7)) & 1) {
-            Hash = Hash*HASHMUL+(*pc++ = CurChar);
+            Hash += (Hash<<4)+(*pc++ = CurChar);
             if ((CurChar = *InBufPtr++))
                 continue;
             --InBufPtr;
@@ -3366,11 +3362,11 @@ void AddBuiltins(const char* s)
     char ch;
     do {
         const int Id = IdCount++;
-        unsigned Hash = HASHINIT;
+        unsigned Hash = 0;
         IdText[Id] = &IdBuffer[IdBufferIndex];
         while ((ch = *s++) > ' ') {
             IdBuffer[IdBufferIndex++] = ch;
-            Hash = Hash*HASHMUL+ch;
+            Hash += (Hash<<4)+ch;
         }
         IdBuffer[IdBufferIndex++] = 0;
         int i = 0;
