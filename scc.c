@@ -1020,6 +1020,7 @@ enum {
     I_XCHG_AX        = 0x90,
     I_MOV_R_IMM16    = 0xB8,
     I_STOSB          = 0xAA,
+    I_LODSB          = 0xAC,
     I_RET            = 0xC3,
     I_JMP_REL16      = 0xE9,
     I_JMP_REL8       = 0xEB,
@@ -1076,7 +1077,8 @@ int MakeLabel(void)
 {
     if (LocalLabelCounter == LABEL_MAX) Fail();
     const int l = LocalLabelCounter++;
-    memset(&Labels[l], 0, sizeof(struct Label));
+    Labels[l].Addr = 0;
+    Labels[l].Ref = 0;
     return l;
 }
 
@@ -1237,7 +1239,7 @@ void EmitLoadAx(int Size, int Loc, int Val)
 {
     switch (Loc) {
     case 0:
-        Output1Byte(0xAC-1+Size); // LODS
+        Output1Byte(I_LODSB-1+Size);
         break;
     case VT_LOCGLOB:
         Output1Byte(0xA0-1+Size);
@@ -1565,23 +1567,23 @@ void LvalToRval(void)
             struct ArrayDecl* AD = &ArrayDecls[CurrentTypeExtra];
             CurrentType = AD->Type + VT_PTR1;
             CurrentTypeExtra = AD->TypeExtra;
+LoadAddrRet:
             if (loc)
                 EmitLoadAddr(R_AX, loc, CurrentVal);
             return;
         }
 
         if (CurrentType & VT_FUNPTR) {
-            if (loc)
-                EmitLoadAddr(R_AX, loc, CurrentVal);
-            return;
+            goto LoadAddrRet;
         }
 
-        const int sz = ((CurrentType&~VT_UNSIGNED) != VT_CHAR) + 1;
+        const int sz = (CurrentType&~VT_UNSIGNED) != VT_CHAR;
         if (!loc) {
-            Output1Byte(I_XCHG_AX|R_SI);
+            Output2Bytes(I_XCHG_AX|R_SI, I_LODSB|sz);
+        } else {
+            EmitLoadAx(sz+1, loc, CurrentVal);
         }
-        EmitLoadAx(sz, loc, CurrentVal);
-        if (sz == 1) {
+        if (!sz) {
             EmitExtend(CurrentType&VT_UNSIGNED);
             CurrentType = VT_INT;
         }
@@ -1674,16 +1676,15 @@ void HandlePrimaryId(int id)
         return;
     }
     struct VarDecl* vd = &VarDecls[idx];
-    CurrentType      = vd->Type;
-    CurrentVal       = vd->Offset;
-    if (CurrentType == (VT_LOCLIT | VT_INT)) {
+    CurrentVal = vd->Offset;
+    switch ((CurrentType = vd->Type | VT_LVAL) & VT_LOCMASK) {
+    case VT_LOCLIT:
+        CurrentType = VT_LOCLIT|VT_INT;
         return;
-    }
-    CurrentTypeExtra = vd->TypeExtra;
-    if ((CurrentType & VT_LOCMASK) == VT_LOCGLOB) {
+    case VT_LOCGLOB:
         CurrentVal = idx;
     }
-    CurrentType |= VT_LVAL;
+    CurrentTypeExtra = vd->TypeExtra;
 }
 
 void ParseExpr(void);
@@ -3406,7 +3407,7 @@ int main(int argc, char** argv)
         " short signed sizeof static struct switch typedef union unsigned"
         " void volatile while va_list va_start va_end va_arg _emit _start"
         " _SBSS _EBSS");
-    if (IdCount+TOK_KEYWORD-1 != TOK__EBSS) Fail();
+    if (IdCount != TOK__EBSS-TOK_KEYWORD+1) Fail();
 
     // Prelude
     Output2Bytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP);
@@ -3419,7 +3420,6 @@ int main(int argc, char** argv)
     struct VarDecl* EBSS = AddVarDecl(TOK__EBSS-TOK_KEYWORD);
 
     InBufPtr = InBuf;
-    NextChar();
     GetToken();
     while (TokenType != TOK_EOF) {
         ParseExternalDefition();

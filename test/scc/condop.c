@@ -48,4 +48,34 @@ void main()
     const char* d = c ? c : "XY";
     assert_eq(d[0], 'X');
     assert_eq(d[1], 'Y');
+
+    int m1 = -1;
+    int zr = 0;
+    int p1 = 1;
+    assert_eq(m1 <  0, 1);
+    assert_eq(zr <  0, 0);
+    assert_eq(p1 <  0, 0);
+    assert_eq(m1 <= 0, 1);
+    assert_eq(zr <= 0, 1);
+    assert_eq(p1 <= 0, 0);
+    assert_eq(m1 == 0, 0);
+    assert_eq(zr == 0, 1);
+    assert_eq(p1 == 0, 0);
+    assert_eq(m1 != 0, 1);
+    assert_eq(zr != 0, 0);
+    assert_eq(p1 != 0, 1);
+    assert_eq(m1 >= 0, 0);
+    assert_eq(zr >= 0, 1);
+    assert_eq(p1 >= 0, 1);
+    assert_eq(m1 >  0, 0);
+    assert_eq(zr >  0, 0);
+    assert_eq(p1 >  0, 1);
+
+    unsigned u1 = 0x8000;
+    assert_eq(u1 <  0, 0);
+    assert_eq(u1 <= 0, 0);
+    assert_eq(u1 == 0, 0);
+    assert_eq(u1 != 0, 1);
+    assert_eq(u1 >= 0, 1);
+    assert_eq(u1 >  0, 1);
 }
