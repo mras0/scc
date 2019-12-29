@@ -882,7 +882,7 @@ int main(int argc, char** argv)
         } else if (inst >= 0xb0 && inst < 0xb8) {
             dsize = 0;
             WriteReg(inst-0xb0, ReadIByte());
-            if (verbose) sprintf(insttext, "MOV %s, 0x%02X", RegName(inst-0xb0), ReadReg(inst-0xb0));
+            if (verbose) sprintf(insttext, "MOV %s, 0x%02X", RegName(inst-0xb0), ReadReg(inst-0xb0)&0xff);
         } else if (inst >= 0xb8 && inst < 0xc0) {
             const int r = inst-0xb8;
             reg[r] = Imm16();
@@ -1079,6 +1079,11 @@ int main(int argc, char** argv)
                     const int v = ReadRM();
                     // TODO: Handle flags
                     switch (modrm>>3&7) {
+                    case 4: // SHL R/M16, 1
+                        if (verbose) sprintf(insttext, "SHL %s, 1", rmtext);
+                        WriteRM(v<<1);
+                        flags = (flags&~FC) | (v&0x8000);
+                        break;
                     case 5: // SHR R/M16, 1
                         if (verbose) sprintf(insttext, "SHR %s, 1", rmtext);
                         WriteRM((v >> 1)&0x7fff);
@@ -1147,9 +1152,10 @@ int main(int argc, char** argv)
                         if (verbose) sprintf(insttext, "NEG %s", rmtext);
                         WriteRM(-ReadRM());
                         break;
+                    case 4: // MUL (TODO: Full 32-bit result)
                     case 5: // IMUL (TODO: Full 32-bit result)
                         {
-                            if (verbose) sprintf(insttext, "IMUL %s", rmtext);
+                            if (verbose) sprintf(insttext, "%sMUL %s", modrm&8?"I":"", rmtext);
                             const unsigned int m = ReadRM();
                             reg[R_AX] *= m;
                             reg[R_DX] = 0;
@@ -1197,7 +1203,7 @@ int main(int argc, char** argv)
                         ip = ReadRM();
                         break;
                     default:
-                        Fatal("TODO: %02X/%X", inst ,modrm>>3&7);
+                        Fatal("TODO: %02X/%X", inst, modrm>>3&7);
                     }
                 }
                 break;

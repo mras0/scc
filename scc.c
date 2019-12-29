@@ -194,7 +194,7 @@ enum {
     ID_MAX = 580,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
     IDBUFFER_MAX = 5200,
-    LABEL_MAX = 300,
+    LABEL_MAX = 320,
     NAMED_LABEL_MAX = 8,
     OUTPUT_MAX = 0x6000,    // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
     STRUCT_MAX = 8,
@@ -1256,7 +1256,7 @@ void EmitScaleAx(int Scale)
 {
     if (Scale & (Scale-1)) {
         EmitMovRImm(R_CX, Scale);
-        Output2Bytes(0xF7, MODRM_REG|(5<<3)|R_CX); // IMUL CX
+        Output2Bytes(0xF7, MODRM_REG|(4<<3)|R_CX); // MUL CX
     } else {
         while (Scale >>= 1) {
             Output2Bytes(I_ADD|1, MODRM_REG);
@@ -2097,7 +2097,7 @@ void FinishOp(int Inst)
     }
 }
 
-// Emit: AX <- AX 'OP' CX, Must preserve BX.
+// Emit: AX <- AX 'OP' CX
 void DoBinOp(int Op)
 {
     int Inst = GetSimpleALU(Op);
@@ -2105,9 +2105,9 @@ void DoBinOp(int Op)
     if (Inst)
         goto HasInst;
     if (Op == '*') {
-        // IMUL : F7 /5
+        // MUL : F7 /4
         Inst = 0xF7;
-        RM = MODRM_REG | (5<<3) | R_CX;
+        RM = MODRM_REG|(4<<3)|R_CX;
     } else if (Op == '/' || Op == '%') {
         EmitDivCX();
         if (Op == '%') {
