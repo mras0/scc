@@ -736,11 +736,10 @@ void GetToken(void)
 
     if (TokenType < 'A') {
         if ((unsigned)(TokenType - '0') < 10) {
-            TokenNumVal = TokenType - '0';
             int base = 10;
-            if (!TokenNumVal) {
+            if (!(TokenNumVal = TokenType - '0')) {
                 base = 8;
-                if (CurChar == 'x' || CurChar == 'X') {
+                if ((CurChar&0xDF) == 'X') {
                     base = 16;
                     NextChar();
                 }
@@ -2160,7 +2159,10 @@ void DoRhsConstBinOp(int Op)
         Output3Bytes(Inst|5, CurrentVal, CurrentVal>>8);
         FinishOp(Inst);
     } else {
-        EmitMovRImm(R_CX, CurrentVal);
+        if (Op&0x80) // Shift op?
+            Output2Bytes(0xB1, CurrentVal); // MOV CL, CurrentVal
+        else
+            EmitMovRImm(R_CX, CurrentVal);
         DoBinOp(Op);
     }
 }
