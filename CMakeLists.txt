@@ -46,6 +46,20 @@ add_custom_command(
     )
 add_custom_target(sim86_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sim86.com")
 
+# Productivity software :)
+add_custom_command(
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/swar.com"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/lib.h" .
+        COMMAND $<TARGET_FILE:scpp> "${CMAKE_CURRENT_SOURCE_DIR}/swar.c" ./swar.i
+        COMMAND $<TARGET_FILE:scc>  swar.i swar.com
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/swar.c" "${CMAKE_CURRENT_SOURCE_DIR}/lib.h" scc scpp
+    )
+add_custom_target(swar_com ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/swar.com")
+if (WIN32)
+    add_executable(swar swar.c lib.h)
+endif()
+
 add_subdirectory(test)
 
 set(MAKE_DISKS FALSE CACHE BOOL "Build disk images? (Downloads SASM)")
@@ -108,6 +122,7 @@ if (MAKE_DISKS)
         "${PROJECT_BINARY_DIR}/scpp.com"
         "${PROJECT_BINARY_DIR}/sas.com"
         "${PROJECT_BINARY_DIR}/sim86.com"
+        "${PROJECT_BINARY_DIR}/swar.com"
         "${CMAKE_CURRENT_BINARY_DIR}/build.bat"
         "${CMAKE_CURRENT_SOURCE_DIR}/scc.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/scpp.c"
@@ -118,6 +133,7 @@ if (MAKE_DISKS)
     MAKEDISK(small 360 ${SMALL_CONTENTS})
     MAKEDISK(large 1440
         ${SMALL_CONTENTS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/swar.c"
         "${SOURCE_DIR}/strap.bat"
         "${SOURCE_DIR}/sasm.asm"
         "${SOURCE_DIR}/boot.asm"

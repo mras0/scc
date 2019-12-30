@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <assert.h>
+#include <time.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -322,6 +323,15 @@ void FarPoke(int seg, int off, int val)
     _emit 0x8A _emit 0x46 _emit 0x08    // MOV AL, [BP+8]
     _emit 0xAA                          // STOSB
     _emit 0x07                          // POP ES
+}
+
+int clock()
+{
+    _emit 0x31 _emit 0xC0              // XOR  AX, AX
+    _emit 0x8E _emit 0xD8              // MOV  DS, AX
+    _emit 0xA1 _emit 0x6C _emit 0x04   // MOV  AX, [0x46C]
+    _emit 0x0E                         // PUSH CS
+    _emit 0x1F                         // POP  DS
 }
 
 void assert(int res)
