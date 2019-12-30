@@ -193,7 +193,7 @@ enum {
     VARDECL_MAX = 380,
     ID_MAX = 580,
     ID_HASHMAX = 1024,      // Must be power of 2 and (some what) greater than ID_MAX
-    IDBUFFER_MAX = 5200,
+    IDBUFFER_MAX = 5000,
     LABEL_MAX = 320,
     NAMED_LABEL_MAX = 8,
     OUTPUT_MAX = 0x6000,    // Always try to reduce this if something fails unexpectedly... ~600bytes of stack is needed.
@@ -266,7 +266,7 @@ enum {
     TOK_ARROW,
 
     TOK_KEYWORD,
-    // NOTE: Must match order of registration in main
+    // NOTE: Must match order of registration in AddBuiltins
     TOK_AUTO = TOK_KEYWORD,
     TOK_BREAK,
     TOK_CASE,
@@ -390,7 +390,7 @@ char OperatorPrecedence;
 char IdBuffer[IDBUFFER_MAX];
 int IdBufferIndex;
 
-char* IdText[ID_MAX];
+const char* IdText[ID_MAX];
 int IdHashTab[ID_HASHMAX];
 int IdCount;
 
@@ -664,6 +664,7 @@ char Unescape(void)
     case '\'': return '\'';
     case '"':  return '"';
     case '\\': return '\\';
+    case '0':  return 0; // TODO: Handle all octal escape sequences
     case 'x':  break;
     default: Fail();
     }
@@ -1954,12 +1955,9 @@ void ParsePostfixExpression(void)
             continue;
         case TOK_PLUSPLUS:
         case TOK_MINUSMINUS:
-            {
-                int Op = TokenType;
-                GetToken();
-                DoIncDecOp(Op, 1);
-                continue;
-            }
+            DoIncDecOp(TokenType, 1);
+            GetToken();
+            continue;
         }
         return;
     }
@@ -3358,28 +3356,33 @@ int OpenOutput(void)
     return OutFile;
 }
 
-void AddBuiltins(const char* s)
+void AddBuiltins()
 {
-    char ch;
+    const char* s =
+        "auto\0break\0case\0char\0const\0continue\0default\0do\0double\0"
+        "else\0enum\0extern\0float\0for\0goto\0if\0int\0long\0"
+        "register\0return\0short\0signed\0sizeof\0static\0struct\0"
+        "switch\0typedef\0union\0unsigned\0void\0volatile\0while\0"
+        "va_list\0va_start\0va_end\0va_arg\0_emit\0_start\0_SBSS\0"
+        "_EBSS\0";
+
     do {
-        const int Id = IdCount++;
+        IdText[IdCount] = s;
         unsigned Hash = 0;
-        IdText[Id] = &IdBuffer[IdBufferIndex];
-        while ((ch = *s++) > ' ') {
-            IdBuffer[IdBufferIndex++] = ch;
-            Hash += (Hash<<4)+ch;
+        while (*s) {
+            Hash += (Hash<<4)+*s++;
         }
-        IdBuffer[IdBufferIndex++] = 0;
         int i = 0;
         for (;;) {
             Hash &= ID_HASHMAX-1;
             if (IdHashTab[Hash] == -1) {
-                IdHashTab[Hash] = Id;
+                IdHashTab[Hash] = IdCount++;
                 break;
             }
             Hash += 1 + i++;
         }
-    } while(ch);
+    } while (*++s);
+    if (IdCount != TOK__EBSS-TOK_KEYWORD+1) Fail();
 }
 
 int main(int argc, char** argv)
@@ -3402,12 +3405,7 @@ int main(int argc, char** argv)
     memset(IdHashTab, -1, sizeof(IdHashTab));
     memset(VarLookup, -1, sizeof(VarLookup));
 
-    AddBuiltins("auto break case char const continue default do double"
-        " else enum extern float for goto if int long register return"
-        " short signed sizeof static struct switch typedef union unsigned"
-        " void volatile while va_list va_start va_end va_arg _emit _start"
-        " _SBSS _EBSS");
-    if (IdCount != TOK__EBSS-TOK_KEYWORD+1) Fail();
+    AddBuiltins();
 
     // Prelude
     Output2Bytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP);
