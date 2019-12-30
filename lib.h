@@ -296,7 +296,32 @@ int strlen(const char* s)
 
 int* GetBP(void)
 {
-    _emit 0x8B _emit 0x46 _emit 0x00 // MOV AX, [BP]
+    _emit 0x8B _emit 0x46 _emit 0x00    // MOV AX, [BP]
+}
+
+int GetDS(void)
+{
+    _emit 0x8C _emit 0xD8               // MOV AX, DS
+}
+
+int FarPeek(int seg, int off)
+{
+    _emit 0x1E                          // PUSH DS
+    _emit 0x8E _emit 0x5E _emit 0x04    // MOV DS, [BP+4]
+    _emit 0x8B _emit 0x76 _emit 0x06    // MOV SI, [BP+6]
+    _emit 0xAC                          // LODSB
+    _emit 0x30 _emit 0xE4               // XOR AH, AH
+    _emit 0x1F                          // POP DS
+}
+
+void FarPoke(int seg, int off, int val)
+{
+    _emit 0x06                          // PUSH ES
+    _emit 0x8E _emit 0x46 _emit 0x04    // MOV ES, [BP+4]
+    _emit 0x8B _emit 0x7E _emit 0x06    // MOV DI, [BP+6]
+    _emit 0x8A _emit 0x46 _emit 0x08    // MOV AL, [BP+8]
+    _emit 0xAA                          // STOSB
+    _emit 0x07                          // POP ES
 }
 
 void assert(int res)

@@ -180,34 +180,6 @@ void PrintState(void)
     dsize = old;
 }
 
-#ifdef __SCC__
-int GetDS(void)
-{
-    _emit 0x8C _emit 0xD8               // MOV AX, DS
-}
-
-int FarPeek(int seg, int off)
-{
-    _emit 0x1E                         // PUSH DS
-    _emit 0x8E _emit 0x5E _emit 0x04   // MOV DS, [BP+4]
-    _emit 0x8B _emit 0x5E _emit 0x06   // MOV BX, [BP+6]
-    _emit 0x8A _emit 0x07              // MOV AL, [BX]
-    _emit 0x30 _emit 0xE4              // XOR AH, AH
-    _emit 0x1F                         // POP DS
-}
-
-void FarPoke(int seg, int off, int val)
-{
-    _emit 0x1E                         // PUSH DS
-    _emit 0x8E _emit 0x5E _emit 0x04   // MOV DS, [BP+4]
-    _emit 0x8B _emit 0x5E _emit 0x06   // MOV BX, [BP+6]
-    _emit 0x8A _emit 0x46 _emit 0x08   // MOV AL, [BP+8]
-    _emit 0x88 _emit 0x07              // MOV [BX], AL
-    _emit 0x1F                         // POP DS
-}
-#endif
-
-
 int Read8(int sr, int off)
 {
 #ifdef PROFILING
