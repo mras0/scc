@@ -2302,10 +2302,13 @@ void HandleCondOp(void)
     }
 }
 
-
 void HandleLhsLvalLoc(int LhsLoc)
 {
-    if (!LhsLoc) {
+    switch (LhsLoc) {
+    case VT_LOCOFF:
+    case VT_LOCGLOB:
+        return;
+    case 0:
         if (Pending & PENDING_PUSHAX) {
             Pending &= ~PENDING_PUSHAX;
             Output1Byte(I_XCHG_AX|R_DI);
@@ -2313,9 +2316,9 @@ void HandleLhsLvalLoc(int LhsLoc)
             Output1Byte(I_POP|R_DI);
             LocalOffset += 2;
         }
-    } else {
-        if (LhsLoc != VT_LOCOFF && LhsLoc != VT_LOCGLOB) Fail();
+        return;
     }
+    Fail();
 }
 
 void ParseExpr1(int OuterPrecedence)
@@ -3203,7 +3206,7 @@ void ParseExternalDefition(void)
     if (!vd)
         goto End;
 
-    CurrentType = vd->Type &= ~VT_STATIC;
+    vd->Type &= ~VT_STATIC;
 
     if (vd->Type & VT_FUN) {
         vd->Type |= VT_LOCGLOB;
@@ -3288,23 +3291,20 @@ End:
 void MakeOutputFilename(const char* n, const char* ext)
 {
     char* dest = IdBuffer;
-    char* LastDot;
-    LastDot = 0;
+    char* LastDot = 0;
     while (*n) {
         if (*n == '.')
             LastDot = dest;
         *dest++ = *n++;
     }
-    if (!LastDot) LastDot = dest;
-    CopyStr(LastDot, ext);
+    CopyStr(LastDot ? LastDot : dest, ext);
 }
 
 int OpenOutput(void)
 {
     const int OutFile = open(IdBuffer, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
-    if (OutFile < 0) {
+    if (OutFile < 0)
         Fatal("Error creating output file");
-    }
     return OutFile;
 }
 
@@ -3364,9 +3364,8 @@ int main(int argc, char** argv)
 
     InBufPtr = InBuf;
     GetToken();
-    while (TokenType) {
+    while (TokenType)
         ParseExternalDefition();
-    }
     close(InFile);
     if (ScopesCount != 1) Fail();
 
@@ -3374,8 +3373,7 @@ int main(int argc, char** argv)
     struct VarDecl* vd = VarDecls;
     struct VarDecl* end = &VarDecls[*Scopes];
     for (; vd != end; ++vd) {
-        CurrentType = vd->Type;
-        if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB || vd->Offset || vd == EBSS)
+        if (((CurrentType = vd->Type) & VT_LOCMASK) != VT_LOCGLOB || vd->Offset || vd == EBSS)
             continue;
         if (CurrentType & VT_FUN) {
             Printf("%s is undefined\n", IdText[vd->Id]);
