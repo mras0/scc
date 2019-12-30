@@ -371,7 +371,7 @@ unsigned char* TokenStrLit;
 char OperatorPrecedence;
 
 char IdBuffer[IDBUFFER_MAX];
-int IdBufferIndex;
+char* IdBufPtr;
 
 const char* IdText[ID_MAX];
 int IdHashTab[ID_HASHMAX];
@@ -717,8 +717,7 @@ void GetToken(void)
         }
     } else if ((TokenType & 0xDF) <= 'Z') {
     Identifier: ;
-        char* start = &IdBuffer[IdBufferIndex];
-        char* pc = start;
+        char* pc = IdBufPtr;
         unsigned Hash = (*pc++ = TokenType);
         while ((IsIdChar[(unsigned char)CurChar>>3]>>(CurChar&7)) & 1) {
             Hash += (Hash<<4)+(*pc++ = CurChar);
@@ -734,12 +733,12 @@ void GetToken(void)
             if ((TokenType = IdHashTab[Hash]) == -1) {
                 if (IdCount == ID_MAX) Fail();
                 TokenType = IdHashTab[Hash] = IdCount++;
-                IdText[TokenType] = start;
-                IdBufferIndex += (int)(pc - start);
-                if (IdBufferIndex > IDBUFFER_MAX) Fail();
+                IdText[TokenType] = IdBufPtr;
+                IdBufPtr = pc;
+                if (IdBufPtr-IdBuffer > IDBUFFER_MAX) Fail();
                 break;
             }
-            if (memcmp(start, IdText[TokenType], pc - start)) {
+            if (memcmp(IdBufPtr, IdText[TokenType], pc - IdBufPtr)) {
                 Hash += 1 + Slot++;
                 continue;
             }
@@ -1163,13 +1162,12 @@ void EmitGlobalLabel(struct VarDecl* vd)
     IsDeadCode = 0;
     DoFixups(vd->Ref, vd->Type & VT_FUN);
 
-    char* Buf = &IdBuffer[IdBufferIndex];
-    char* P = CvtHex(Buf, CodeAddress);
+    char* P = CvtHex(IdBufPtr, CodeAddress);
     *P++ = ' ';
     P = CopyStr(P, vd->Id == -2 ? StaticName : IdText[vd->Id]);
     *P++ = '\r';
     *P++ = '\n';
-    write(MapFile, Buf, (int)(P - Buf));
+    write(MapFile, IdBufPtr, (int)(P - IdBufPtr));
 }
 
 void EmitGlobalRef(struct VarDecl* vd)
@@ -3357,6 +3355,7 @@ int main(int argc, char** argv)
     MakeOutputFilename(argv[2] ? argv[2] : argv[1], ".map");
     MapFile = OpenOutput();
 
+    IdBufPtr = IdBuffer;
     memset(IdHashTab, -1, sizeof(IdHashTab));
 
     AddBuiltins();
