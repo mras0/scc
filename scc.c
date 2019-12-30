@@ -727,7 +727,6 @@ void GetToken(void)
             NextChar();
         }
         *pc++ = 0;
-        int Slot = 0;
         for (;;) {
             Hash &= ID_HASHMAX-1;
             if ((TokenType = IdHashTab[Hash]) == -1) {
@@ -739,7 +738,7 @@ void GetToken(void)
                 break;
             }
             if (memcmp(IdBufPtr, IdText[TokenType], pc - IdBufPtr)) {
-                Hash += 1 + Slot++;
+                ++Hash;
                 continue;
             }
             break;
@@ -3322,18 +3321,11 @@ void AddBuiltins()
     do {
         IdText[IdCount] = s;
         unsigned Hash = 0;
-        while (*s) {
+        while (*s)
             Hash += (Hash<<4)+*s++;
-        }
-        int i = 0;
-        for (;;) {
-            Hash &= ID_HASHMAX-1;
-            if (IdHashTab[Hash] == -1) {
-                IdHashTab[Hash] = IdCount++;
-                break;
-            }
-            Hash += 1 + i++;
-        }
+        while (IdHashTab[Hash &= ID_HASHMAX-1] != -1)
+            ++Hash;
+        IdHashTab[Hash] = IdCount++;
     } while (*++s);
     if (IdCount != TOK__EBSS-TOK_KEYWORD+1) Fail();
 }
@@ -3362,8 +3354,8 @@ int main(int argc, char** argv)
 
     // Prelude
     Output2Bytes(I_XOR|1, MODRM_REG|R_BP<<3|R_BP);
-    CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
     Output1Byte(I_JMP_REL16);
+    CurrentType = VT_FUN|VT_VOID|VT_LOCGLOB;
     EmitGlobalRefRel(AddVarDecl(TOK__START-TOK_KEYWORD));
 
     CurrentType = VT_CHAR|VT_LOCGLOB;
@@ -3372,7 +3364,7 @@ int main(int argc, char** argv)
 
     InBufPtr = InBuf;
     GetToken();
-    while (TokenType != TOK_EOF) {
+    while (TokenType) {
         ParseExternalDefition();
     }
     close(InFile);
@@ -3382,8 +3374,7 @@ int main(int argc, char** argv)
     struct VarDecl* vd = VarDecls;
     struct VarDecl* end = &VarDecls[*Scopes];
     for (; vd != end; ++vd) {
-        CurrentType      = vd->Type;
-        CurrentTypeExtra = vd->TypeExtra;
+        CurrentType = vd->Type;
         if ((CurrentType & VT_LOCMASK) != VT_LOCGLOB || vd->Offset || vd == EBSS)
             continue;
         if (CurrentType & VT_FUN) {
@@ -3391,7 +3382,7 @@ int main(int argc, char** argv)
             Fatal("Undefined function");
         }
         EmitGlobalLabel(vd);
-        CodeAddress += SizeofCurrentType();
+        CodeAddress += SizeofType(CurrentType, vd->TypeExtra);
     }
     if (CodeAddress - SBSS->Offset != BssSize) Fail();
     EmitGlobalLabel(EBSS);
