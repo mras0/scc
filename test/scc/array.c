@@ -2,6 +2,7 @@ char gc[3];
 int gi[2];
 
 char str1[] = "Test";
+unsigned char str2[] = "Xy\x81";
 
 int g2[2][3];
 
@@ -108,4 +109,10 @@ void main(void)
     assert_eq(sizeof(arr3[0][0][0]), sizeof(int));
     arr3[1][1][1] = 123;
     assert_eq(arr3[1][1][1], 123);
+
+    assert_eq(sizeof(str2), 4);
+    assert_eq(str2[0], 'X');
+    assert_eq(str2[1], 'y');
+    assert_eq(str2[2], 0x81);
+    assert_eq(str2[3], 0);
 }

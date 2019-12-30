@@ -3271,7 +3271,7 @@ void ParseExternalDefition(void)
             case VT_LVAL|VT_ARRAY:
                 {
                     struct ArrayDecl* AD = &ArrayDecls[vd->TypeExtra];
-                    if (AD->Type != VT_CHAR) Fail();
+                    if ((AD->Type & ~VT_UNSIGNED) != VT_CHAR) Fail();
                     if (AD->Bound) Fail(); // TODO
                     AD->Bound = ArrayDecls[CurrentTypeExtra].Bound;
                     if (CurrentTypeExtra != ArrayCount-1) Fail();
