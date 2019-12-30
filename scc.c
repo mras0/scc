@@ -1196,7 +1196,7 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
         Output3Bytes(Inst, MODRM_BP_DISP8|R, Val);
         if (Val != (char)Val && !IsDeadCode) {
             Output[CodeAddress-(CODESTART+2)] += MODRM_BP_DISP16-MODRM_BP_DISP8;
-            Output1Byte(Val >> 8);
+            Output1Byte(Val>>8);
         }
         return;
     case VT_LOCGLOB:
@@ -1242,7 +1242,7 @@ void EmitStoreConst(int Size, int Loc, int Val)
     EmitModrm(0xc6-1+Size, 0, Loc, Val);
     Output1Byte(CurrentVal);
     if (Size == 2)
-        Output1Byte(CurrentVal >> 8);
+        Output1Byte(CurrentVal>>8);
 }
 
 void EmitAddRegConst(int r, int Amm)
@@ -1284,8 +1284,8 @@ void EmitScaleAx(int Scale)
         EmitMovRImm(R_CX, Scale);
         Output2Bytes(0xF7, MODRM_REG|(4<<3)|R_CX); // MUL CX
     } else {
-        while (Scale >>= 1) {
-            Output2Bytes(I_ADD|1, MODRM_REG);
+        while (Scale /= 2) {
+            Output2Bytes(0xD1, MODRM_REG|SHROT_SHL<<3);
         }
     }
 }
@@ -1307,7 +1307,7 @@ void EmitDivAxConst(int Amm)
         EmitDivCX();
     } else {
         const int ModRM = IsUnsignedOp ? MODRM_REG|SHROT_SHR<<3 : MODRM_REG|SHROT_SAR<<3;
-        while (Amm >>= 1) {
+        while (Amm /= 2) {
             Output2Bytes(0xD1, ModRM);
         }
     }
@@ -1773,13 +1773,13 @@ void ParsePostfixExpression(void)
                 while (TokenType != ')') {
                     if (!(ArgSize & (ArgChunkSize-1))) {
                         FlushPushAx();
-                        LocalOffset  -= ArgChunkSize;
+                        LocalOffset -= ArgChunkSize;
                         Pending -= ArgChunkSize;
                         if (ArgSize) {
                             // Move arguments to new stack top
                             EmitModrm(I_LEA, R_SI, VT_LOCOFF, LocalOffset + ArgChunkSize);
                             EmitModrm(I_LEA, R_DI, VT_LOCOFF, LocalOffset);
-                            EmitMovRImm(R_CX, ArgSize>>1);
+                            EmitMovRImm(R_CX, ArgSize/2);
                             Output2Bytes(0xF3, 0xA5); // REP MOVSW
                         }
                     }
@@ -1799,7 +1799,7 @@ void ParsePostfixExpression(void)
                     break;
                 }
                 Expect(')');
-                ArgSize = ((ArgSize+ArgChunkSize-1)&-ArgChunkSize);
+                ArgSize = (ArgSize+(ArgChunkSize-1))&-ArgChunkSize;
                 if (Func) {
                     Output1Byte(0xE8); // CALL re16
                     EmitGlobalRefRel(Func);
