@@ -343,7 +343,7 @@ struct VarDecl {
     int TypeExtra;
     int Offset;
     int Ref; // Fixup address list for globals
-    int Prev;
+    struct VarDecl* Prev;
 };
 
 struct Argument {
@@ -387,7 +387,7 @@ struct ArrayDecl ArrayDecls[ARRAY_MAX];
 int ArrayCount;
 
 struct VarDecl VarDecls[VARDECL_MAX];
-int VarLookup[ID_MAX];
+struct VarDecl* VarLookup[ID_MAX];
 int IgnoreRedef;
 
 int Scopes[SCOPE_MAX]; // -> Next free VarDecl index (conversely one more than index of last defined variable/id)
@@ -1458,15 +1458,11 @@ int ExpectId(void)
 
 struct VarDecl* LookupTypedef(void)
 {
-    if (TokenType >= TOK_ID) {
-        int VI = VarLookup[TokenType - TOK_KEYWORD];
-        if (VI >= 0) {
-            struct VarDecl* VD = &VarDecls[VI];
-            if (VD->Type & VT_TYPEDEF) {
-                return VD;
-            }
-        }
-    }
+    if (TokenType < TOK_ID)
+        return 0;
+    struct VarDecl* VD = VarLookup[TokenType - TOK_KEYWORD];
+    if (VD && VD->Type & VT_TYPEDEF)
+        return VD;
     return 0;
 }
 
@@ -1612,52 +1608,48 @@ struct VarDecl* AddVarDeclScope(int Scope, int Id)
 
 struct VarDecl* AddVarDecl(int Id)
 {
-    const int idx = Scopes[ScopesCount-1];
-    if (idx >= VARDECL_MAX) Fail();
+    if (Scopes[ScopesCount-1] >= VARDECL_MAX) Fail();
 
     // Check if definition/re-declaration in global scope
-    int *C = &VarLookup[Id];
-    if (!IgnoreRedef) {
-        if (*C >= 0) {
-            return &VarDecls[*C];
-        }
+    struct VarDecl* Prev = VarLookup[Id];
+    if (!IgnoreRedef && Prev) {
+        return Prev;
     }
 
-    VarDecls[idx].Prev = *C;
-    *C = idx;
-    return AddVarDeclScope(ScopesCount-1, Id);
+    struct VarDecl* VD = AddVarDeclScope(ScopesCount-1, Id);
+    VD->Prev = Prev;
+    VarLookup[Id] = VD;
+    return VD;
 }
 
 struct VarDecl* AddLateGlobalVar(int Id)
 {
-    CurrentVal = Scopes[0];
-    if (CurrentVal >= Scopes[1]) Fail();
+    if ((CurrentVal = Scopes[0]) >= Scopes[1]) Fail();
     return AddVarDeclScope(0, Id);
 }
 
 void HandlePrimaryId(int id)
 {
-    const int idx = VarLookup[id];
-    if (idx < 0) {
+    struct VarDecl* vd = VarLookup[id];
+    if (!vd) {
         // Lookup failed. Assume function returning int.
         CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
         CurrentTypeExtra = 0;
         if (IsDeadCode) {
             CurrentVal = 0;
         } else {
-            VarLookup[id] = Scopes[0];
+            VarLookup[id] = &VarDecls[Scopes[0]];
             AddLateGlobalVar(id);
         }
         return;
     }
-    struct VarDecl* vd = &VarDecls[idx];
     CurrentVal = vd->Offset;
     switch ((CurrentType = vd->Type | VT_LVAL) & VT_LOCMASK) {
     case VT_LOCLIT:
         CurrentType = VT_LOCLIT|VT_INT;
         return;
     case VT_LOCGLOB:
-        CurrentVal = idx;
+        CurrentVal = vd - VarDecls;
     }
     CurrentTypeExtra = vd->TypeExtra;
 }
@@ -1672,15 +1664,15 @@ void HandleVarArg(void)
     GetToken();
     Expect('(');
     int id = ExpectId();
-    int vd = VarLookup[id];
-    if (vd < 0 || VarDecls[vd].Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) Fail();
-    const int offset = VarDecls[vd].Offset;
+    struct VarDecl* vd = VarLookup[id];
+    if (!vd || vd->Type != (VT_LOCOFF|VT_CHAR|VT_PTR1)) Fail();
+    const int offset = vd->Offset;
     if (func == TOK_VA_START) {
         Expect(',');
         id = ExpectId();
         vd = VarLookup[id];
-        if (vd < 0 || (VarDecls[vd].Type & VT_LOCMASK) != VT_LOCOFF) Fail();
-        EmitModrm(I_LEA, R_AX, VT_LOCOFF, VarDecls[vd].Offset);
+        if (!vd || (vd->Type & VT_LOCMASK) != VT_LOCOFF) Fail();
+        EmitModrm(I_LEA, R_AX, VT_LOCOFF, vd->Offset);
         EmitStoreAx(2, VT_LOCOFF, offset);
     } else if (func == TOK_VA_ARG) {
         Expect(',');
@@ -3377,7 +3369,6 @@ int main(int argc, char** argv)
     MapFile = OpenOutput();
 
     memset(IdHashTab, -1, sizeof(IdHashTab));
-    memset(VarLookup, -1, sizeof(VarLookup));
 
     AddBuiltins();
 
