@@ -664,15 +664,26 @@ char Unescape(void)
     case '\'': return '\'';
     case '"':  return '"';
     case '\\': return '\\';
-    case '0':  return 0; // TODO: Handle all octal escape sequences
-    case 'x':  break;
-    default: Fail();
+    case 'x':
+        {
+            ch = GetDigit()<<4;
+            NextChar();
+            ch |= GetDigit();
+            NextChar();
+            if (ch&0xff00) Fail();
+            return ch;
+        }
     }
-    ch = GetDigit()<<4;
-    NextChar();
-    ch |= GetDigit();
-    NextChar();
-    if (ch&0xff00) Fail();
+    if ((unsigned)(ch -= '0') > 7) Fail();
+    unsigned d = GetDigit();
+    if (d < 8) {
+        ch = ch<<3 | d;
+        NextChar();
+        if ((d = GetDigit()) < 8) {
+            ch = ch<<3 | d;
+            NextChar();
+        }
+    }
     return ch;
 }
 

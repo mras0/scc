@@ -40,4 +40,16 @@ void main() {
     assert_eq(s2[2], '2');
     assert_eq(s2[3], '3');
     assert_eq(s2[4], 0);
+
+    const char* s3 = "\0x\123\377\082\129";
+    assert_eq(s3[0], 0);
+    assert_eq(s3[1], 'x');
+    assert_eq(s3[2], 0123);
+    assert_eq(s3[3], -1);
+    assert_eq(s3[4], 0);
+    assert_eq(s3[5], '8');
+    assert_eq(s3[6], '2');
+    assert_eq(s3[7], 012);
+    assert_eq(s3[8], '9');
+    assert_eq(s3[9], 0);
 }
