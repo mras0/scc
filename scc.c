@@ -157,23 +157,6 @@ void _start(void)
     exit(main(ParseArgs(), ARGS));
 }
 
-int isdigit(int c)
-{
-    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
-    _emit 0x2C _emit 0x30               // SUB AL, 0x30
-    _emit 0x3C _emit 0x0A               // CMP AL, 10
-    _emit 0x19 _emit 0xC0               // SBB AX, AX
-}
-
-int isalpha(int c)
-{
-    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
-    _emit 0x24 _emit 0xDF               // AND AL, 0xDF
-    _emit 0x2C _emit 0x41               // SUB AL, 'A'
-    _emit 0x3C _emit 0x1A               // CMP AL, 'Z'-'A'+1
-    _emit 0x19 _emit 0xC0               // SBB AX, AX
-}
-
 int clock()
 {
     _emit 0x31 _emit 0xC0              // XOR  AX, AX
@@ -643,14 +626,18 @@ int SkipWhitespace(void)
     }
 }
 
-int GetDigit(void)
+unsigned GetNum(unsigned Init, unsigned Base, int MaxLen)
 {
-    if (isdigit(CurChar)) {
-        return CurChar - '0';
-    } else if (isalpha(CurChar)) {
-        return (CurChar & 0xdf) - ('A'-10);
+    unsigned d;
+    while (MaxLen--) {
+        if ((d = CurChar - '0') > 9)
+            d = (CurChar & 0xdf) - ('A'-10);
+        if (d >= Base)
+            break;
+        Init = Init*Base + d;
+        NextChar();
     }
-    return 256;
+    return Init;
 }
 
 char Unescape(void)
@@ -664,27 +651,10 @@ char Unescape(void)
     case '\'': return '\'';
     case '"':  return '"';
     case '\\': return '\\';
-    case 'x':
-        {
-            ch = GetDigit()<<4;
-            NextChar();
-            ch |= GetDigit();
-            NextChar();
-            if (ch&0xff00) Fail();
-            return ch;
-        }
+    case 'x':  return GetNum(0, 16, 2);
     }
     if ((unsigned)(ch -= '0') > 7) Fail();
-    unsigned d = GetDigit();
-    if (d < 8) {
-        ch = ch<<3 | d;
-        NextChar();
-        if ((d = GetDigit()) < 8) {
-            ch = ch<<3 | d;
-            NextChar();
-        }
-    }
-    return ch;
+    return GetNum(ch, 8, 2);
 }
 
 void GetStringLiteral(void)
@@ -733,22 +703,15 @@ void GetToken(void)
 
     if (TokenType < 'A') {
         if ((unsigned)(TokenType - '0') < 10) {
-            int base = 10;
+            unsigned Base = 10;
             if (!(TokenNumVal = TokenType - '0')) {
-                base = 8;
+                Base = 8;
                 if ((CurChar&0xDF) == 'X') {
-                    base = 16;
+                    Base = 16;
                     NextChar();
                 }
             }
-            for (;;) {
-                int dig = GetDigit();
-                if (dig >= base) {
-                    break;
-                }
-                TokenNumVal = TokenNumVal*base + dig;
-                NextChar();
-            }
+            TokenNumVal = GetNum(TokenNumVal, Base, 8);
             TokenType = TOK_NUM;
             return;
         }
