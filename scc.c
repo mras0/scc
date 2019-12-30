@@ -437,16 +437,16 @@ unsigned char Output[OUTPUT_MAX]; // Place this last to allow partial stack over
 
 char* CopyStr(char* dst, const char* src)
 {
-    while (*src) *dst++ = *src++;
-    *dst = 0;
+    while ((*dst = *src++))
+        ++dst;
     return dst;
 }
 
 const char HexD[] = "0123456789ABCDEF";
 char* CvtHex(char* dest, int n)
 {
-    int i;
-    for (i = 3; i >= 0; --i) {
+    int i = 4;
+    while (i--) {
         *dest++ = HexD[(n>>i*4)&0xf];
     }
     return dest;
@@ -1250,27 +1250,22 @@ void EmitStoreConst(int Size, int Loc, int Val)
 void EmitAddRegConst(int r, int Amm)
 {
     if (!Amm) return;
-    int Op = I_ADD;
+    int Op = r; // I_ADD | r
     if (Amm < 0) {
         Amm = -Amm;
-        Op = I_SUB;
+        Op += I_SUB;
     }
     if (Amm <= 2) {
-        if (Op == I_ADD)
-            Op = I_INC;
-        else
-            Op = I_DEC;
-        Op |= r;
-        Output1Byte(Op);
-        if (Amm > 1)
+        Output1Byte(Op = (Op&15)|I_INC);
+        if (--Amm)
             Output1Byte(Op);
     } else if (Amm < 128) {
-        Output3Bytes(I_ALU_RM16_IMM8, MODRM_REG|Op|r, Amm);
+        Output3Bytes(I_ALU_RM16_IMM8, MODRM_REG|Op, Amm);
     } else {
-        if (r == R_AX)
+        if (!r)
             Output1Byte(Op|5);
         else
-            Output2Bytes(I_ALU_RM16_IMM16, MODRM_REG|Op|r);
+            Output2Bytes(I_ALU_RM16_IMM16, MODRM_REG|Op);
         OutputWord(Amm);
     }
 }
@@ -1333,19 +1328,17 @@ int EmitLocalJump(int l)
             OutputWord(Addr-1);
         }
         return 1;
-    } else {
-        Output1Byte(I_JMP_REL16);
-        AddFixup(&Labels[l].Ref);
-        return 0;
     }
+    Output1Byte(I_JMP_REL16);
+    AddFixup(&Labels[l].Ref);
+    return 0;
 }
 
 void EmitJmp(int l)
 {
     Pending &= ~PENDING_PUSHAX;
-    if (EmitChecks()) {
+    if (EmitChecks())
         return;
-    }
     EmitLocalJump(l);
     IsDeadCode = 1;
 }
@@ -1371,14 +1364,16 @@ void EmitJcc(int cc, int l)
 
 void EmitLoadAddr(int Reg, int Loc, int Val)
 {
-    if (Loc == VT_LOCOFF) {
+    switch (Loc) {
+    case VT_LOCOFF:
         EmitModrm(I_LEA, Reg, VT_LOCOFF, Val);
-    } else if (Loc == VT_LOCGLOB) {
+        return;
+    case VT_LOCGLOB:
         Output1Byte(I_MOV_R_IMM16 | Reg);
         EmitGlobalRef(&VarDecls[Val]);
-    } else {
-        Fail();
+        return;
     }
+    Fail();
 }
 
 void EmitExtend(int Unsigned)
@@ -1412,9 +1407,8 @@ void FlushPushAx(void)
 
 int EmitChecks(void)
 {
-    if (IsDeadCode) {
+    if (IsDeadCode)
         return 1;
-    }
     if (Pending) {
         FlushSpAdj();
         FlushPushAx();
@@ -1446,8 +1440,7 @@ void Expect(int type)
 
 int ExpectId(void)
 {
-    int id;
-    id = TokenType;
+    int id = TokenType;
     if (id >= TOK_ID) {
         GetToken();
         return id - TOK_KEYWORD;
@@ -1544,16 +1537,14 @@ LoadAddrRet:
             return;
         }
 
-        if (CurrentType & VT_FUNPTR) {
+        if (CurrentType & VT_FUNPTR)
             goto LoadAddrRet;
-        }
 
         const int sz = (CurrentType&~VT_UNSIGNED) != VT_CHAR;
-        if (!loc) {
+        if (!loc)
             Output2Bytes(I_XCHG_AX|R_SI, I_LODSB|sz);
-        } else {
+        else
             EmitLoadAx(sz+1, loc, CurrentVal);
-        }
         if (!sz) {
             EmitExtend(CurrentType&VT_UNSIGNED);
             CurrentType = VT_INT;
@@ -1566,13 +1557,14 @@ void DoIncDecOp(int Op, int Post)
     if (!(CurrentType & VT_LVAL)) Fail();
     const int WordOp = ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR);
     const int Loc = CurrentType & VT_LOCMASK;
-    char Size = 1;
-    if (CurrentType & VT_PTRMASK) {
+    int Size = 1;
+
+    if (CurrentType & VT_PTRMASK)
         Size = SizeofType(CurrentType-VT_PTR1, CurrentTypeExtra);
-    }
-    if (!Loc) {
+
+    if (!Loc)
         Output1Byte(I_XCHG_AX|R_SI);
-    }
+
     if (Post) {
         EmitLoadAx(1+WordOp, Loc, CurrentVal);
         if (!WordOp) {
@@ -1587,7 +1579,7 @@ void DoIncDecOp(int Op, int Post)
     }
     Op = Op == TOK_MINUSMINUS;
 
-    if (Size != 1) {
+    if (Size > 1) {
         EmitModrm(I_ALU_RM16_IMM8, Op*(I_SUB>>3), Loc, CurrentVal);
         Output1Byte(Size);
         return;
@@ -1751,34 +1743,6 @@ void GetVal(void)
     }
 }
 
-void HandleStructMember(void)
-{
-    const int MemId = ExpectId();
-    if ((unsigned)CurrentTypeExtra >= (unsigned)StructCount) Fail();
-    struct StructMember* SM = StructDecls[CurrentTypeExtra].Members;
-    int Off = 0;
-    for (; SM && SM->Id != MemId; SM = SM->Next) {
-        Off += SizeofType(SM->Type, SM->TypeExtra);
-    }
-    if (!SM) {
-        Fatal("Invalid struct member");
-    }
-    int Loc = CurrentType & VT_LOCMASK;
-    if (Off && !(StructDecls[CurrentTypeExtra].Id & IS_UNION_FLAG)) {
-        if (Loc == VT_LOCOFF) {
-            CurrentVal += Off;
-        } else {
-            if (Loc) {
-                EmitLoadAddr(R_AX, Loc, CurrentVal);
-                Loc = 0;
-            }
-            EmitAddRegConst(R_AX, Off);
-        }
-    }
-    CurrentType      = SM->Type | VT_LVAL | Loc;
-    CurrentTypeExtra = SM->TypeExtra;
-}
-
 void ParseAssignmentExpression(void);
 
 void ParsePostfixExpression(void)
@@ -1908,17 +1872,42 @@ void ParsePostfixExpression(void)
                 continue;
             }
         case '.':
-            GetToken();
             if ((CurrentType & ~VT_LOCMASK) != (VT_STRUCT|VT_LVAL)) Fail();
-            HandleStructMember();
+        DoStructMem:
+            GetToken();
+            {
+                const int MemId = ExpectId();
+                if ((unsigned)CurrentTypeExtra >= (unsigned)StructCount) Fail();
+                struct StructDecl* S = &StructDecls[CurrentTypeExtra];
+                struct StructMember* SM = S->Members;
+                int Off = 0;
+                for (; SM && SM->Id != MemId; SM = SM->Next) {
+                    Off += SizeofType(SM->Type, SM->TypeExtra);
+                }
+                if (!SM) {
+                    Fatal("Invalid struct member");
+                }
+                int Loc = CurrentType & VT_LOCMASK;
+                if (Off && !(S->Id & IS_UNION_FLAG)) {
+                    if (Loc == VT_LOCOFF) {
+                        CurrentVal += Off;
+                    } else {
+                        if (Loc) {
+                            EmitLoadAddr(R_AX, Loc, CurrentVal);
+                            Loc = 0;
+                        }
+                        EmitAddRegConst(R_AX, Off);
+                    }
+                }
+                CurrentType      = SM->Type | VT_LVAL | Loc;
+                CurrentTypeExtra = SM->TypeExtra;
+            }
             continue;
         case TOK_ARROW:
-            GetToken();
             LvalToRval();
             if ((CurrentType & ~VT_LOCMASK) != (VT_STRUCT|VT_PTR1)) Fail();
             CurrentType -= VT_PTR1;
-            HandleStructMember();
-            continue;
+            goto DoStructMem;
         case TOK_PLUSPLUS:
         case TOK_MINUSMINUS:
             DoIncDecOp(TokenType, 1);
