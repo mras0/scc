@@ -34,6 +34,11 @@ SCC(scc)
 SCC(scpp)
 SCC(sas)
 
+if (MSVC)
+    # C4127: conditional expression is constant
+    target_compile_options(scpp PRIVATE /wd4127)
+endif()
+
 # Simulator
 add_executable(sim86 sim86.c lib.h)
 add_custom_command(

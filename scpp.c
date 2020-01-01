@@ -378,6 +378,7 @@ struct Token {
 };
 
 struct Token CurTok;
+unsigned CurHash;
 
 struct Token TokenQueue[TOKEN_QUEUE_MAX];
 int TokenQueueHead, TokenQueueTail;
@@ -420,7 +421,7 @@ enum {
 char CondState[COND_MAX];
 int CondCount;
 
-int Debug = 0;
+enum { Debug = 0 };
 
 struct File* OpenFile(const char* Filename, int Write)
 {
@@ -508,6 +509,17 @@ void FreeTokenList(struct TokenList* TL)
     }
 }
 
+struct TokenList* SkipWsNL(struct TokenList* TL)
+{
+    while (TL) {
+        const int T = TL->Tok.Type;
+        if (T != TOK_WHITESPACE && T != TOK_NEWLINE)
+            break;
+        TL = TL->Next;
+    }
+    return TL;
+}
+
 void FreeArgs(struct Argument* Args)
 {
     if (Args == (struct Argument*)1)
@@ -525,16 +537,81 @@ void TokenQueuePush(struct Token* Tok)
     TokenQueue[TokenQueueTail++ % TOKEN_QUEUE_MAX] = *Tok;
 }
 
+struct Token* SimpleExpand(struct Token* Tok)
+{
+    while (Tok->Type == TOK_ARG) {
+        const struct Argument* A = (const struct Argument*)Tok->Text;
+        assert(A->Replacement && !A->Replacement->Next);
+        Tok = &A->Replacement->Tok;
+    }
+    return Tok;
+}
+
+void PrintToken(const struct Token* T);
+
+void PasteAppend(struct Token* Tok)
+{
+    CurTok = *SimpleExpand(&CurTok);
+    Tok = SimpleExpand(Tok);
+    if (Debug) { printf("Paste "); PrintToken(Tok); printf(" to "); PrintToken(&CurTok); printf("\n"); }
+    const int l1 = (int)strlen(CurTok.Text);
+    const int l2 = (int)strlen(Tok->Text);
+    assert(NextTokenDataPos+l1+l2+1 < TOKEN_DATA_MAX);
+    memcpy(&TokenData[NextTokenDataPos], CurTok.Text, l1);
+    memcpy(&TokenData[NextTokenDataPos+l1], Tok->Text, l2);
+    TokenData[NextTokenDataPos+l1+l2] = 0;
+    CurTok.Text = &TokenData[NextTokenDataPos];
+    NextTokenDataPos+=l1+l2+1;
+    if (CurTok.Type > ' ' && CurTok.Type < TOK_RAW_ID) {
+        CurTok.Type = TOK_CREATED_OP;
+    }
+    if (Debug) { printf(" --> "); PrintToken(&CurTok); printf("\n"); }
+}
+
 const char IsIdChar[] = "\x00\x00\x00\x00\x00\x00\xFF\x03\xFE\xFF\xFF\x87\xFE\xFF\xFF\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
-void InternalGetToken(void)
+void RawGetToken(void)
 {
-Restart:
+    while (ReplaceNest) {
+        struct ReplaceStackElem* RS = &ReplaceStack[ReplaceNest-1];
+        assert(!RS->M || RS->M->Hide == 1);
+        if (RS->TL) {
+            CurTok = RS->TL->Tok;
+            RS->TL = RS->TL->Next;
+
+            // Look for paste operation
+            struct TokenList* TL = SkipWsNL(RS->TL);
+            while (TL && TL->Tok.Type == TOK_HASHHASH) {
+                TL = SkipWsNL(TL->Next);
+                assert(TL);
+                PasteAppend(&TL->Tok);
+                TL = SkipWsNL(TL->Next);
+                RS->TL = TL;
+            }
+
+            CurHash = ID_HASH_MAX;
+            if (Debug) { printf("Returning from replacement list: ");PrintToken(&CurTok);printf("\n"); }
+            return;
+        }
+        if (RS->M) {
+            RS->M->Hide = 0;
+            FreeArgs(RS->M->Arguments);
+        }
+        --ReplaceNest;
+        if (Debug) printf("Popped replacement list (Stop=%d)\n", RS->Stop);
+        if (RS->Stop) {
+            CurTok.Type = TOK_EOF;
+            return;
+        }
+    }
+
     if (TokenQueueHead != TokenQueueTail) {
         CurTok = TokenQueue[TokenQueueHead++ % TOKEN_QUEUE_MAX];
+        CurHash = ID_HASH_MAX;
         return;
     }
 
+Restart:
     TokenDataPos = NextTokenDataPos;
     CurTok.Text = TokenData + TokenDataPos;
 
@@ -609,7 +686,10 @@ Restart:
             CurTok.Type = TOK_EOF;
         }
         return;
+    case '_':
+        goto Identifier;
     }
+
     if (CurrentChar <= ' ') {
         CurTok.Type = TOK_WHITESPACE;
         ReadChar();
@@ -624,27 +704,39 @@ Restart:
                 return;
         }
         return;
-    } else if ((unsigned)(CurrentChar - '0') < 10) {
-        CurTok.Type = TOK_NUM;
-        ReadToTokenData();
-        if (CurrentChar == 'x' || CurrentChar == 'X')
-            ReadToTokenData();
-    ReadId:
-        while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1) {
-            TokenData[TokenDataPos++] = CurrentChar;
-            if ((CurrentChar = *CurFileBuf++))
-                continue;
-            --CurFileBuf;
-            ReadChar();
-        }
-        goto Out;
-    } else if ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1) {
-        CurTok.Type = TOK_RAW_ID;
-        goto ReadId;
-    } else {
-        CurTok.Type = CurrentChar;
-        ReadToTokenData();
     }
+
+    if (CurrentChar < 'A') {
+        if ((unsigned)(CurrentChar - '0') < 10) {
+            CurTok.Type = TOK_NUM;
+            ReadToTokenData();
+            if (CurrentChar == 'x' || CurrentChar == 'X')
+                ReadToTokenData();
+            while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1) {
+                TokenData[TokenDataPos++] = CurrentChar;
+                if ((CurrentChar = *CurFileBuf++))
+                    continue;
+                --CurFileBuf;
+                ReadChar();
+            }
+            goto Out;
+        }
+    } else if ((CurrentChar&0xDF) <= 'Z') {
+Identifier:
+        CurTok.Type = TOK_RAW_ID;
+        CurHash = 0;
+        do {
+            CurHash += (CurHash<<4)+(TokenData[TokenDataPos++] = CurrentChar);
+            if (!(CurrentChar = *CurFileBuf++)) {
+                --CurFileBuf;
+                ReadChar();
+            }
+        } while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1);
+        CurHash &= ID_HASH_MAX-1;
+        goto Out;
+    }
+    CurTok.Type = CurrentChar;
+    ReadToTokenData();
     switch (CurTok.Type) {
     case '#':
         TryExtendOp('#', TOK_HASHHASH);
@@ -693,6 +785,7 @@ Restart:
 Out:
     assert(TokenDataPos < TOKEN_DATA_MAX);
     TokenData[TokenDataPos++] = 0;
+    if (Debug) { printf("Returning new token: ");PrintToken(&CurTok);printf("\n"); }
 }
 
 const char* TokenTypeText(int Type)
@@ -738,98 +831,24 @@ void ReplaceId(void)
 {
     assert(CurTok.Type == TOK_RAW_ID);
 
-    unsigned H = 0;
-    const char* Text = CurTok.Text;
-    while (*Text)
-        H += (H<<4)+*Text++;
+    if (CurHash == ID_HASH_MAX) {
+        CurHash = 0;
+        const char* Text = CurTok.Text;
+        while (*Text)
+            CurHash += (CurHash<<4)+*Text++;
+        CurHash &= ID_HASH_MAX-1;
+    }
 
     for (;;) {
-        unsigned Id = IdHash[H &= ID_HASH_MAX-1];
+        unsigned Id = IdHash[CurHash];
         if (Id >= ID_MAX)
             return;
         if (!strcmp(CurTok.Text, IdText[Id])) {
             CurTok.Type = TOK_ID + Id;
             return;
         }
-        ++H;
+        CurHash = (CurHash+1)&(ID_HASH_MAX-1);
     }
-}
-
-struct TokenList* SkipWsNL(struct TokenList* TL)
-{
-    while (TL) {
-        const int T = TL->Tok.Type;
-        if (T != TOK_WHITESPACE && T != TOK_NEWLINE)
-            break;
-        TL = TL->Next;
-    }
-    return TL;
-}
-
-struct Token* SimpleExpand(struct Token* Tok)
-{
-    while (Tok->Type == TOK_ARG) {
-        const struct Argument* A = (const struct Argument*)Tok->Text;
-        assert(A->Replacement && !A->Replacement->Next);
-        Tok = &A->Replacement->Tok;
-    }
-    return Tok;
-}
-
-void PasteAppend(struct Token* Tok)
-{
-    CurTok = *SimpleExpand(&CurTok);
-    Tok = SimpleExpand(Tok);
-    if (Debug) { printf("Paste "); PrintToken(Tok); printf(" to "); PrintToken(&CurTok); printf("\n"); }
-    const int l1 = (int)strlen(CurTok.Text);
-    const int l2 = (int)strlen(Tok->Text);
-    assert(NextTokenDataPos+l1+l2+1 < TOKEN_DATA_MAX);
-    memcpy(&TokenData[NextTokenDataPos], CurTok.Text, l1);
-    memcpy(&TokenData[NextTokenDataPos+l1], Tok->Text, l2);
-    TokenData[NextTokenDataPos+l1+l2] = 0;
-    CurTok.Text = &TokenData[NextTokenDataPos];
-    NextTokenDataPos+=l1+l2+1;
-    if (CurTok.Type > ' ' && CurTok.Type < TOK_RAW_ID) {
-        CurTok.Type = TOK_CREATED_OP;
-    }
-    if (Debug) { printf(" --> "); PrintToken(&CurTok); printf("\n"); }
-}
-
-void RawGetToken(void)
-{
-    while (ReplaceNest) {
-        struct ReplaceStackElem* RS = &ReplaceStack[ReplaceNest-1];
-        assert(!RS->M || RS->M->Hide == 1);
-        if (RS->TL) {
-            CurTok = RS->TL->Tok;
-            RS->TL = RS->TL->Next;
-
-            // Look for paste operation
-            struct TokenList* TL = SkipWsNL(RS->TL);
-            while (TL && TL->Tok.Type == TOK_HASHHASH) {
-                TL = SkipWsNL(TL->Next);
-                assert(TL);
-                PasteAppend(&TL->Tok);
-                TL = SkipWsNL(TL->Next);
-                RS->TL = TL;
-            }
-
-            if (Debug) { printf("Returning from replacement list: ");PrintToken(&CurTok);printf("\n"); }
-            return;
-        }
-        if (RS->M) {
-            RS->M->Hide = 0;
-            FreeArgs(RS->M->Arguments);
-        }
-        --ReplaceNest;
-        if (Debug) printf("Popped replacement list (Stop=%d)\n", RS->Stop);
-        if (RS->Stop) {
-            CurTok.Type = TOK_EOF;
-            return;
-        }
-    }
-    InternalGetToken();
-    if (Debug) { printf("Returning new token: ");PrintToken(&CurTok);printf("\n"); }
 }
 
 void RawSkipWS(void)
@@ -1578,7 +1597,6 @@ int main(int argc, char** argv)
     }
     NextFreeTokenList = &TokenListElems[0];
 
-    //Debug = 1;
     PPMain();
 
     write(OutFile->FD, OutFile->Buf, OutFile->BufPtr - OutFile->Buf);
