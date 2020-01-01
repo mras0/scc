@@ -838,11 +838,6 @@ void RawSkipWS(void)
         RawGetToken();
 }
 
-int IsSpecial(int Tok)
-{
-    return Tok > TOK_DEFINED && Tok < TOK_USER_ID;
-}
-
 void Stringify(struct TokenList* TL);
 
 void PushHandleArg(struct Argument* A)
@@ -880,126 +875,128 @@ struct Argument* GetArg(int Id)
 
 void GetToken(void)
 {
-Restart:
-    RawGetToken();
-
-    if (ReplaceNest && CurTok.Type == '#') {
-        if (Debug) printf("Stringify!\n");
+    for (;;) {
         RawGetToken();
-        RawSkipWS();
-        assert(CurTok.Type == TOK_ARG);
-        struct TokenList* TL = ((struct Argument*)CurTok.Text)->Replacement;
-        Stringify(TL);
-        return;
-    }
 
-    if (CurTok.Type == TOK_ARG) {
-        PushHandleArg((struct Argument*)CurTok.Text);
-        goto Restart;
-    }
-
-    if (CurTok.Type != TOK_RAW_ID)
-        return;
-    ReplaceId();
-    if (CurTok.Type < TOK_USER_ID) {
-        if (IsSpecial(CurTok.Type)) {
-            if (Debug) printf("Special token! %s\n", CurTok.Text);
-            if (CurTok.Type == TOK___LINE__) {
-                char* T = &TokenData[NextTokenDataPos];
-                sprintf(T, "%d", Line);
-                NextTokenDataPos += (int)strlen(T) + 1;
-                CurTok.Text = T;
-                CurTok.Type = TOK_NUM;
-            } else if (CurTok.Type == TOK___FILE__) {
-                CurTok.Text = CurFile->Filename;
-                CurTok.Type = TOK_STRLIT;
-            } else {
-                CurTok.Text = "1";
-                CurTok.Type = TOK_NUM;
-            }
-        }
-        return;
-    }
-    const int Id = CurTok.Type;
-    struct Argument* A = GetArg(Id);
-    if (A) {
-        assert(ReplaceNest < MAX_NEST);
-        ReplaceStack[ReplaceNest].M  = 0;
-        ReplaceStack[ReplaceNest].TL = A->Replacement;
-        ReplaceStack[ReplaceNest].Stop = 0;
-        ++ReplaceNest;
-        goto Restart;
-    }
-    struct Macro* M = &Macros[Id - TOK_USER_ID];
-    if (M->Hide)
-        return;
-    if (Debug) printf("Start expanding macro %s\n", IdText[Id-TOK_ID]);
-    if (M->Arguments) {
-        RawGetToken();
-        int WS = CurTok.Type;
-        RawSkipWS();
-        if (CurTok.Type != '(') {
-            // Undo consumption of ID and any whitespace
-            if (WS < ' ') {
-                struct Token WSToken;
-                WSToken.Type = WS;
-                TokenQueuePush(&WSToken);
-            }
-            TokenQueuePush(&CurTok);
-            CurTok.Type = Id;
-            CurTok.Text = IdText[Id - TOK_ID];
+        switch (CurTok.Type) {
+        case TOK_RAW_ID:
+            break;
+        case '#':
+            if (!ReplaceNest)
+                return;
+            if (Debug) printf("Stringify!\n");
+            RawGetToken();
+            RawSkipWS();
+            assert(CurTok.Type == TOK_ARG);
+            Stringify(((struct Argument*)CurTok.Text)->Replacement);
+            return;
+        case TOK_ARG:
+            PushHandleArg((struct Argument*)CurTok.Text);
+            continue;
+        default:
             return;
         }
-        RawGetToken();
-        RawSkipWS();
-        if (CurTok.Type != ')') {
-            assert(M->Arguments != (struct Argument*)1);
-            A = M->Arguments;
-            while (A) {
-                struct TokenList** ArgL = &A->Replacement;
-                int Nest = 0;
-                int PendWS = -1;
-                for (;; RawGetToken()) {
-                    if (CurTok.Type == TOK_WHITESPACE || CurTok.Type == TOK_NEWLINE) {
-                        if (PendWS == 0) PendWS = 1;
-                        continue;
-                    }
-                    if (CurTok.Type == '(')
-                        ++Nest;
-                    else if (CurTok.Type == ')' && !Nest--)
-                        break;
-                    else if (!CurTok.Type || (!Nest && CurTok.Type == ','))
-                        break;
-                    if (PendWS == 1) {
-                        struct Token WSTok;
-                        WSTok.Type = TOK_WHITESPACE;
-                        ArgL = AddToken(ArgL, &WSTok);
-                    }
-                    PendWS = 0;
-                    ArgL = AddToken(ArgL, &CurTok);
-                    NextTokenDataPos = TokenDataPos; // Preserve the token data
+
+        ReplaceId();
+        if (CurTok.Type < TOK_USER_ID) {
+            if (CurTok.Type > TOK_DEFINED) {
+                if (Debug) printf("Special token! %s\n", CurTok.Text);
+                if (CurTok.Type == TOK___LINE__) {
+                    char* T = &TokenData[NextTokenDataPos];
+                    sprintf(T, "%d", Line);
+                    NextTokenDataPos += (int)strlen(T) + 1;
+                    CurTok.Text = T;
+                    CurTok.Type = TOK_NUM;
+                } else if (CurTok.Type == TOK___FILE__) {
+                    CurTok.Text = CurFile->Filename;
+                    CurTok.Type = TOK_STRLIT;
+                } else {
+                    CurTok.Text = "1";
+                    CurTok.Type = TOK_NUM;
                 }
-                *ArgL = 0;
-                A = A->Next;
-                if (CurTok.Type != ',')
-                    break;
-                RawGetToken();
             }
-            assert(!A && CurTok.Type == ')');
+            return;
+        }
+        const int Id = CurTok.Type;
+        struct Argument* A = GetArg(Id);
+        if (A) {
+            assert(ReplaceNest < MAX_NEST);
+            ReplaceStack[ReplaceNest].M  = 0;
+            ReplaceStack[ReplaceNest].TL = A->Replacement;
+            ReplaceStack[ReplaceNest].Stop = 0;
+            ++ReplaceNest;
+            continue;
+        }
+        struct Macro* M = &Macros[Id - TOK_USER_ID];
+        if (M->Hide)
+            return;
+        if (Debug) printf("Start expanding macro %s\n", IdText[Id-TOK_ID]);
+        if (M->Arguments) {
+            RawGetToken();
+            int WS = CurTok.Type;
+            RawSkipWS();
+            if (CurTok.Type != '(') {
+                // Undo consumption of ID and any whitespace
+                if (WS < ' ') {
+                    struct Token WSToken;
+                    WSToken.Type = WS;
+                    TokenQueuePush(&WSToken);
+                }
+                TokenQueuePush(&CurTok);
+                CurTok.Type = Id;
+                CurTok.Text = IdText[Id - TOK_ID];
+                return;
+            }
+            RawGetToken();
+            RawSkipWS();
+            if (CurTok.Type != ')') {
+                assert(M->Arguments != (struct Argument*)1);
+                A = M->Arguments;
+                while (A) {
+                    struct TokenList** ArgL = &A->Replacement;
+                    int Nest = 0;
+                    int PendWS = -1;
+                    for (;; RawGetToken()) {
+                        if (CurTok.Type == TOK_WHITESPACE || CurTok.Type == TOK_NEWLINE) {
+                            if (PendWS == 0) PendWS = 1;
+                            continue;
+                        }
+                        if (CurTok.Type == '(')
+                            ++Nest;
+                        else if (CurTok.Type == ')' && !Nest--)
+                            break;
+                        else if (!CurTok.Type || (!Nest && CurTok.Type == ','))
+                            break;
+                        if (PendWS == 1) {
+                            struct Token WSTok;
+                            WSTok.Type = TOK_WHITESPACE;
+                            ArgL = AddToken(ArgL, &WSTok);
+                        }
+                        PendWS = 0;
+                        ArgL = AddToken(ArgL, &CurTok);
+                        NextTokenDataPos = TokenDataPos; // Preserve the token data
+                    }
+                    *ArgL = 0;
+                    A = A->Next;
+                    if (CurTok.Type != ',')
+                        break;
+                    RawGetToken();
+                }
+                assert(!A && CurTok.Type == ')');
+            }
+        }
+        if (Debug) printf("Start expanding macro body of %s\n", IdText[Id-TOK_ID]);
+        if (M->Replacement) {
+            assert(ReplaceNest < MAX_NEST);
+            ReplaceStack[ReplaceNest].M  = M;
+            ReplaceStack[ReplaceNest].TL = M->Replacement;
+            ReplaceStack[ReplaceNest].Stop = 0;
+            M->Hide = 1;
+            ++ReplaceNest;
+        } else {
+            FreeArgs(M->Arguments);
         }
     }
-    if (Debug) printf("Start expanding macro body of %s\n", IdText[Id-TOK_ID]);
-    if (M->Replacement) {
-        assert(ReplaceNest < MAX_NEST);
-        ReplaceStack[ReplaceNest].M  = M;
-        ReplaceStack[ReplaceNest].TL = M->Replacement;
-        ReplaceStack[ReplaceNest].Stop = 0;
-        M->Hide = 1;
-        ++ReplaceNest;
-    } else {
-        FreeArgs(M->Arguments);
-    }
-    goto Restart;
 }
 
 char StrBuf[256]; // HACK HACK
@@ -1170,7 +1167,7 @@ void Expect(int T)
 
 int IsDefined(int Tok)
 {
-    return IsSpecial(Tok) || (Tok >= TOK_USER_ID && !Macros[Tok - TOK_USER_ID].Hide);
+    return (Tok > TOK_DEFINED && Tok < TOK_USER_ID) || (Tok >= TOK_USER_ID && !Macros[Tok - TOK_USER_ID].Hide);
 }
 
 int EvalExpr(void);
