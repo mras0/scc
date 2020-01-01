@@ -358,6 +358,7 @@ struct File Files[FILES_MAX];
 int NumFiles;
 struct File* CurFile;
 struct File* OutFile;
+const char* CurFileBuf;
 
 char TokenData[TOKEN_DATA_MAX];
 int TokenDataPos;
@@ -447,23 +448,27 @@ void CloseFile(void)
 void ReadChar(void)
 {
     if (CurrentChar == '\n') ++Line;
-    assert(CurFile->BufPos <= CurFile->BufSize);
-    if (CurFile->BufPos == CurFile->BufSize) {
-        CurFile->BufPos = 0;
-        CurFile->BufSize = read(CurFile->FD, CurFile->Buf, sizeof(CurFile->Buf));
-        if (CurFile->BufSize <= 0) {
-            CurFile->BufSize = 0;
-            CurrentChar = 0;
-            return;
-        }
+    if ((CurrentChar = *CurFileBuf++))
+        return;
+
+    CurFileBuf = CurFile->Buf;
+    CurFile->BufSize = read(CurFile->FD, CurFile->Buf, sizeof(CurFile->Buf)-1);
+    if (CurFile->BufSize <= 0) {
+        CurFile->BufSize = 0;
+        CurrentChar = 0;
+    } else {
+        CurrentChar = *CurFileBuf++;
     }
-    CurrentChar = CurFile->Buf[CurFile->BufPos++];
+    CurFile->Buf[CurFile->BufSize] = 0;
 }
 
 void ReadToTokenData(void)
 {
     assert(TokenDataPos < TOKEN_DATA_MAX);
     TokenData[TokenDataPos++] = CurrentChar;
+    if ((CurrentChar = *CurFileBuf++))
+        return;
+    --CurFileBuf;
     ReadChar();
 }
 
@@ -540,9 +545,14 @@ Restart:
     case '/':
         ReadChar();
         if (CurrentChar == '/') {
-            do
+            do {
+                while ((CurrentChar = *CurFileBuf++)) {
+                    if (CurrentChar == '\n')
+                        goto Restart;
+                }
+                --CurFileBuf;
                 ReadChar();
-            while (CurrentChar && CurrentChar != '\n');
+            } while (CurrentChar && CurrentChar != '\n');
             goto Restart;
         } else if (CurrentChar == '*') {
             ReadChar();
@@ -602,23 +612,34 @@ Restart:
     if (CurrentChar <= ' ') {
         CurTok.Type = TOK_WHITESPACE;
         ReadChar();
-        while (CurrentChar <= ' ' && CurrentChar && CurrentChar != '\n')
+        if (!CurrentChar)
+            return;
+        while (CurrentChar <= ' ' && CurrentChar != '\n') {
+            if ((CurrentChar = *CurFileBuf++))
+                continue;
+            --CurFileBuf;
             ReadChar();
+            if (!CurrentChar)
+                return;
+        }
         return;
     } else if ((unsigned)(CurrentChar - '0') < 10) {
         CurTok.Type = TOK_NUM;
         ReadToTokenData();
         if (CurrentChar == 'x' || CurrentChar == 'X')
             ReadToTokenData();
-        while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1)
-            ReadToTokenData();
+    ReadId:
+        while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1) {
+            TokenData[TokenDataPos++] = CurrentChar;
+            if ((CurrentChar = *CurFileBuf++))
+                continue;
+            --CurFileBuf;
+            ReadChar();
+        }
         goto Out;
     } else if ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1) {
         CurTok.Type = TOK_RAW_ID;
-        do {
-            ReadToTokenData();
-        } while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1);
-        goto Out;
+        goto ReadId;
     } else {
         CurTok.Type = CurrentChar;
         ReadToTokenData();
@@ -712,12 +733,12 @@ int AddId(const char* Text)
     return Id;
 }
 
-void ReplaceId(struct Token* T)
+void ReplaceId(void)
 {
-    assert(T->Type == TOK_RAW_ID);
+    assert(CurTok.Type == TOK_RAW_ID);
 
     unsigned H = 0;
-    const char* Text = T->Text;
+    const char* Text = CurTok.Text;
     while (*Text)
         H += (H<<4)+*Text++;
 
@@ -725,8 +746,8 @@ void ReplaceId(struct Token* T)
         unsigned Id = IdHash[H &= ID_HASH_MAX-1];
         if (Id >= ID_MAX)
             return;
-        if (!strcmp(T->Text, IdText[Id])) {
-            T->Type = TOK_ID + Id;
+        if (!strcmp(CurTok.Text, IdText[Id])) {
+            CurTok.Type = TOK_ID + Id;
             return;
         }
         ++H;
@@ -878,7 +899,7 @@ Restart:
 
     if (CurTok.Type != TOK_RAW_ID)
         return;
-    ReplaceId(&CurTok);
+    ReplaceId();
     if (CurTok.Type < TOK_USER_ID) {
         if (IsSpecial(CurTok.Type)) {
             if (Debug) printf("Special token! %s\n", CurTok.Text);
@@ -1034,7 +1055,7 @@ void HandleDefine(void)
     RawGetToken();
     RawSkipWS();
     assert(CurTok.Type == TOK_RAW_ID);
-    ReplaceId(&CurTok);
+    ReplaceId();
     int Id = CurTok.Type;
     struct Macro* M;
     if (Id >= TOK_USER_ID) {
@@ -1061,7 +1082,7 @@ void HandleDefine(void)
         while (CurTok.Type != ')') {
             RawSkipWS();
             assert(CurTok.Type == TOK_RAW_ID);
-            ReplaceId(&CurTok);
+            ReplaceId();
             if (CurTok.Type == TOK_RAW_ID) {
                 CurTok.Type = AddId(CurTok.Text) + TOK_ID;
                 NextTokenDataPos = TokenDataPos;
@@ -1094,7 +1115,7 @@ void HandleDefine(void)
             continue;
         }
         if (M->Arguments && CurTok.Type == TOK_RAW_ID) {
-            ReplaceId(&CurTok);
+            ReplaceId();
             if (CurTok.Type >= TOK_USER_ID) {
                 struct Argument* A = M->Arguments;
                 while (A) {
@@ -1190,7 +1211,7 @@ int EvalUnary(void)
             RawGetToken();
             RawSkipWS();
         }
-        ReplaceId(&CurTok);
+        ReplaceId();
         n = IsDefined(CurTok.Type);
         GetToken();
         if (Par) Expect(')');
@@ -1331,10 +1352,12 @@ void HandleInclude(void)
     RawGetToken();
     CurFile->LastChar = CurrentChar;
     CurTok.Type = TOK_NEWLINE;
-
+    CurFile->BufPos = CurFileBuf - CurFile->Buf;
+    assert((unsigned)CurFile->BufPos < sizeof(CurFile->Buf));
     if (Debug) printf("Entering '%s' (%d)\n", Filename, NumFiles);
     CurFile = OpenFile(Filename, 0);
     CurFile->OldLine = Line;
+    CurFileBuf = CurFile->Buf;
     Line = 1;
     ReadChar();
 }
@@ -1345,7 +1368,7 @@ void HandleDirective(void)
     if (CurTok.Type == TOK_NEWLINE) {
         return;
     }
-    ReplaceId(&CurTok);
+    ReplaceId();
     const int Directive = CurTok.Type;
     assert(Directive < TOK_USER_ID);
 
@@ -1358,7 +1381,7 @@ void HandleDirective(void)
     } else if (Directive == TOK_UNDEF) {
         RawGetToken();
         RawSkipWS();
-        ReplaceId(&CurTok);
+        ReplaceId();
         if (CurTok.Type >= TOK_USER_ID) {
             // HACK: Just hide #undef'ed macros
             Macros[CurTok.Type - TOK_USER_ID].Hide = 2;
@@ -1368,7 +1391,7 @@ void HandleDirective(void)
     } else if (Directive == TOK_IFDEF || Directive == TOK_IFNDEF) {
         RawGetToken();
         RawSkipWS();
-        ReplaceId(&CurTok);
+        ReplaceId();
         NewCond((int)(Directive == TOK_IFNDEF) ^ IsDefined(CurTok.Type));
         RawGetToken();
     } else if (Directive == TOK_ERROR) {
@@ -1448,6 +1471,7 @@ void PPMain(void)
                 break;
             }
             CurrentChar = CurFile->LastChar;
+            CurFileBuf = &CurFile->Buf[CurFile->BufPos];
             StartOfLine = 1;
             GetToken();
             continue;
@@ -1527,6 +1551,7 @@ int main(int argc, char** argv)
 
     // Open input after output to have nice stack of files
     CurFile = OpenFile(argv[1], 0);
+    CurFileBuf = CurFile->Buf;
 
     memset(IdHash, -1, sizeof(IdHash));
     AddId("define");

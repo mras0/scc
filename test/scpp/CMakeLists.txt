@@ -31,7 +31,7 @@ add_custom_target(test_scpp
     COMMAND ${RM} ${TEST_CLEAN}
     COMMAND ${DOSBOX} runtests.bat
     ${TEST_COMPARE}
-    DEPENDS scc_com ${TEST_SOURCES} "${PROJECT_SOURCE_DIR}/scpp.c" "${PROJECT_SOURCE_DIR}/sas.c"
+    DEPENDS scc_com scpp_com ${TEST_SOURCES} "${PROJECT_SOURCE_DIR}/scpp.c" "${PROJECT_SOURCE_DIR}/sas.c"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT Testing scpp
     )
