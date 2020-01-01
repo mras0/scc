@@ -1024,6 +1024,18 @@ int main(int argc, char** argv)
                     reg[R_SI] += 2;
                 }
                 break;
+            case 0xAE:
+                {
+                    assert(rep == 0xF2);
+                    if (verbose) strcpy(insttext, "REPNE SCASB");
+                    flags = 0;
+                    while (!(flags & FZ) && reg[R_CX]) {
+                        DoOp(OP_CMP, (unsigned char)reg[R_AX], Read8(SR_ES, reg[R_DI]));
+                        reg[R_CX] -= 1;
+                        reg[R_DI] += 1;
+                    }
+                }
+                break;
             case 0xC3:
                 if (verbose) sprintf(insttext, "RET");
                 ip = DoPop();
@@ -1111,6 +1123,7 @@ int main(int argc, char** argv)
             case 0xEB:
                 JMP((char)ReadIByte());
                 break;
+            case 0xF2:
             case 0xF3:
                 rep = inst;
                 goto Restart;

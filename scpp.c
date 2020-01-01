@@ -157,23 +157,6 @@ void _start(void)
     exit(main(ParseArgs(), _ARGV));
 }
 
-int isdigit(int c)
-{
-    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
-    _emit 0x2C _emit 0x30               // SUB AL, 0x30
-    _emit 0x3C _emit 0x0A               // CMP AL, 10
-    _emit 0x19 _emit 0xC0               // SBB AX, AX
-}
-
-int isalpha(int c)
-{
-    _emit 0x8A _emit 0x46 _emit 0x04    // MOV AL, [BP+4]
-    _emit 0x24 _emit 0xDF               // AND AL, 0xDF
-    _emit 0x2C _emit 0x41               // SUB AL, 'A'
-    _emit 0x3C _emit 0x1A               // CMP AL, 'Z'-'A'+1
-    _emit 0x19 _emit 0xC0               // SBB AX, AX
-}
-
 char* CopyStr(char* dst, const char* src)
 {
     while (*src) *dst++ = *src++;
@@ -276,14 +259,12 @@ int strcmp(const char* a, const char* b)
 
 int strlen(const char* s)
 {
-    _emit 0x8B _emit 0x4E _emit 0x04    // MOV  CX, [BP+4]
-    _emit 0x89 _emit 0xCE               // MOV  SI, CX
-    _emit 0xAC                          // L: LODSB
-    _emit 0x20 _emit 0xC0               // AND  AL, AL
-    _emit 0x75 _emit 0xFB               // JNZ  L
-    _emit 0x96                          // XCHG AX, SI
-    _emit 0x29 _emit 0xC8               // SUB  AX, CX
-    _emit 0x48                          // DEC  AX
+    _emit 0x8B _emit 0x7E _emit 0x04    // MOV DI, [BP+4]
+    _emit 0x30 _emit 0xC0               // XOR AL, AL
+    _emit 0xB9 _emit 0xFF _emit 0xFF    // MOV CX, -1
+    _emit 0xF2 _emit 0xAE               // REPNE SCASB
+    _emit 0xB8 _emit 0xFE _emit 0xFF    // MOV AX, -2
+    _emit 0x29 _emit 0xC8               // SUB AX, CX
 }
 
 int* GetBP(void)
@@ -308,6 +289,7 @@ void assert(int res)
 
 enum {
     ID_MAX          = 32,
+    ID_HASH_MAX     = 128,  // Must be power of 2 and larger than ID_MAX
     TOKEN_DATA_MAX  = 2048,
     MAX_NEST        = 10,   // Maximum nesting of replacments
     COND_MAX        = 16,
@@ -382,6 +364,7 @@ int TokenDataPos;
 int NextTokenDataPos; // Bump this to avoid the current token being overwritten
 
 const char* IdText[ID_MAX];
+unsigned IdHash[ID_HASH_MAX];
 int IdCount;
 
 int Line = 1;
@@ -477,11 +460,6 @@ void ReadChar(void)
     CurrentChar = CurFile->Buf[CurFile->BufPos++];
 }
 
-int IsIdStart(int ch)
-{
-    return ch == '_' || isalpha(ch);
-}
-
 void ReadToTokenData(void)
 {
     assert(TokenDataPos < TOKEN_DATA_MAX);
@@ -541,6 +519,8 @@ void TokenQueuePush(struct Token* Tok)
     TokenQueue[TokenQueueTail++ % TOKEN_QUEUE_MAX] = *Tok;
 }
 
+const char IsIdChar[] = "\x00\x00\x00\x00\x00\x00\xFF\x03\xFE\xFF\xFF\x87\xFE\xFF\xFF\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
 void InternalGetToken(void)
 {
 Restart:
@@ -551,30 +531,13 @@ Restart:
 
     TokenDataPos = NextTokenDataPos;
     CurTok.Text = TokenData + TokenDataPos;
-    if (!CurrentChar) {
-        if (CurTok.Type == TOK_EOF) {
-            // Fake up a newline to break out of loops
-            CurTok.Type = TOK_NEWLINE;
-        } else {
-            CurTok.Type = TOK_EOF;
-        }
-        return;
-    } else if (CurrentChar == '\\') {
-        CurTok.Type = CurrentChar;
-        ReadToTokenData();
-        if (CurrentChar == '\r') {
-            ReadChar();
-            assert(CurrentChar == '\n');
-        }
-        if (CurrentChar != '\n')
-            goto Out;
-        ReadChar();
-        goto Restart;
-    } else if (CurrentChar == '\n') {
+
+    switch (CurrentChar) {
+    case '\n':
         CurTok.Type = TOK_NEWLINE;
         ReadChar();
         return;
-    } else if (CurrentChar == '/') {
+    case '/':
         ReadChar();
         if (CurrentChar == '/') {
             do
@@ -594,43 +557,67 @@ Restart:
         CurTok.Type = '/';
         assert(TokenDataPos < TOKEN_DATA_MAX);
         TokenData[TokenDataPos++] = '/';
-    } else if (CurrentChar <= ' ') {
+        goto Out;
+    case '\\':
+        CurTok.Type = CurrentChar;
+        ReadToTokenData();
+        if (CurrentChar == '\r') {
+            ReadChar();
+            assert(CurrentChar == '\n');
+        }
+        if (CurrentChar != '\n')
+            goto Out;
+        ReadChar();
+        goto Restart;
+    case '"':
+    case '\'':
+        {
+            const int End = CurrentChar;
+            ReadChar();
+            CurTok.Type = End == '"' ? TOK_STRLIT : TOK_CHARLIT;
+            int esc = 0;
+            while (esc || CurrentChar != End) {
+                if (!CurrentChar || CurrentChar == '\n') {
+                    CurTok.Type = TOK_INVALID_LIT; // To support this happening in in-active block
+                    goto Out;
+                }
+                if (CurrentChar == '\\')
+                    esc = !esc;
+                else
+                    esc = 0;
+                ReadToTokenData();
+            }
+            ReadChar();
+            goto Out;
+        }
+    case 0:
+        if (CurTok.Type == TOK_EOF) {
+            // Fake up a newline to break out of loops
+            CurTok.Type = TOK_NEWLINE;
+        } else {
+            CurTok.Type = TOK_EOF;
+        }
+        return;
+    }
+    if (CurrentChar <= ' ') {
         CurTok.Type = TOK_WHITESPACE;
         ReadChar();
         while (CurrentChar <= ' ' && CurrentChar && CurrentChar != '\n')
             ReadChar();
         return;
-    } else if (isdigit(CurrentChar)) {
+    } else if ((unsigned)(CurrentChar - '0') < 10) {
         CurTok.Type = TOK_NUM;
         ReadToTokenData();
         if (CurrentChar == 'x' || CurrentChar == 'X')
             ReadToTokenData();
-        while (IsIdStart(CurrentChar) || isdigit(CurrentChar))
+        while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1)
             ReadToTokenData();
         goto Out;
-    } else if (IsIdStart(CurrentChar)) {
+    } else if ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1) {
         CurTok.Type = TOK_RAW_ID;
         do {
             ReadToTokenData();
-        } while (IsIdStart(CurrentChar) || isdigit(CurrentChar));
-        goto Out;
-    } else if (CurrentChar == '"' || CurrentChar == '\'') {
-        const int End = CurrentChar;
-        ReadChar();
-        CurTok.Type = End == '"' ? TOK_STRLIT : TOK_CHARLIT;
-        int esc = 0;
-        while (esc || CurrentChar != End) {
-            if (!CurrentChar || CurrentChar == '\n') {
-                CurTok.Type = TOK_INVALID_LIT; // To support this happening in in-active block
-                goto Out;
-            }
-            if (CurrentChar == '\\')
-                esc = !esc;
-            else
-                esc = 0;
-            ReadToTokenData();
-        }
-        ReadChar();
+        } while ((IsIdChar[(unsigned char)CurrentChar>>3]>>(CurrentChar&7)) & 1);
         goto Out;
     } else {
         CurTok.Type = CurrentChar;
@@ -716,25 +703,34 @@ int AddId(const char* Text)
     assert(IdCount < ID_MAX);
     const int Id = IdCount++;
     IdText[Id] = Text;
+    unsigned H = 0;
+    while (*Text)
+        H += (H<<4)+*Text++;
+    while (IdHash[H &= ID_HASH_MAX-1] < ID_MAX)
+        ++H;
+    IdHash[H] = Id;
     return Id;
-}
-
-int LookupId(const char* Text)
-{
-    int i;
-    for (i = 0; i < IdCount; ++i) {
-        if (!strcmp(Text, IdText[i]))
-            return i;
-    }
-    return -1;
 }
 
 void ReplaceId(struct Token* T)
 {
     assert(T->Type == TOK_RAW_ID);
-    const int Id = LookupId(T->Text);
-    if (Id != -1)
-        T->Type = TOK_ID + Id;
+
+    unsigned H = 0;
+    const char* Text = T->Text;
+    while (*Text)
+        H += (H<<4)+*Text++;
+
+    for (;;) {
+        unsigned Id = IdHash[H &= ID_HASH_MAX-1];
+        if (Id >= ID_MAX)
+            return;
+        if (!strcmp(T->Text, IdText[Id])) {
+            T->Type = TOK_ID + Id;
+            return;
+        }
+        ++H;
+    }
 }
 
 struct TokenList* SkipWsNL(struct TokenList* TL)
@@ -1532,6 +1528,7 @@ int main(int argc, char** argv)
     // Open input after output to have nice stack of files
     CurFile = OpenFile(argv[1], 0);
 
+    memset(IdHash, -1, sizeof(IdHash));
     AddId("define");
     AddId("undef");
     AddId("if");
