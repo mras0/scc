@@ -347,7 +347,7 @@ enum {
 struct File {
     const char* Filename;
     int FD;
-    int BufPos;
+    char* BufPtr;
     int BufSize;
     int OldLine;
     char LastChar;
@@ -428,6 +428,7 @@ struct File* OpenFile(const char* Filename, int Write)
     assert(NumFiles < FILES_MAX);
     struct File* F = &Files[NumFiles++];
     memset(F, 0, sizeof(*F));
+    F->BufPtr = F->Buf;
     F->Filename = Filename;
     F->FD = open(F->Filename, Write ? O_WRONLY | O_CREAT | O_TRUNC | O_BINARY : O_RDONLY | O_BINARY, 0600);
     if (F->FD < 0) {
@@ -1352,8 +1353,8 @@ void HandleInclude(void)
     RawGetToken();
     CurFile->LastChar = CurrentChar;
     CurTok.Type = TOK_NEWLINE;
-    CurFile->BufPos = CurFileBuf - CurFile->Buf;
-    assert((unsigned)CurFile->BufPos < sizeof(CurFile->Buf));
+    CurFile->BufPtr = (char*)CurFileBuf;
+    assert((unsigned)(CurFile->BufPtr - CurFile->Buf) < sizeof(CurFile->Buf));
     if (Debug) printf("Entering '%s' (%d)\n", Filename, NumFiles);
     CurFile = OpenFile(Filename, 0);
     CurFile->OldLine = Line;
@@ -1431,26 +1432,17 @@ void HandleDirective(void)
     }
 }
 
-void FlushBuf(struct File* F)
-{
-    write(F->FD, F->Buf, F->BufPos);
-    F->BufPos = 0;
-}
-
 void OutputStr(const char* Str)
 {
-    int l = (int)strlen(Str);
-    while (l) {
-        int Here = (int)sizeof(OutFile->Buf) - OutFile->BufPos;
-        if (Here > l) Here = l;
-        memcpy(OutFile->Buf + OutFile->BufPos, Str, Here);
-        OutFile->BufPos += Here;
-        Str += Here;
-        l -= Here;
-        if (OutFile->BufPos == (int)sizeof(OutFile->Buf)) {
-            FlushBuf(OutFile);
-        }
+    char* Buf = OutFile->BufPtr;
+    char* End = OutFile->Buf + sizeof(OutFile->Buf);
+    while ((*Buf = *Str++)) {
+        if (++Buf != End)
+            continue;
+        write(OutFile->FD, OutFile->Buf, sizeof(OutFile->Buf));
+        Buf = OutFile->Buf;
     }
+    OutFile->BufPtr = Buf;
 }
 
 void PPMain(void)
@@ -1461,61 +1453,72 @@ void PPMain(void)
     enum {WS_NONE,WS_NORMAL,WS_NEWLINE};
     int WS = WS_NONE;
     int StartOfLine = 1;
+    int Active = 1;
     for (;;) {
-        if (!CurTok.Type) {
+        switch (CurTok.Type) {
+        case '#':
+            if (!StartOfLine)
+                break;
+            RawGetToken();
+            HandleDirective();
+            if (!CurTok.Type)
+                return;
+            assert(CurTok.Type == TOK_NEWLINE);
+            GetToken();
+            StartOfLine = 1;
+            Active = CondActive();
+            continue;
+        case 0:
             if (Debug) printf("Exiting '%s' (%d)\n", CurFile->Filename, NumFiles);
             Line = CurFile->OldLine;
             CloseFile();
             CurFile = &Files[NumFiles-1];
             if (NumFiles == 1) {
-                break;
+                return;
             }
             CurrentChar = CurFile->LastChar;
-            CurFileBuf = &CurFile->Buf[CurFile->BufPos];
+            CurFileBuf  = CurFile->BufPtr;
             StartOfLine = 1;
             GetToken();
             continue;
         }
 
-        if (StartOfLine && CurTok.Type == '#') {
-            RawGetToken();
-            HandleDirective();
-            if (!CurTok.Type)
-                break;
-            assert(CurTok.Type == TOK_NEWLINE);
+        if (!Active) {
             GetToken();
-            StartOfLine = 1;
             continue;
         }
 
-        if (CondActive()) {
-            if (CurTok.Type == TOK_WHITESPACE) {
-                WS |= WS_NORMAL;
-            } else if (CurTok.Type == TOK_NEWLINE) {
-                WS |= WS_NEWLINE;
-                StartOfLine = 1;
+        switch (CurTok.Type) {
+        case TOK_WHITESPACE:
+            WS |= WS_NORMAL;
+            GetToken();
+            continue;
+        case TOK_NEWLINE:
+            WS |= WS_NEWLINE;
+            StartOfLine = 1;
+            GetToken();
+            continue;
+        }
+        if (WS) {
+            if (WS & WS_NEWLINE) {
+                OutputStr("\r\n");
             } else {
-                if (WS) {
-                    if (WS & WS_NEWLINE) {
-                        OutputStr("\r\n");
-                    } else {
-                        OutputStr(" ");
-                    }
-                }
-                WS = 0;
-                if (CurTok.Type == TOK_WHITESPACE) {
-                    OutputStr(" ");
-                } else if (CurTok.Type == TOK_NEWLINE) {
-                    OutputStr("\r\n");
-                } else if (CurTok.Type == TOK_STRLIT || CurTok.Type == TOK_CHARLIT) {
-                    const char* S = CurTok.Type == TOK_STRLIT ? "\"" : "'";
-                    OutputStr(S);
-                    OutputStr(CurTok.Text);
-                    OutputStr(S);
-                } else {
-                    OutputStr(CurTok.Text);
-                }
+                OutputStr(" ");
             }
+            WS = 0;
+        }
+        switch (CurTok.Type) {
+        case TOK_STRLIT:
+        case TOK_CHARLIT:
+            {
+                const char* S = CurTok.Type == TOK_STRLIT ? "\"" : "'";
+                OutputStr(S);
+                OutputStr(CurTok.Text);
+                OutputStr(S);
+            }
+            break;
+        default:
+            OutputStr(CurTok.Text);
         }
         GetToken();
     }
@@ -1581,7 +1584,7 @@ int main(int argc, char** argv)
     //Debug = 1;
     PPMain();
 
-    FlushBuf(OutFile);
+    write(OutFile->FD, OutFile->Buf, OutFile->BufPtr - OutFile->Buf);
     CloseFile();
     assert(NumFiles == 0);
 
