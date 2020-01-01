@@ -1,5 +1,5 @@
 // SCC - Small C Compiler for DOS
-// Copyright 2019 Michael Rasmussen. See LICENSE.md for details.
+// Copyright 2020 Michael Rasmussen. See LICENSE.md for details.
 
 #ifndef __SCC__
 

@@ -1,5 +1,5 @@
 // SCPP - Basic C pre-processor (part of SCC)
-// Copyright 2019 Michael Rasmussen. See LICENSE.md for details.
+// Copyright 2020 Michael Rasmussen. See LICENSE.md for details.
 
 #ifndef __SCC__
 

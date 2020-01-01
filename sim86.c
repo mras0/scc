@@ -1,5 +1,5 @@
 // SIM86 - Basic real-mode x86 simulator (part of SCC)
-// Copyright 2019 Michael Rasmussen. See LICENSE.md for details.
+// Copyright 2020 Michael Rasmussen. See LICENSE.md for details.
 
 #include "lib.h"
 

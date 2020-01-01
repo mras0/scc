@@ -1,5 +1,5 @@
 // SAS - Very basic assembler for DOS (part of SCC)
-// Copyright 2019 Michael Rasmussen. See LICENSE.md for details.
+// Copyright 2020 Michael Rasmussen. See LICENSE.md for details.
 
 #ifndef __SCC__
 #include <stdio.h>
