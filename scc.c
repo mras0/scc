@@ -425,6 +425,7 @@ int BaseTypeExtra;
 char ReturnUsed;
 enum { PENDING_PUSHAX = 1 };
 int Pending; // Bit0: PENDING_PUSHAX, Rest: remaing bits: SP adjustment
+int RegUse;
 int LastFixup;
 int IsDeadCode;
 
@@ -1298,7 +1299,7 @@ void EmitDivCX(void)
         Output2Bytes(I_XOR|1, 0xC0|R_DX<<3|R_DX);  // XOR DX, DX
         Output2Bytes(0xF7, MODRM_REG|(6<<3)|R_CX); // DIV CX
     } else {
-        Output3Bytes(0x99, 0xF7, MODRM_REG | (7<<3) | R_CX); // CWD \ IDIV CX
+        Output3Bytes(0x99, 0xF7, MODRM_REG|(7<<3)|R_CX); // CWD \ IDIV CX
     }
 }
 
@@ -1400,8 +1401,12 @@ void FlushPushAx(void)
 {
     if (Pending & PENDING_PUSHAX) {
         Pending &= ~PENDING_PUSHAX;
-        Output1Byte(I_PUSH|R_AX);
-        LocalOffset -= 2;
+        if (RegUse) {
+            Output1Byte(I_PUSH|R_BX);
+            LocalOffset -= 2;
+        }
+        Output1Byte(I_XCHG_AX|R_BX);
+        RegUse = 1;
     }
 }
 
@@ -1745,6 +1750,30 @@ void GetVal(void)
 
 void ParseAssignmentExpression(void);
 
+int GetStoredVal(int Reg)
+{
+    if (Pending&PENDING_PUSHAX) Fail();
+    if (RegUse) {
+        RegUse = 0;
+        switch (Reg) {
+        case -1:
+        case R_BX:
+            return R_BX;
+        case R_AX:
+            Output1Byte(I_XCHG_AX|R_BX);
+            return R_AX;
+        }
+        EmitMovRR(Reg, R_BX);
+        return Reg;
+    }
+
+    if (Reg < 0)
+        Reg = R_CX;
+    Output1Byte(I_POP|Reg);
+    LocalOffset += 2;
+    return Reg;
+}
+
 void ParsePostfixExpression(void)
 {
     for (;;) {
@@ -1770,6 +1799,24 @@ void ParsePostfixExpression(void)
                     Output1Byte(I_PUSH|R_AX); // TODO: Could possibly optimize as PENDING_PUSHAX
                     LocalOffset -= 2;
                 }
+
+                int RU = RegUse;
+                if (Pending & PENDING_PUSHAX) {
+                    Pending &= ~PENDING_PUSHAX;
+                    if (RU) {
+                        Output1Byte(I_PUSH|R_BX);
+                        LocalOffset -= 2;
+                        RegUse = 0;
+                    }
+                    Output1Byte(I_PUSH|R_AX);
+                    LocalOffset -= 2;
+                }
+                if (RegUse) {
+                    Output1Byte(I_PUSH|R_BX);
+                    LocalOffset -= 2;
+                    RegUse = 0;
+                }
+
                 int ArgSize = 0;
                 enum { ArgChunkSize = 8 }; // Must be power of 2
                 while (TokenType != ')') {
@@ -1817,6 +1864,7 @@ void ParsePostfixExpression(void)
                     CurrentType = VT_INT;
                 }
                 CurrentTypeExtra = RetExtra;
+
                 continue;
             }
         case '[':
@@ -1860,9 +1908,7 @@ void ParsePostfixExpression(void)
                             Output1Byte(I_ADD|5);
                             EmitGlobalRef(GlobalArr);
                         } else {
-                            Output1Byte(I_POP|R_CX);
-                            LocalOffset += 2;
-                            Output2Bytes(I_ADD|1, MODRM_REG|R_CX<<3);
+                            Output2Bytes(I_ADD|1, MODRM_REG|GetStoredVal(-1)<<3);
                         }
                     }
                 }
@@ -2107,35 +2153,44 @@ void FinishOp(int Inst)
     }
 }
 
-// Emit: AX <- AX 'OP' CX
-void DoBinOp(int Op)
+// Emit: AX <- AX 'OP' Reg
+void DoBinOp(int Op, int Reg)
 {
     int Inst = GetSimpleALU(Op);
-    int RM = MODRM_REG|R_CX<<3;
+    int RM = MODRM_REG|Reg<<3;
     if (Inst)
         goto HasInst;
+
     if (Op == '*') {
         // MUL : F7 /4
         Inst = 0xF7;
-        RM = MODRM_REG|(4<<3)|R_CX;
-    } else if (Op == '/' || Op == '%') {
+        RM = MODRM_REG|(4<<3)|Reg;
+        goto HasInst;
+    }
+
+    if (Reg != R_CX) Fail();
+
+    switch (Op) {
+    case '/': case '%':
         EmitDivCX();
         if (Op == '%') {
             Output1Byte(I_XCHG_AX|R_DX);
         }
         return;
-    } else if (Op == TOK_LSH) {
-        Inst = 0xd3;
+    }
+
+    Inst = 0xD3;
+    if (Op == TOK_LSH) {
         RM = MODRM_REG|SHROT_SHL<<3;
-    } else if (Op == TOK_RSH) {
-        Inst = 0xd3;
+    } else {
+        if (Op != TOK_RSH) Fail();
+        Inst = 0xD3;
         if (IsUnsignedOp)
             RM = MODRM_REG|SHROT_SHR<<3;
         else
             RM = MODRM_REG|SHROT_SAR<<3;
-    } else {
-        Fail();
     }
+
 HasInst:
     Output2Bytes(Inst, RM);
     FinishOp(Inst);
@@ -2174,7 +2229,7 @@ void DoRhsConstBinOp(int Op)
             Output2Bytes(0xB1, CurrentVal); // MOV CL, CurrentVal
         else
             EmitMovRImm(R_CX, CurrentVal);
-        DoBinOp(Op);
+        DoBinOp(Op, R_CX);
     }
 }
 
@@ -2316,8 +2371,7 @@ void HandleLhsLvalLoc(int LhsLoc)
             Pending &= ~PENDING_PUSHAX;
             Output1Byte(I_XCHG_AX|R_DI);
         } else {
-            Output1Byte(I_POP|R_DI);
-            LocalOffset += 2;
+            GetStoredVal(R_DI);
         }
         return;
     }
@@ -2462,7 +2516,7 @@ void ParseExpr1(int OuterPrecedence)
                     DoRhsConstBinOp(Op);
                     CurrentType &= ~VT_LOCMASK;
                 } else {
-                    DoBinOp(Op);
+                    DoBinOp(Op, R_CX);
                 }
             } else if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 // Constant assignment
@@ -2497,6 +2551,7 @@ RhsConst:
             DoRhsConstBinOp(Op);
         } else {
             Temp = OpCommutes(Op);
+            int R = R_CX;
             if (LhsLoc == VT_LOCLIT) {
                 if (LhsType != VT_INT) Fail();
                 GetVal();
@@ -2516,20 +2571,26 @@ RhsConst:
                     if ((CurrentType&(VT_BASEMASK|VT_PTRMASK)) != VT_CHAR) {
                         if (!(CurrentType&VT_LVAL)) Fail();
                         Pending &= ~PENDING_PUSHAX;
-                        if (!DoRhsLvalBinOp(Op))
+                        if (!DoRhsLvalBinOp(Op)) {
                             goto DoNormal;
+                        }
                         goto CheckSub;
                     }
                 }
                 GetVal();
-                if (Pending & PENDING_PUSHAX) Fail();
-                Output1Byte(I_POP|R_CX);
-                LocalOffset += 2;
+                if (!Temp) {
+                    Output1Byte(I_XCHG_AX|R_CX);
+                    GetStoredVal(R_AX);
+                    R = R_CX;
+                    Temp = 1;
+                } else {
+                    R = GetStoredVal(-1);
+                }
             }
 DoNormal:
             if (!Temp)
-                Output1Byte(I_XCHG_AX|R_CX);
-            DoBinOp(Op);
+                Output1Byte(I_XCHG_AX|R);
+            DoBinOp(Op, R);
         }
 CheckSub:
         if (Op == '-' && LhsPointeeSize) {
