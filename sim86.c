@@ -1063,50 +1063,62 @@ int main(int argc, char** argv)
             case 0xD1:
                 {
                     ModRM();
-                    const int v = ReadRM();
-                    // TODO: Handle flags
+                    const unsigned v = ReadRM();
+                    unsigned res, c;
                     switch (modrm>>3&7) {
                     case 4: // SHL R/M16, 1
                         if (verbose) sprintf(insttext, "SHL %s, 1", rmtext);
-                        WriteRM(v<<1);
-                        flags = (flags&~FC) | (v&0x8000);
+                        res = v << 1;
+                        c = v & 0x8000;
                         break;
                     case 5: // SHR R/M16, 1
                         if (verbose) sprintf(insttext, "SHR %s, 1", rmtext);
-                        WriteRM((v >> 1)&0x7fff);
-                        flags = (flags&~FC) | (v&1);
+                        res = v>>1;
+                        c = v&1;
                         break;
                     case 7: // SAR R/M16, 1
                         if (verbose) sprintf(insttext, "SAR %s, 1", rmtext);
-                        WriteRM(v >> 1);
+                        res = (int)v>>1;
+                        c = v&1;
                         break;
                     default:
                         Fatal("TODO: D1/%d", modrm>>3&7);
                     }
+                    WriteRM(res);
+                    flags = 0;
+                    if (c) flags |= FC;
+                    if (!res) flags |= FZ;
                 }
                 break;
             case 0xD3:
                 {
                     ModRM();
-                    const int v = ReadRM();
-                    const int a = reg[R_CX]&15;
-                    // TODO: Handle flags
+                    const unsigned v = ReadRM();
+                    const unsigned a = reg[R_CX]&15;
+                    unsigned res, c=0;
                     switch (modrm>>3&7) {
                     case 4: // SHL R/M16, CL
                         if (verbose) sprintf(insttext, "SHL %s, CL", rmtext);
-                        WriteRM(v << a);
+                        res = v << a;
+                        if (a) c = (v << (a-1)) & 0x8000;
                         break;
                     case 5: // SHR R/M16, CL
                         if (verbose) sprintf(insttext, "SHR %s, CL", rmtext);
-                        WriteRM((unsigned int)v >> a);
+                        res = v >> a;
+                        if (a) c = (v >> (a-1)) & 1;
                         break;
                     case 7: // SAR R/M16, CL
                         if (verbose) sprintf(insttext, "SAR %s, CL", rmtext);
-                        WriteRM(v >> a);
+                        res = (int)v >> a;
+                        if (a) c = (v >> (a-1)) & 1;
                         break;
                     default:
                         Fatal("TODO: D3/%d", modrm>>3&7);
                     }
+                    WriteRM(res);
+                    flags = 0;
+                    if (c) flags |= FC;
+                    if (!res) flags |= FZ;
                 }
                 break;
             case 0xE8:

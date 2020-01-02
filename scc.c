@@ -426,6 +426,7 @@ char ReturnUsed;
 enum { PENDING_PUSHAX = 1 };
 int Pending; // Bit0: PENDING_PUSHAX, Rest: remaing bits: SP adjustment
 int RegUse;
+int LastZFInst;
 int LastFixup;
 int IsDeadCode;
 
@@ -1969,7 +1970,8 @@ void ParseCastExpression(void);
 void ToBool(void)
 {
     LvalToRval();
-    Output2Bytes(I_AND|1, MODRM_REG); // AND AX, AX
+    if (CodeAddress != LastZFInst)
+        Output2Bytes(I_AND|1, MODRM_REG); // AND AX, AX
     CurrentType = VT_BOOL;
     CurrentVal  = JNZ;
 }
@@ -2518,6 +2520,7 @@ void ParseExpr1(int OuterPrecedence)
                 } else {
                     DoBinOp(Op, R_CX);
                 }
+                LastZFInst = CodeAddress;
             } else if (CurrentType == (VT_INT|VT_LOCLIT)) {
                 // Constant assignment
                 if (!LhsLoc) {
@@ -2574,7 +2577,7 @@ RhsConst:
                         if (!DoRhsLvalBinOp(Op)) {
                             goto DoNormal;
                         }
-                        goto CheckSub;
+                        goto BinOpOut;
                     }
                 }
                 GetVal();
@@ -2592,11 +2595,12 @@ DoNormal:
                 Output1Byte(I_XCHG_AX|R);
             DoBinOp(Op, R);
         }
-CheckSub:
+BinOpOut:
         if (Op == '-' && LhsPointeeSize) {
             EmitDivAxConst(LhsPointeeSize);
             CurrentType = VT_INT;
         }
+        LastZFInst = CodeAddress;
     } while (OperatorPrecedence <= OuterPrecedence);
 }
 

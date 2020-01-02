@@ -78,11 +78,36 @@ L2:
         mov cx, 0xABCD
         shr cx, 1
         jnc ERR
+        jz  ERR
         cmp cx, 0x55E6
+        jne ERR
+
+        mov ax, 2
+        shr ax, 1
+        jz ERR
+        jc ERR
+        cmp ax, 1
+        jne ERR
+        shr ax, 1
+        jnz ERR
+        jnc ERR
+        cmp ax, 0
+        jne ERR
+
+        mov cl, 2
+        mov ax, 2
+        shr ax, cl
+        jnc ERR
+        jnz ERR
+        cmp ax, 0
         jne ERR
 
         mov ax, 0x4c00
         int 0x21
 ERR:
+        mov ah, 2
+        mov dl, '!'
+        int 0x21
+
         mov ax, 0x4c01
         int 0x21
