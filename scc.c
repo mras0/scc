@@ -2416,7 +2416,6 @@ void ParseExpr1(int OuterPrecedence)
             LEnd = MakeLabel();
             if (CurrentType != VT_BOOL)
                 ToBool();
-            EmitMovRImm(R_AX, Temp);
             EmitJcc(CurrentVal ^ !Temp, LEnd);
         } else {
             LEnd = -1;
@@ -2453,9 +2452,15 @@ void ParseExpr1(int OuterPrecedence)
         if (LEnd >= 0) {
             if (CurrentType != VT_BOOL)
                 ToBool();
-            if (LhsVal != CurrentVal)
-                GetVal();
-            EmitLocalLabel(LEnd);
+            if (LhsVal != CurrentVal) {
+                Output2Bytes(0xB0, !Temp);
+                Output2Bytes(0x70|(CurrentVal^Temp), 2);
+                EmitLocalLabel(LEnd);
+                Output3Bytes(0xB0, Temp, 0x98);
+                CurrentType = VT_INT;
+            } else {
+                EmitLocalLabel(LEnd);
+            }
             continue;
         }
 
