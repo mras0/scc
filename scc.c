@@ -1808,8 +1808,10 @@ int GetStoredVal(int Reg)
 
 void ParsePostfixExpression(void)
 {
-    for (;;) {
+    while (OperatorPrecedence == PREC_STOP) {
         switch (TokenType) {
+        case ';': case ')': case ']': case ':':
+            return;
         case '(':
             {
                 // Function call
