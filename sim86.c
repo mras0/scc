@@ -113,32 +113,19 @@ NORETURN void Fatal(const char* fmt, ...)
     exit(1);
 }
 
+const char Reg8Names[]  = "AL\0CL\0DL\0BL\0AH\0CH\0DH\0BH";
+const char Reg16Names[] = "AX\0CX\0DX\0BX\0SP\0BP\0SI\0DI";
+const char SRegNames[]  = "ES\0CS\0SS\0DS";
+
 const char* RegName(int r)
 {
-    switch (r) {
-    default:
-        assert(0);
-    case R_AX: return dsize ? "AX" : "AL";
-    case R_CX: return dsize ? "CX" : "CL";
-    case R_DX: return dsize ? "DX" : "DL";
-    case R_BX: return dsize ? "BX" : "BL";
-    case R_SP: return dsize ? "SP" : "AH";
-    case R_BP: return dsize ? "BP" : "CH";
-    case R_SI: return dsize ? "SI" : "DH";
-    case R_DI: return dsize ? "DI" : "BH";
-    }
+    r *= 3;
+    return dsize ? &Reg16Names[r] : &Reg8Names[r];
 }
 
 const char* SRegName(int sr)
 {
-    switch (sr) {
-    default:
-        assert(0);
-    case SR_ES: return "ES";
-    case SR_CS: return "CS";
-    case SR_SS: return "SS";
-    case SR_DS: return "DS";
-    }
+    return &SRegNames[sr*3];
 }
 
 const char* OpName(int op)
@@ -832,10 +819,12 @@ int main(int argc, char** argv)
         } else if (inst >= 0x40 && inst < 0x48) {
             int r = inst - 0x40;
             modrm = 0xc0 | r << 3 | r;
+            if (verbose) strcpy(rmtext, RegName(r));
             INC();
         } else if (inst >= 0x48 && inst < 0x50) {
             int r = inst - 0x48;
             modrm = 0xc0 | r << 3 | r;
+            if (verbose) strcpy(rmtext, RegName(r));
             DEC();
         } else if (inst >= 0x50 && inst < 0x58) {
             PUSH(inst-0x50);
