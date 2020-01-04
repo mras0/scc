@@ -76,7 +76,7 @@ int memcmp(void* l, void* r, int size)
 
 void exit(int retval)
 {
-    retval = (retval & 0xff) | 0x4c00;
+    retval = (unsigned char)retval | 0x4c00;
     DosCall(&retval, 0, 0, 0);
 }
 
@@ -394,7 +394,7 @@ struct VarDecl* VarLookup[ID_MAX];
 int IgnoreRedef;
 
 int Scopes[SCOPE_MAX]; // -> Next free VarDecl index (conversely one more than index of last defined variable/id)
-int ScopesCount = 1; // First scope is global
+int ScopeCount = 1; // First scope is global
 
 struct Label Labels[LABEL_MAX];
 int LocalLabelCounter;
@@ -1110,8 +1110,9 @@ void DoFixups(int r, int relative)
                     c[0]  = I_RET;
                     continue;
                 }
-                c[-1] = I_XCHG_AX;
-                c[0]  = I_XCHG_AX;
+                // Faster than two NOPs
+                c[-1] = I_MOV_R_RM;
+                c[0]  = MODRM_REG;
                 continue;
             }
             c[-1] = I_JMP_REL16;
@@ -1198,7 +1199,9 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
     switch (Loc) {
     case VT_LOCOFF:
         Output3Bytes(Inst, MODRM_BP_DISP8|R, Val);
-        if (Val != (char)Val && !IsDeadCode) {
+        if (Val == (char)Val)
+            return;
+        if (!IsDeadCode) {
             Output[CodeAddress-(CODESTART+2)] += MODRM_BP_DISP16-MODRM_BP_DISP8;
             Output1Byte(Val>>8);
         }
@@ -1606,7 +1609,7 @@ struct VarDecl* AddVarDeclScope(int Scope, int Id)
 
 struct VarDecl* AddVarDecl(int Id)
 {
-    if (Scopes[ScopesCount-1] >= VARDECL_MAX) Fail();
+    if (Scopes[ScopeCount-1] >= VARDECL_MAX) Fail();
 
     // Check if definition/re-declaration in global scope
     struct VarDecl* Prev = VarLookup[Id];
@@ -1614,7 +1617,7 @@ struct VarDecl* AddVarDecl(int Id)
         return Prev;
     }
 
-    struct VarDecl* VD = AddVarDeclScope(ScopesCount-1, Id);
+    struct VarDecl* VD = AddVarDeclScope(ScopeCount-1, Id);
     VD->Prev = Prev;
     VarLookup[Id] = VD;
     return VD;
@@ -1706,7 +1709,7 @@ void ParsePrimaryExpression(void)
         CurrentTypeExtra = ArrayCount++;
         if (!IsDeadCode) {
             int EndLab = -1;
-            if (ScopesCount != 1) {
+            if (ScopeCount != 1) {
                 Output1Byte(I_MOV_R_IMM16);
                 OutputWord(CodeAddress+5);
                 EmitJmp(EndLab = MakeLabel());
@@ -3052,7 +3055,7 @@ Redo:
         GetToken();
         ParseExpr();
         if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Constant expression expected
-        Output1Byte(CurrentVal & 0xff);
+        Output1Byte(CurrentVal);
         return;
     case TOK_IF:
         {
@@ -3233,18 +3236,18 @@ Redo:
 
 void PushScope(void)
 {
-    if (ScopesCount == SCOPE_MAX) Fail();
-    Scopes[ScopesCount] = Scopes[ScopesCount-1];
-    ++ScopesCount;
+    if (ScopeCount == SCOPE_MAX) Fail();
+    Scopes[ScopeCount] = Scopes[ScopeCount-1];
+    ++ScopeCount;
     ++IgnoreRedef;
 }
 
 void PopScope(void)
 {
-    if (ScopesCount == 1) Fail();
-    --ScopesCount;
+    if (ScopeCount == 1) Fail();
+    --ScopeCount;
     --IgnoreRedef;
-    int i = Scopes[ScopesCount-1], e = Scopes[ScopesCount];
+    int i = Scopes[ScopeCount-1], e = Scopes[ScopeCount];
     for (; i < e; ++i) {
         struct VarDecl* vd = &VarDecls[i];
         if (vd->Id < 0)
@@ -3457,7 +3460,7 @@ int main(int argc, char** argv)
     while (TokenType)
         ParseExternalDefition();
     close(InFile);
-    if (ScopesCount != 1) Fail();
+    if (ScopeCount != 1) Fail();
 
     EmitGlobalLabel(SBSS);
     struct VarDecl* vd = VarDecls;
