@@ -422,7 +422,6 @@ int IsUnsignedOp;
 int BaseType;
 int BaseTypeExtra;
 
-char ReturnUsed;
 enum { PENDING_PUSHAX = 1 };
 int Pending; // Bit0: PENDING_PUSHAX, Rest: remaing bits: SP adjustment
 int RegUse;
@@ -1629,9 +1628,37 @@ struct VarDecl* AddLateGlobalVar(int Id)
     return AddVarDeclScope(0, Id);
 }
 
-void HandlePrimaryId(int id)
+void PushScope(void)
 {
-    struct VarDecl* vd = VarLookup[id];
+    if (ScopeCount == SCOPE_MAX) Fail();
+    Scopes[ScopeCount] = Scopes[ScopeCount-1];
+    ++ScopeCount;
+    ++IgnoreRedef;
+}
+
+void PopScope(void)
+{
+    if (ScopeCount == 1) Fail();
+    --ScopeCount;
+    --IgnoreRedef;
+    int i = Scopes[ScopeCount-1], e = Scopes[ScopeCount];
+    for (; i < e; ++i) {
+        struct VarDecl* vd = &VarDecls[i];
+        if (vd->Id < 0)
+            continue;
+        if (vd->Ref) {
+            // Move static variable for real to global scope
+            CurrentType = vd->Type;
+            CurrentTypeExtra = vd->TypeExtra;
+            AddLateGlobalVar(-2)->Ref = vd->Ref;
+        }
+        VarLookup[vd->Id] = vd->Prev;
+    }
+}
+
+void HandlePrimaryId(void)
+{
+    struct VarDecl* vd = VarLookup[CurrentVal];
     if (!vd) {
         // Lookup failed. Assume function returning int.
         CurrentType = VT_LOCGLOB|VT_FUN|VT_INT;
@@ -1639,8 +1666,8 @@ void HandlePrimaryId(int id)
         if (IsDeadCode) {
             CurrentVal = 0;
         } else {
-            VarLookup[id] = &VarDecls[Scopes[0]];
-            AddLateGlobalVar(id);
+            VarLookup[CurrentVal] = &VarDecls[Scopes[0]];
+            AddLateGlobalVar(CurrentVal);
         }
         return;
     }
@@ -1728,7 +1755,8 @@ void ParsePrimaryExpression(void)
         HandleVarArg();
         return;
     }
-    HandlePrimaryId(ExpectId());
+    CurrentVal = ExpectId();
+    HandlePrimaryId();
 }
 
 // Get current value to AX
@@ -2925,7 +2953,6 @@ struct VarDecl* NextDecl(void)
     return DoDecl();
 }
 
-void ParseCompoundStatement(void);
 void ParseStatement(void);
 
 void DoLoopStatements(int BLabel, int CLabel)
@@ -2959,7 +2986,24 @@ void ParseStatement(void)
 Redo:
     // Get compund statements out of the way to simplify switch handling
     if (TokenType == '{') {
-        ParseCompoundStatement();
+        const int OldOffset         = LocalOffset;
+        const int OldStructMemCount = StructMemCount;
+        const int OldStructCount    = StructCount;
+        const int OldArrayCount     = ArrayCount;
+
+        PushScope();
+        Expect('{');
+        while (TokenType != '}') {
+            ParseStatement();
+        }
+        GetToken();
+        PopScope();
+        Pending += OldOffset - LocalOffset;
+
+        LocalOffset    = OldOffset;
+        StructMemCount = OldStructMemCount;
+        StructCount    = OldStructCount;
+        ArrayCount     = OldArrayCount;
         return;
     }
 
@@ -3017,6 +3061,9 @@ Redo:
         }
     }
 
+    if (TokenType >= TOK_ID)
+        goto Skip;
+
     switch (TokenType) {
     case ';':
         GetToken();
@@ -3028,14 +3075,17 @@ Redo:
             GetVal();
         }
         if (LocalOffset) {
-            ReturnUsed = 1;
+            if (ReturnLabel < 0)
+                ReturnLabel = MakeLabel();
             EmitJmp(ReturnLabel);
         } else {
             Output2Bytes(I_POP|R_BP, I_RET);
             IsDeadCode = 1;
         }
     GetSemicolon:
-        Expect(';');
+        if (TokenType != ';')
+            Expect(';');
+        GetToken();
         return;
     case TOK_BREAK:
         GetToken();
@@ -3189,6 +3239,7 @@ Redo:
         return;
     }
 
+Skip:
     if (IsTypeStart()) {
         struct VarDecl* vd = ParseFirstDecl();
         while (vd) {
@@ -3215,15 +3266,15 @@ Redo:
         }
     } else if (TokenType >= TOK_ID) {
         // Expression statement / Labelled statement
-        const int id = TokenType - TOK_KEYWORD;
+        CurrentVal = TokenType - TOK_KEYWORD;
         GetToken();
         if (TokenType == ':') {
             GetToken();
-            EmitLocalLabel(GetNamedLabel(id)->LabelId);
+            EmitLocalLabel(GetNamedLabel(CurrentVal)->LabelId);
             EmitModrm(I_LEA, R_SP, VT_LOCOFF, LocalOffset);
             goto Redo;
         } else {
-            HandlePrimaryId(id);
+            HandlePrimaryId();
             ParsePostfixExpression();
             if (OperatorPrecedence <= PREC_COMMA)
                 ParseExpr1(PREC_COMMA);
@@ -3232,58 +3283,6 @@ Redo:
         ParseExpr();
     }
     goto GetSemicolon;
-}
-
-void PushScope(void)
-{
-    if (ScopeCount == SCOPE_MAX) Fail();
-    Scopes[ScopeCount] = Scopes[ScopeCount-1];
-    ++ScopeCount;
-    ++IgnoreRedef;
-}
-
-void PopScope(void)
-{
-    if (ScopeCount == 1) Fail();
-    --ScopeCount;
-    --IgnoreRedef;
-    int i = Scopes[ScopeCount-1], e = Scopes[ScopeCount];
-    for (; i < e; ++i) {
-        struct VarDecl* vd = &VarDecls[i];
-        if (vd->Id < 0)
-            continue;
-        if (vd->Ref) {
-            // Move static variable for real to global scope
-            CurrentType = vd->Type;
-            CurrentTypeExtra = vd->TypeExtra;
-            AddLateGlobalVar(-2)->Ref = vd->Ref;
-        }
-        VarLookup[vd->Id] = vd->Prev;
-    }
-}
-
-void ParseCompoundStatement(void)
-{
-    const int OldOffset         = LocalOffset;
-    const int OldStructMemCount = StructMemCount;
-    const int OldStructCount    = StructCount;
-    const int OldArrayCount     = ArrayCount;
-
-    PushScope();
-    Expect('{');
-    while (TokenType != '}') {
-        ParseStatement();
-    }
-    GetToken();
-    PopScope();
-    if (OldOffset != LocalOffset) {
-        Pending += OldOffset - LocalOffset;
-        LocalOffset = OldOffset;
-    }
-
-    StructMemCount = OldStructMemCount;
-    StructCount    = OldStructCount;
-    ArrayCount     = OldArrayCount;
 }
 
 // Arg 2              BP + 6
@@ -3303,15 +3302,13 @@ void ParseExternalDefition(void)
 
     if (vd->Type & VT_FUN) {
         vd->Type |= VT_LOCGLOB;
-        if (TokenType == ';') {
-            GetToken();
-            return;
+        if (TokenType != '{') {
+            goto End;
         }
         int i;
         // Make room for "late globals"
-        for (i = 0; i < GLOBAL_RESERVE; ++i) {
-            VarDecls[Scopes[0]++].Id = -1;
-        }
+        memset(&VarDecls[Scopes[0]], -1, sizeof(VarDecls[0])*GLOBAL_RESERVE);
+        Scopes[0] += GLOBAL_RESERVE;
         PushScope();
         Scopes[0] -= GLOBAL_RESERVE;
         for (i = 0; i < ArgsCount; ++i) {
@@ -3324,15 +3321,14 @@ void ParseExternalDefition(void)
 
         if (LocalLabelCounter) Fail();
         LocalOffset = 0;
-        ReturnUsed = 0;
-        ReturnLabel = MakeLabel();
+        ReturnLabel = -1;
         BreakLabel = ContinueLabel = -1;
 
         EmitGlobalLabel(vd);
         Output1Byte(I_PUSH|R_BP);
         EmitMovRR(R_BP, R_SP);
-        ParseCompoundStatement();
-        if (ReturnUsed) {
+        ParseStatement();
+        if (ReturnLabel >= 0) {
             EmitLocalLabel(ReturnLabel);
             EmitMovRR(R_SP, R_BP);
         }
