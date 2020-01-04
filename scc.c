@@ -2544,6 +2544,8 @@ void ParseExpr1(int OuterPrecedence)
         int LhsPointeeSize = 0;
         if (LhsType & VT_PTRMASK) {
             LhsPointeeSize = SizeofType(LhsType-VT_PTR1, LhsTypeExtra);
+            if ((CurrentType&VT_BASEMASK) == VT_ARRAY)
+                LvalToRval(); // Decay array before overwriting CurrentTypeExtra
             CurrentTypeExtra = LhsTypeExtra;
             IsUnsignedOp = 1;
         }
