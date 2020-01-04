@@ -1,0 +1,12 @@
+#define DEF_ASM(x) DEF(TOK_ASM_ ## x, #x)
+
+#define DEF_ASMTEST(x,suffix) \
+ DEF_ASM(x ## o ## suffix) \
+ DEF_ASM(x ## no ## suffix)
+
+#define DEF(id, str) ,id
+
+ DEF_ASMTEST(j,)
+ DEF_ASMTEST(set,)
+ DEF_ASMTEST(set,b)
+ DEF_ASMTEST(cmov,)

@@ -297,6 +297,15 @@ enum {
     FNAME_MAX       = 64,
 };
 
+#ifndef __SCC__
+#define ID_MAX          4096
+#define ID_HASH_MAX     8192
+#define TOKEN_DATA_MAX  (1<<17)
+#define TOKEN_LIST_MAX  8192
+#define ARGUMENT_MAX    256
+#define FILES_MAX       16
+#endif
+
 enum {
     TOK_EOF,
     TOK_WHITESPACE,
@@ -537,7 +546,9 @@ struct Token* SimpleExpand(struct Token* Tok)
 {
     while (Tok->Type == TOK_ARG) {
         const struct Argument* A = (const struct Argument*)Tok->Text;
-        assert(A->Replacement && !A->Replacement->Next);
+        if (!A->Replacement)
+            return 0;
+        assert(!A->Replacement->Next);
         Tok = &A->Replacement->Tok;
     }
     return Tok;
@@ -549,15 +560,15 @@ void PasteAppend(struct Token* Tok)
 {
     CurTok = *SimpleExpand(&CurTok);
     Tok = SimpleExpand(Tok);
-    if (Debug) { printf("Paste "); PrintToken(Tok); printf(" to "); PrintToken(&CurTok); printf("\n"); }
+    if (Debug) { printf("Paste "); if(Tok)PrintToken(Tok); printf(" to "); PrintToken(&CurTok); printf("\n"); }
+    const char* T2 = Tok ? Tok->Text : "";
     const int l1 = (int)strlen(CurTok.Text);
-    const int l2 = (int)strlen(Tok->Text);
-    assert(NextTokenDataPos+l1+l2+1 < TOKEN_DATA_MAX);
-    memcpy(&TokenData[NextTokenDataPos], CurTok.Text, l1);
-    memcpy(&TokenData[NextTokenDataPos+l1], Tok->Text, l2);
-    TokenData[NextTokenDataPos+l1+l2] = 0;
-    CurTok.Text = &TokenData[NextTokenDataPos];
-    NextTokenDataPos+=l1+l2+1;
+    const int l2 = (int)strlen(T2) + 1;
+    assert(TokenDataPos+l1+l2 < TOKEN_DATA_MAX);
+    memcpy(&TokenData[TokenDataPos], CurTok.Text, l1);
+    memcpy(&TokenData[TokenDataPos+l1], T2, l2);
+    CurTok.Text = &TokenData[TokenDataPos];
+    TokenDataPos+=l1+l2;
     if (CurTok.Type > ' ' && CurTok.Type < TOK_RAW_ID) {
         CurTok.Type = TOK_CREATED_OP;
     }
@@ -989,6 +1000,7 @@ void GetToken(void)
                         }
                         PendWS = 0;
                         ArgL = AddToken(ArgL, &CurTok);
+                        assert(TokenDataPos >= NextTokenDataPos);
                         NextTokenDataPos = TokenDataPos; // Preserve the token data
                     }
                     *ArgL = 0;

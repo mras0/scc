@@ -1,0 +1,5 @@
+
+,TOK_ASM_jo ,TOK_ASM_jno
+,TOK_ASM_seto ,TOK_ASM_setno
+,TOK_ASM_setob ,TOK_ASM_setnob
+,TOK_ASM_cmovo ,TOK_ASM_cmovno
