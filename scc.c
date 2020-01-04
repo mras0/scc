@@ -2966,22 +2966,37 @@ Redo:
 
         switch (TokenType) {
         case TOK_CASE:
-            GetToken();
-            EnsureSwitchStmt();
-            for (;;) {
-                ParseExpr();
-                Expect(':');
-                if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Need constant expression
+            {
+                EnsureSwitchStmt();
                 EmitLocalLabel(NextSwitchCase);
                 NextSwitchCase = MakeLabel();
-                Output3Bytes(I_CMP|5, CurrentVal, CurrentVal>>8);
-                if (TokenType != TOK_CASE)
-                    break;
-                GetToken();
-                EmitJcc(JZ, NextSwitchStmt);
+
+                int Cases[(0x7F-3)/5]; // Limit to what we can handle with short jumps.
+                int NumCases = 0;
+                do {
+                    GetToken();
+                    ParseExpr();
+                    Expect(':');
+                    if (CurrentType != (VT_INT|VT_LOCLIT)) Fail(); // Need constant expression
+                    Cases[NumCases] = CurrentVal;
+                    if (++NumCases == sizeof(Cases)/sizeof(*Cases))
+                        break;
+                } while (TokenType == TOK_CASE);
+                int* Case = Cases;
+                if (--NumCases) {
+                    int Off = NumCases * 5 + 3;
+                    while (NumCases--) {
+                        Output1Byte(I_CMP|5);
+                        OutputWord(*Case++);
+                        Output2Bytes(0x70|JZ, Off);
+                        Off -= 5;
+                    }
+                }
+                Output1Byte(I_CMP|5);
+                OutputWord(*Case);
+                EmitJcc(JNZ, NextSwitchCase);
+                goto Stmt;
             }
-            EmitJcc(JNZ, NextSwitchCase);
-            goto Stmt;
         case TOK_DEFAULT:
             GetToken();
             Expect(':');
