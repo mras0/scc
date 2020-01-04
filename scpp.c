@@ -7,11 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include <ctype.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 
 #ifdef _MSC_VER
 #include <io.h>
@@ -55,23 +53,21 @@ void memset(void* ptr, int val, int size)
 
 int DosCall(int* ax, int bx, int cx, int dx)
 {
-    // Use segment override to allow DS to not point at data segment
-
-    _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
-    _emit 0x36 _emit 0x8B _emit 0x07 // 8B07              MOV AX,[SS:BX]
-    _emit 0x8B _emit 0x5E _emit 0x06 // 8B5E06            MOV BX,[BP+0x6]
-    _emit 0x8B _emit 0x4E _emit 0x08 // 8B4E08            MOV CX,[BP+0x8]
-    _emit 0x8B _emit 0x56 _emit 0x0A // 8B560A            MOV DX,[BP+0xA]
-    _emit 0xCD _emit 0x21            // CD21              INT 0x21
-    _emit 0x8B _emit 0x5E _emit 0x04 // 8B5E04            MOV BX,[BP+0x4]
-    _emit 0x36 _emit 0x89 _emit 0x07 // 8907              MOV [SS:BX],AX
-    _emit 0xB8 _emit 0x00 _emit 0x00 // B80000            MOV AX,0x0
-    _emit 0x19 _emit 0xC0            // 19C0              SBB AX,AX
+    _emit 0x8B _emit 0x5E _emit 0x04 // MOV BX,[BP+0x4]
+    _emit 0x8B _emit 0x07            // MOV AX,[BX]
+    _emit 0x8B _emit 0x5E _emit 0x06 // MOV BX,[BP+0x6]
+    _emit 0x8B _emit 0x4E _emit 0x08 // MOV CX,[BP+0x8]
+    _emit 0x8B _emit 0x56 _emit 0x0A // MOV DX,[BP+0xA]
+    _emit 0xCD _emit 0x21            // INT 0x21
+    _emit 0x8B _emit 0x5E _emit 0x04 // MOV BX,[BP+0x4]
+    _emit 0x89 _emit 0x07            // MOV [BX],AX
+    _emit 0xB8 _emit 0x00 _emit 0x00 // MOV AX,0x0
+    _emit 0x19 _emit 0xC0            // SBB AX,AX
 }
 
 void exit(int retval)
 {
-    retval = (retval & 0xff) | 0x4c00;
+    retval = (unsigned char)retval | 0x4c00;
     DosCall(&retval, 0, 0, 0);
 }
 

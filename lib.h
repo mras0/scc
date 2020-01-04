@@ -69,7 +69,7 @@ int DosCall(int* ax, int bx, int cx, int dx)
 
 void exit(int retval)
 {
-    retval = (retval & 0xff) | 0x4c00;
+    retval = (unsigned char)retval | 0x4c00;
     DosCall(&retval, 0, 0, 0);
 }
 

@@ -7,12 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include <ctype.h>
-#include <time.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 
 #ifdef _MSC_VER
 #include <io.h>
@@ -159,16 +156,6 @@ void _start(void)
     memset(&_SBSS, 0, &_EBSS-&_SBSS);
     exit(main(ParseArgs(), ARGS));
 }
-
-int clock()
-{
-    _emit 0x31 _emit 0xC0              // XOR  AX, AX
-    _emit 0x8E _emit 0xD8              // MOV  DS, AX
-    _emit 0xA1 _emit 0x6C _emit 0x04   // MOV  AX, [0x46C]
-    _emit 0x0E                         // PUSH CS
-    _emit 0x1F                         // POP  DS
-}
-
 #endif
 
 // Misc. constants
@@ -3428,8 +3415,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const int StartTime = clock();
-
     InFile = open(argv[1], O_RDONLY | O_BINARY);
     if (InFile < 0) {
         Fatal("Error opening input file");
@@ -3485,8 +3470,6 @@ int main(int argc, char** argv)
     const int OutFile = OpenOutput();
     write(OutFile, Output, CodeAddress - BssSize - CODESTART);
     close(OutFile);
-
-    Printf("%s %d\n", IdBuffer, clock()-StartTime);
 
     return 0;
 }

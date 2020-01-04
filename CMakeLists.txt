@@ -102,7 +102,6 @@ if (MAKE_DISKS)
             ${TEMPLATE} put "${BINARY_DIR}/cmdp.com"
             ${TEMPLATE} put "${BINARY_DIR}/uvi.com"
             ${TEMPLATE} put "${BINARY_DIR}/debug.com"
-            ${TEMPLATE} put "${BINARY_DIR}/sasm.com"
             ${TEMPLATE} put "${PROJECT_SOURCE_DIR}/LICENSE.md"
             ${CMDS}
             DEPENDS ${DEPS} SASM
@@ -149,6 +148,18 @@ if (MAKE_DISKS)
         "${SOURCE_DIR}/uvi.asm"
         )
 
+    add_custom_target(
+        release
+        COMMAND ${CMAKE_COMMAND} -E tar cv scc-dos.zip --format=zip --
+            "${PROJECT_BINARY_DIR}/scc.com"
+            "${PROJECT_BINARY_DIR}/scpp.com"
+            "${PROJECT_BINARY_DIR}/sas.com"
+            "${PROJECT_BINARY_DIR}/sim86.com"
+            "${PROJECT_BINARY_DIR}/swar.com"
+        DEPENDS
+            "${CMAKE_CURRENT_BINARY_DIR}/small.img"
+            "${CMAKE_CURRENT_BINARY_DIR}/large.img"
+        )
     find_program(QEMU qemu-system-i386)
     if (QEMU)
         message("Found qemu: ${QEMU}")

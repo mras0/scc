@@ -6,7 +6,7 @@
 
 Also included are a small set of supporting software components:
 
-  - [SCPP](scpp.c) - Pre-processor (Note: not optimized yet)
+  - [SCPP](scpp.c) - Pre-processor
   - [SAS](sas.c) - Assembler that can bootstrap [SDOS/SASM](https://github.com/mras0/sasm)
   - [SIM86](sim86.c) - Basic x86 simulator (Just enough to simulate the ecosystem)
 
@@ -74,7 +74,7 @@ Compile `scc.c` using a C99 compiler and run the output on `scc.c`, this produce
 
 Or using CMake:
 
-    mkdir build && cd build && cmake -DMAKE_DISKS:BOOL=TRUE && cmake --build .
+    mkdir build && cd build && cmake -DMAKE_DISKS:BOOL=TRUE .. && cmake --build .
 
 You can omit `-DMAKE_DISKS:BOOL=TRUE` if you don't want the disk images built.
 
