@@ -297,13 +297,15 @@ enum {
     FNAME_MAX       = 64,
 };
 
+#if 0 // Uncomment to test with real/larger files
 #ifndef __SCC__
 #define ID_MAX          4096
 #define ID_HASH_MAX     8192
-#define TOKEN_DATA_MAX  (1<<17)
+#define TOKEN_DATA_MAX  (1<<18)
 #define TOKEN_LIST_MAX  8192
 #define ARGUMENT_MAX    256
 #define FILES_MAX       16
+#endif
 #endif
 
 enum {
@@ -1404,15 +1406,17 @@ void HandleDirective(void)
     } else if (Directive == TOK_INCLUDE) {
         if (CondActive()) HandleInclude();
     } else if (Directive == TOK_UNDEF) {
-        RawGetToken();
-        RawSkipWS();
-        ReplaceId();
-        if (CurTok.Type >= TOK_USER_ID) {
-            // HACK: Just hide #undef'ed macros
-            Macros[CurTok.Type - TOK_USER_ID].Hide = 2;
-            FreeTokenList(Macros[CurTok.Type - TOK_USER_ID].Replacement);
+        if (CondActive()) {
+            RawGetToken();
+            RawSkipWS();
+            ReplaceId();
+            if (CurTok.Type >= TOK_USER_ID) {
+                // HACK: Just hide #undef'ed macros
+                Macros[CurTok.Type - TOK_USER_ID].Hide = 2;
+                FreeTokenList(Macros[CurTok.Type - TOK_USER_ID].Replacement);
+            }
+            GetToken();
         }
-        GetToken();
     } else if (Directive == TOK_IFDEF || Directive == TOK_IFNDEF) {
         RawGetToken();
         RawSkipWS();
@@ -1426,6 +1430,11 @@ void HandleDirective(void)
         }
     } else if (Directive == TOK_PRAGMA || Directive == TOK_LINE) {
         // Ignore
+    } else if (Directive == TOK_RAW_ID) {
+        if (CondActive()) {
+            printf("Invalid directive '%s'\n", CurTok.Text);
+            assert(0);
+        }
     } else {
         GetToken();
 
@@ -1448,6 +1457,7 @@ void HandleDirective(void)
             assert(CondCount);
             --CondCount;
         } else {
+            assert(Directive >= TOK_ID && Directive < TOK_ID+ID_MAX);
             printf("TODO: Handle directive '%s'\n", IdText[Directive-TOK_ID]);
         }
     }
