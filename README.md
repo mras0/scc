@@ -10,9 +10,28 @@ Also included are a small set of supporting software components:
   - [SAS](sas.c) - Assembler that can bootstrap [SDOS/SASM](https://github.com/mras0/sasm)
   - [SIM86](sim86.c) - Basic x86 simulator (Just enough to simulate the ecosystem)
 
+
+## Building
+
+Compile `scc.c` using a C99 compiler and run the output on `scc.c`, this produces `scc.com` which can then be run under DOS (using e.g. [DOSBox](https://www.dosbox.com/) or the provided [simulator](sim86.c)) where it can self-compile: `scc.com scc.c`. These steps can then be repeated for the remainig software components.
+
+Or using CMake:
+
+    mkdir build && cd build && cmake -DMAKE_DISKS:BOOL=TRUE .. && cmake --build .
+
+You can omit `-DMAKE_DISKS:BOOL=TRUE` if you don't want the disk images built.
+
+Running the test suite (will use DOSBox if available):
+
+    cmake --build . --target test
+
+If building the disk images is enabled and [QEMU](https://www.qemu.org/) was found, you can build the `qemu_test` target to start QEMU with the large disk image attached. Use the CMake variable `QEMU_EXTRA_ARGS` to pass in extra arguments to QMEU.
+
 ## Trying
 
-Download a [release](https://github.com/mras0/scc/releases) or build the software yourself (see below).
+![SCC in action](doc/scc.gif)
+
+Download a [release](https://github.com/mras0/scc/releases) or build the software yourself (see above).
 
 I recommend using one of the disk images:
 
@@ -68,22 +87,6 @@ A more realistic hello world example would be:
 
 Which should give you a (vague) idea of how to overcome the limitations of SCC (you can see more examples in [lib.h](lib.h) and [sim86.c](sim86.c) by searching for `_emit`).
 
-## Building
-
-Compile `scc.c` using a C99 compiler and run the output on `scc.c`, this produces `scc.com` which can then be run under DOS (or using e.g. [DOSBox](https://www.dosbox.com/)) where it can self-compile: `scc.com scc.c`. These steps can then be repeated for the remainig software components.
-
-Or using CMake:
-
-    mkdir build && cd build && cmake -DMAKE_DISKS:BOOL=TRUE .. && cmake --build .
-
-You can omit `-DMAKE_DISKS:BOOL=TRUE` if you don't want the disk images built.
-
-Running the test suite (will use DOSBox if available):
-
-    cmake --build . --target test
-
-If building the disk images is enabled and [QEMU](https://www.qemu.org/) was found, you can build the `qemu_test` target to start QEMU with the large disk image attached. Use the CMake variable `QEMU_EXTRA_ARGS` to pass in extra arguments to QMEU.
-
 ## Q&A
 
 #### Why would I want this?
@@ -132,7 +135,7 @@ Change the code of the simulator to debug hard problems!
 
 #### Stack traces
 
-Some errors while be reported as a stack trace (as below). For these cases you'll need to refer to the map file produced in addition to the com file (i.e. `scc.map` for `scc.com`).
+Some errors will be reported as a stack trace (see below). For these cases you'll need to refer to the map file produced in addition to the com file (i.e. `scc.map` for `scc.com`).
 
 Example:
 
@@ -177,6 +180,6 @@ An [AST](https://en.wikipedia.org/wiki/Abstract_syntax_tree) isn't built, rather
 
 Within these constraints SCC tries to generate somewhat optimized code. Many possible optimizations aren't performed because they don't pay off (meaning they don't optimize SCC itself either in time or size).
 
-There's some limited optimizations done while doing address fixups to compensate for the limited optimizations. These are the only backward looking optimizations.
+There are some minor optimizations done while doing address fixups to compensate for the limited optimizations. These are the only backward looking optimizations.
 
 More to come... (maybe).
