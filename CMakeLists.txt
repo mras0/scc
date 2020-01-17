@@ -167,7 +167,7 @@ if (MAKE_DISKS)
         set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/large.img")
         add_custom_target(
             qemu_test
-            COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\",if=floppy ${QEMU_EXTRA_ARGS}
+            COMMAND qemu-system-i386 -drive format=raw,file=${DISK_IMG},if=floppy ${QEMU_EXTRA_ARGS}
             DEPENDS ${DISK_IMG}
         )
     endif()
