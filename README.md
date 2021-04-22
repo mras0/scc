@@ -13,7 +13,7 @@ Also included are a small set of supporting software components:
 
 ## Building
 
-Compile `scc.c` using a C99 compiler and run the output on `scc.c`, this produces `scc.com` which can then be run under DOS (using e.g. [DOSBox](https://www.dosbox.com/) or the provided [simulator](sim86.c)) where it can self-compile: `scc.com scc.c`. These steps can then be repeated for the remainig software components.
+Compile `scc.c` using a C99 compiler (with `char` treated as signed) and run the output on `scc.c`, this produces `scc.com` which can then be run under DOS (using e.g. [DOSBox](https://www.dosbox.com/) or the provided [simulator](sim86.c)) where it can self-compile: `scc.com scc.c`. These steps can then be repeated for the remainig software components.
 
 Or using CMake:
 
