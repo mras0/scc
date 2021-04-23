@@ -57,7 +57,7 @@ int memseg;
 int modrm;
 int addr;
 char dsize;
-char seg;
+signed char seg;
 
 int verbose;
 char rmtext[16];
@@ -230,7 +230,7 @@ void ModRM(void)
         }
         break;
     case 1:
-        addr += (char)ReadIByte();
+        addr += (signed char)ReadIByte();
         break;
     case 2:
         addr += Imm16();
@@ -475,7 +475,7 @@ void POP(int r)
 
 void JCC(int cc)
 {
-    const int rel = (char)ReadIByte();
+    const int rel = (signed char)ReadIByte();
     const char* n;
     const int e = !(cc & 1); // Expect true?
     int j;
@@ -796,7 +796,7 @@ int main(int argc, char** argv)
                 if (dsize)
                     Imm = Imm16();
                 else
-                    Imm = (char)ReadIByte();
+                    Imm = (signed char)ReadIByte();
                 modrm = 0xc0;
                 DoOp(op, reg[R_AX], Imm);
                 if (verbose) sprintf(insttext, "%s A%c, 0x%04X", OpName(op), dsize?'X':'L', Imm);
@@ -860,7 +860,7 @@ int main(int argc, char** argv)
                 {
                     dsize = inst&1;
                     ModRM();
-                    const int imm = inst == 0x81 ? Imm16() : (char)ReadIByte();
+                    const int imm = inst == 0x81 ? Imm16() : (signed char)ReadIByte();
                     DoOp(modrm>>3&7, ReadRM(), imm);
                     if (verbose) sprintf(insttext, "%s %s, 0x%04X", OpName(modrm>>3&7), rmtext, imm);
                 }
@@ -892,7 +892,7 @@ int main(int argc, char** argv)
                 sreg[modrm>>3&7] = ReadRM();
                 break;
             case 0x98:
-                reg[R_AX] = (char)reg[R_AX];
+                reg[R_AX] = (signed char)reg[R_AX];
                 if (verbose) sprintf(insttext, "CBW");
                 break;
             case 0x99:
@@ -1122,7 +1122,7 @@ int main(int argc, char** argv)
                 JMP(Imm16());
                 break;
             case 0xEB:
-                JMP((char)ReadIByte());
+                JMP((signed char)ReadIByte());
                 break;
             case 0xF2:
             case 0xF3:

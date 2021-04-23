@@ -437,8 +437,8 @@ enum {
 
 struct Operand {
     char Type;
-    char ModRM;
-    int  Disp;
+    signed char ModRM;
+    int Disp;
     struct Label* Fixup;
 };
 
@@ -852,7 +852,7 @@ struct Label* ReferenceLabel(void)
 
 int IsShort(int V)
 {
-    return (V&0xffff) == ((char)V & 0xffff);
+    return (V&0xffff) == ((signed char)V & 0xffff);
 }
 
 int TranslateMemMod(int Start)

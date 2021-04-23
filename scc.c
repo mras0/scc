@@ -1086,7 +1086,7 @@ void DoFixups(int r, int relative)
                 c[1]  = I_XCHG_AX;
                 switch (c[2]) {
                 case I_JMP_REL8:
-                    if (((char *)c)[3] > 0x7f-3)
+                    if (((signed char *)c)[3] > 0x7f-3)
                         break;
                     c[-1] = I_JMP_REL8;
                     c[0] = c[3]+3;
@@ -1111,7 +1111,7 @@ void DoFixups(int r, int relative)
         }
         if (c[-1] == I_JMP_REL16) {
             ++f;
-            if (f == (char)f) {
+            if (f == (signed char)f) {
                 // Convert to short jump + nop (the nop is just to not throw off disassemblers more than necessary)
                 c[-1] = I_JMP_REL8;
                 f = (unsigned char)f|0x9000;
@@ -1185,7 +1185,7 @@ void EmitModrm(int Inst, int R, int Loc, int Val)
     switch (Loc) {
     case VT_LOCOFF:
         Output3Bytes(Inst, MODRM_BP_DISP8|R, Val);
-        if (Val == (char)Val)
+        if (Val == (signed char)Val)
             return;
         if (!IsDeadCode) {
             Output[CodeAddress-(CODESTART+2)] += MODRM_BP_DISP16-MODRM_BP_DISP8;
@@ -1312,7 +1312,7 @@ int EmitLocalJump(int l)
     int Addr = Labels[l].Addr;
     if (Addr) {
         Addr -= CodeAddress+2;
-        if (Addr == (char)Addr) {
+        if (Addr == (signed char)Addr) {
             Output2Bytes(I_JMP_REL8, Addr);
         } else {
             Output1Byte(I_JMP_REL16);
@@ -1342,7 +1342,7 @@ void EmitJcc(int cc, int l)
     int a = Labels[l].Addr;
     if (a) {
         a -= CodeAddress+2;
-        if (a == (char)a) {
+        if (a == (signed char)a) {
             Output2Bytes(0x70 | cc, a);
             return;
         }
